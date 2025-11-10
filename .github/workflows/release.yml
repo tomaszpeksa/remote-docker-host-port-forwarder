@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run tests before release
+        run: go test -v ./...
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  build-manual:
+    name: Manual Build (Fallback)
+    runs-on: ubuntu-latest
+    if: failure()
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          OUTPUT_NAME=rdhpf-${{ matrix.os }}-${{ matrix.arch }}
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
+          
+          CGO_ENABLED=0 go build \
+            -ldflags "-X main.version=${VERSION} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "${OUTPUT_NAME}" \
+            ./cmd/rdhpf
+          
+          # Create compressed archive
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            zip "${OUTPUT_NAME%.exe}.zip" "${OUTPUT_NAME}"
+            ARCHIVE="${OUTPUT_NAME%.exe}.zip"
+          else
+            tar czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
+            ARCHIVE="${OUTPUT_NAME}.tar.gz"
+          fi
+          
+          # Generate SHA256 checksum
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+          echo "CHECKSUM=${ARCHIVE}.sha256" >> $GITHUB_ENV
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.CHECKSUM }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-manual
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate checksums file
+        run: |
+          cd artifacts
+          find . -name "*.sha256" -exec cat {} \; > ../checksums.txt
+          cd ..
+
+      - name: Extract release notes
+        id: release_notes
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          if [ -f "CHANGELOG.md" ]; then
+            # Extract version section from CHANGELOG
+            sed -n "/^## ${VERSION}/,/^## /p" CHANGELOG.md | sed '$d' > release_notes.txt
+          else
+            # Use git tag annotation or default message
+            git tag -l --format='%(contents)' ${VERSION} > release_notes.txt
+            if [ ! -s release_notes.txt ]; then
+              echo "Release ${VERSION}" > release_notes.txt
+            fi
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            checksums.txt
+          body_path: release_notes.txt
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-rc') || contains(steps.version.outputs.VERSION, '-beta') || contains(steps.version.outputs.VERSION, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

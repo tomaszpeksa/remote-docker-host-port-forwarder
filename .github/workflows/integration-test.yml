@@ -1,0 +1,161 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: 'SSH test host (optional, uses localhost if not provided)'
+        required: false
+        default: 'localhost'
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  integration-test:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install Docker
+        run: |
+          # Docker should already be available on ubuntu-latest
+          docker --version
+
+      - name: Set up SSH test environment
+        run: |
+          # Install and configure SSH server
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          
+          # Generate SSH host keys if not present
+          sudo ssh-keygen -A
+          
+          # Configure SSH for testing
+          sudo mkdir -p /var/run/sshd
+          
+          # Allow SSH connections
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          
+          # Start SSH service
+          sudo service ssh start
+          sudo service ssh status
+          
+          # Create test user
+          sudo useradd -m -s /bin/bash testuser
+          echo "testuser:testpass123" | sudo chpasswd
+          
+          # Add testuser to docker group
+          sudo usermod -aG docker testuser
+          
+          # Configure SSH known hosts
+          mkdir -p ~/.ssh
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts
+          ssh-keyscan -H 127.0.0.1 >> ~/.ssh/known_hosts
+          
+          # Test SSH connection
+          echo "Testing SSH connection..."
+          timeout 10 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null testuser@localhost -p 22 echo "SSH connection successful" || echo "SSH test failed (non-critical)"
+
+      - name: Start Docker test containers
+        run: |
+          # Start a few test containers with published ports
+          docker run -d --name test-nginx -p 8080:80 nginx:alpine
+          docker run -d --name test-redis -p 6379:6379 redis:alpine
+          
+          # Wait for containers to be ready
+          sleep 5
+          
+          # Verify containers are running
+          docker ps
+
+      - name: Run integration tests
+        env:
+          SSH_TEST_HOST: ${{ github.event.inputs.ssh_host || 'localhost' }}
+          SSH_TEST_USER: testuser
+          SSH_TEST_PASSWORD: testpass123
+          SSH_TEST_PORT: 22
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          echo "Running integration tests..."
+          echo "SSH_TEST_HOST: $SSH_TEST_HOST"
+          
+          # Run integration tests with verbose output
+          go test -v -timeout=10m -tags=integration ./tests/integration/...
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Docker containers ==="
+          docker ps -a
+          
+          echo "=== Docker logs (test-nginx) ==="
+          docker logs test-nginx || true
+          
+          echo "=== Docker logs (test-redis) ==="
+          docker logs test-redis || true
+          
+          echo "=== SSH service status ==="
+          sudo service ssh status || true
+          
+          echo "=== SSH logs ==="
+          sudo journalctl -u ssh -n 50 --no-pager || true
+          
+          echo "=== Network connections ==="
+          sudo netstat -tlnp || ss -tlnp || true
+
+      - name: Cleanup test environment
+        if: always()
+        run: |
+          # Stop and remove test containers
+          docker stop test-nginx test-redis || true
+          docker rm test-nginx test-redis || true
+          
+          # Clean up SSH test user
+          sudo userdel -r testuser || true
+
+  integration-test-remote:
+    name: Run Integration Tests (Remote Host)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.ssh_host != 'localhost'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Configure SSH for remote host
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_TEST_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ github.event.inputs.ssh_host }} >> ~/.ssh/known_hosts
+
+      - name: Run integration tests against remote host
+        env:
+          SSH_TEST_HOST: ${{ github.event.inputs.ssh_host }}
+          SSH_TEST_USER: ${{ secrets.SSH_TEST_USER }}
+          SSH_TEST_KEY_PATH: ~/.ssh/id_rsa
+        run: |
+          echo "Running integration tests against remote host: $SSH_TEST_HOST"
+          go test -v -timeout=15m -tags=integration ./tests/integration/...
+
+      - name: Cleanup SSH keys
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa

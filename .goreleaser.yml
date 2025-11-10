@@ -1,0 +1,114 @@
+# GoReleaser configuration for rdhpf
+# See https://goreleaser.com for documentation
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: rdhpf
+    main: ./cmd/rdhpf
+    binary: rdhpf
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.buildDate={{.Date}}
+      - -X main.commit={{.Commit}}
+
+archives:
+  - id: rdhpf
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: tomaszpeksa
+    name: remote-docker-host-port-forwarder
+  draft: false
+  prerelease: auto
+  name_template: "{{.Tag}}"
+  header: |
+    ## Remote Docker Host Port Forwarder {{.Tag}}
+    
+    This release includes binaries for multiple platforms.
+  footer: |
+    ## Installation
+    
+    Download the appropriate binary for your platform, extract it, and move it to a directory in your PATH.
+    
+    ```bash
+    # Linux/macOS
+    tar xzf rdhpf_*.tar.gz
+    sudo mv rdhpf /usr/local/bin/
+    
+    # Windows
+    # Extract the zip file and add rdhpf.exe to your PATH
+    ```
+    
+    ## Checksums
+    
+    Verify your download with:
+    ```bash
+    sha256sum -c checksums.txt
+    ```
+
+brews:
+  - repository:
+      owner: tomaszpeksa
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder"
+    description: "Automatically forward published container ports from a remote Docker host to localhost via SSH"
+    license: "MIT"
+    skip_upload: false
+    commit_author:
+      name: goreleaserbot
+      email: goreleaser@tomaszpeksa.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    folder: Formula
+    install: |
+      bin.install "rdhpf"
+    test: |
+      system "#{bin}/rdhpf", "version"

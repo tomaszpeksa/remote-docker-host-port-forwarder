@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "Go code is not formatted:"
+            gofmt -s -d .
+            exit 1
+          fi
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.62.2
+
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout=5m ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Upload coverage to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.go-version }}
+          path: coverage.txt
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Set up integration test harness
+        run: |
+          # Build and run sshd-stub container
+          echo "Building sshd-stub Docker image..."
+          docker build -t rdhpf-sshd-stub -f docker/sshd-stub/Dockerfile tests/integration/harness/
+          
+          # Generate SSH key
+          mkdir -p .itests/home/.ssh
+          ssh-keygen -t ed25519 -f .itests/home/.ssh/id_ed25519 -N "" -C "ci-test"
+          
+          # Start container with basic-forward scenario
+          echo "Starting sshd-stub container..."
+          docker run -d --name rdhpf-sshd-stub \
+            -p 2222:22 \
+            -v "$PWD/tests/integration/harness/scenarios/basic-forward:/opt/rdhpf-scenarios/default:ro" \
+            rdhpf-sshd-stub
+          
+          # Wait for SSH to be ready
+          sleep 2
+          
+          # Seed authorized_keys for passwordless auth
+          echo "Setting up passwordless SSH..."
+          docker cp .itests/home/.ssh/id_ed25519.pub rdhpf-sshd-stub:/tmp/pubkey
+          docker exec rdhpf-sshd-stub sh -c "
+            mv /tmp/pubkey /home/testuser/.ssh/authorized_keys && \
+            chmod 600 /home/testuser/.ssh/authorized_keys && \
+            chown testuser:testuser /home/testuser/.ssh/authorized_keys && \
+            chmod 755 /home/testuser && \
+            echo 'Permissions check:' && \
+            ls -la /home/testuser/ && \
+            ls -la /home/testuser/.ssh/ && \
+            cat /home/testuser/.ssh/authorized_keys
+          "
+          
+          # Create SSH config
+          cat > .itests/home/.ssh/config <<EOF
+          Host localhost
+            IdentityFile $PWD/.itests/home/.ssh/id_ed25519
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          chmod 600 .itests/home/.ssh/config
+          
+          echo "✓ Integration test harness ready"
+          
+          # Verify SSH connection works
+          echo "Testing SSH connection..."
+          ssh -i .itests/home/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=DEBUG \
+            -p 2222 testuser@localhost echo "SSH connection successful" || {
+            echo "SSH connection failed, checking container logs..."
+            docker logs rdhpf-sshd-stub
+            exit 1
+          }
+
+      - name: Run integration tests
+        env:
+          HOME: ${{ github.workspace }}/.itests/home
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+          SSH_TEST_KEY_PATH: ${{ github.workspace }}/.itests/home/.ssh/id_ed25519
+        run: go test -v ./tests/integration/...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build for linux/amd64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -o rdhpf-linux-amd64 ./cmd/rdhpf
+
+      - name: Verify binary
+        run: |
+          file rdhpf-linux-amd64
+          ./rdhpf-linux-amd64 --version || true
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdhpf-linux-amd64
+          path: rdhpf-linux-amd64

@@ -1,0 +1,60 @@
+# Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+      - id: detect-private-key
+
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        args: [-s]
+      - id: go-vet
+      - id: go-mod-tidy
+
+  - repo: local
+    hooks:
+      - id: go-unit-tests
+        name: Go Unit Tests
+        entry: scripts/pre-commit.sh
+        language: script
+        files: \.go$
+        pass_filenames: false
+        description: Run fast unit tests
+
+      - id: no-debug-prints
+        name: Check for debug statements
+        entry: 'grep -rn --include="*.go" -E "(fmt\.Print|log\.Print.*DEBUG|TODO|FIXME)" .'
+        language: system
+        pass_filenames: false
+        always_run: false
+        verbose: true
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.55.2
+    hooks:
+      - id: golangci-lint
+        args: [--timeout=5m]
+
+  - repo: https://github.com/markdownlint/markdownlint
+    rev: v0.12.0
+    hooks:
+      - id: markdownlint
+        args: [--git-recurse, --config, .markdownlint.yml]
+
+# Global settings
+default_install_hook_types: [pre-commit, pre-push]
+fail_fast: false

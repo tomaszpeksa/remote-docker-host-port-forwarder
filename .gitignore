@@ -1,0 +1,38 @@
+# Binaries for programs and plugins
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# macOS
+.DS_Store
+
+# Vim swap files
+*.swp
+*.swo
+
+# VSCode
+.vscode/
+
+# Release artifacts
+dist/
+
+# Build outputs
+/build/
+/rdhpf
+
+# Coverage
+/coverage/
+coverage.out
+coverage.html
+
+# Integration test artifacts
+.itests/

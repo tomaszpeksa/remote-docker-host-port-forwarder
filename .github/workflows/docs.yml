@@ -1,0 +1,164 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
+
+jobs:
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v15
+        with:
+          globs: |
+            docs/**/*.md
+            README.md
+            CONTRIBUTING.md
+
+  link-check:
+    name: Link Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check links in markdown files
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: 'yes'
+          use-verbose-mode: 'yes'
+          config-file: '.github/markdown-link-check-config.json'
+          folder-path: 'docs/'
+          file-path: './README.md'
+        continue-on-error: true
+
+      - name: Check links in root markdown files
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: 'yes'
+          check-modified-files-only: 'yes'
+        continue-on-error: true
+
+  spell-check:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install aspell
+        run: sudo apt-get update && sudo apt-get install -y aspell aspell-en
+
+      - name: Check spelling in markdown files
+        run: |
+          # Create custom dictionary
+          cat > .aspell.en.pws << 'EOF'
+          personal_ws-1.1 en 100
+          rdhpf
+          ssh
+          golang
+          linux
+          darwin
+          amd64
+          arm64
+          goreleaser
+          codecov
+          github
+          changelog
+          dockerfile
+          kubernetes
+          yaml
+          yml
+          json
+          TCP
+          UDP
+          IPv4
+          IPv6
+          gofmt
+          golangci
+          gosec
+          API
+          CLI
+          CI
+          CD
+          EOF
+          
+          # Check all markdown files
+          find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/.git/*" | while read file; do
+            echo "Checking: $file"
+            aspell list --mode=markdown --lang=en --personal=.aspell.en.pws < "$file" | sort -u | tee -a spelling-errors.txt
+          done
+          
+          # Show errors but don't fail
+          if [ -s spelling-errors.txt ]; then
+            echo "⚠️ Potential spelling errors found:"
+            cat spelling-errors.txt
+            echo "Note: This is informational only and won't fail the build"
+          else
+            echo "✓ No spelling errors found"
+          fi
+        continue-on-error: true
+
+  validate-structure:
+    name: Validate Documentation Structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check required documentation files
+        run: |
+          required_files=(
+            "README.md"
+            "LICENSE"
+            "CHANGELOG.md"
+            "docs/troubleshooting.md"
+          )
+          
+          missing_files=()
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing_files+=("$file")
+            fi
+          done
+          
+          if [ ${#missing_files[@]} -gt 0 ]; then
+            echo "❌ Missing required documentation files:"
+            printf '%s\n' "${missing_files[@]}"
+            exit 1
+          else
+            echo "✓ All required documentation files present"
+          fi
+
+      - name: Validate markdown structure
+        run: |
+          # Check that all markdown files have proper headers
+          find docs -name "*.md" | while read file; do
+            if ! grep -q "^# " "$file"; then
+              echo "⚠️ $file: Missing top-level heading"
+            fi
+          done
+
+      - name: Check for TODO markers
+        run: |
+          if grep -r "TODO\|FIXME\|XXX" docs/ *.md 2>/dev/null; then
+            echo "⚠️ Found TODO markers in documentation (informational only)"
+          else
+            echo "✓ No TODO markers found"
+          fi
+        continue-on-error: true

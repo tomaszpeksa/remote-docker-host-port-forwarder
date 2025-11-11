@@ -46,13 +46,14 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	// Remove ssh:// prefix for SSH command
 	sshHostClean := strings.TrimPrefix(sshHost, "ssh://")
 
-	// Build SSH + docker inspect command
+	// Build the docker command as a single quoted string to protect {{json ...}} from shell expansion
+	dockerCmd := fmt.Sprintf("docker inspect %s --format '{{json .HostConfig.PortBindings}}'", containerID)
+
+	// Build SSH command that executes docker via sh -c
 	args := []string{
 		"-S", controlPath,
 		sshHostClean,
-		"docker", "inspect",
-		containerID,
-		"--format", "{{json .HostConfig.PortBindings}}",
+		"sh", "-c", dockerCmd,
 	}
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)

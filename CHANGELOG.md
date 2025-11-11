@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Logs exit codes and signal information for better debugging
 
 ### Fixed
+- **CRITICAL**: Fix shell expansion bug in docker commands executed over SSH
+  - Docker template syntax `{{json .}}` was being expanded by remote shell, causing "accepts no arguments" errors
+  - Now wrap all docker commands in `sh -c 'command'` with proper quoting
+  - Affects: docker events, docker inspect, docker ps commands (all fixed)
+  - Added unit tests to prevent regression
 - Fix GoReleaser Homebrew configuration schema (folder → directory) for v2 compatibility
 - Pin GoReleaser version to v2 series in release workflow for stability
 - Remove duplicate test execution in GoReleaser before.hooks (tests already run in workflow)

@@ -106,22 +106,21 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		// Remove ssh:// prefix for SSH command
 		sshHost := strings.TrimPrefix(r.sshHost, "ssh://")
 
-		// Build SSH + docker events command
+		// Build the docker command as a single quoted string to protect {{json .}} from shell expansion
+		dockerCmd := `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`
+
+		// Build SSH command that executes docker via sh -c
 		args := []string{
 			"-S", r.controlPath,
 			sshHost,
-			"docker", "events",
-			"--format", "{{json .}}",
-			"--filter", "type=container",
-			"--filter", "event=start",
-			"--filter", "event=die",
-			"--filter", "event=stop",
+			"sh", "-c", dockerCmd,
 		}
 
 		// Log full SSH command before execution
-		fullCmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
-		r.logger.Info("executing docker events command",
+		fullCmd := fmt.Sprintf("ssh -S %s %s sh -c \"%s\"", r.controlPath, sshHost, dockerCmd)
+		r.logger.Info("executing docker events command via shell",
 			"command", fullCmd,
+			"dockerCmd", dockerCmd,
 			"host", sshHost)
 
 		// #nosec G204 - SSH command with validated host format (checked in config.Validate)

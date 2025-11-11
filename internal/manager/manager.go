@@ -531,11 +531,14 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	sshHost := strings.TrimPrefix(m.cfg.Host, "ssh://")
 
 	// Get list of running containers
+	// Build the docker command as a single quoted string to protect {{.ID}} from shell expansion
+	dockerCmd := "docker ps --format '{{.ID}}'"
+
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh",
 		"-S", controlPath,
 		sshHost,
-		"docker", "ps", "--format", "{{.ID}}")
+		"sh", "-c", dockerCmd)
 
 	output, err := cmd.Output()
 	if err != nil {

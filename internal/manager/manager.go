@@ -190,6 +190,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		// Check if context is canceled before starting/restarting
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
+			m.cleanupAllForwards(context.Background())
 			return nil
 		}
 
@@ -207,9 +208,10 @@ func (m *Manager) Run(ctx context.Context) error {
 		// Run event loop until stream closes or errors
 		streamClosed := m.runEventLoop(ctx, events, errs)
 
-		// If stream closed cleanly due to context cancellation, exit
+		// If stream closed cleanly due to context cancellation, cleanup and exit
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
+			m.cleanupAllForwards(context.Background())
 			return nil
 		}
 
@@ -527,18 +529,27 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 		return fmt.Errorf("failed to derive control path: %w", err)
 	}
 
-	// Remove ssh:// prefix for SSH command
-	sshHost := strings.TrimPrefix(m.cfg.Host, "ssh://")
+	// Parse host and port from SSH URL
+	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
+	}
 
 	// Get list of running containers
 	// Build the docker command as a single quoted string to protect {{.ID}} from shell expansion
 	dockerCmd := "docker ps --format '{{.ID}}'"
 
+	// Build SSH command args
+	// Important: sh -c and the docker command must be passed as a single argument to SSH
+	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+	args := []string{"-S", controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost, remoteCmd)
+
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-S", controlPath,
-		sshHost,
-		"sh", "-c", dockerCmd)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -559,6 +570,13 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 
 	// Inspect each container and update desired state
 	for _, containerID := range containerIDs {
+		// Check if container has test-infrastructure label (skip it)
+		if m.hasTestInfrastructureLabel(ctx, controlPath, containerID) {
+			m.logger.Debug("skipping test infrastructure container",
+				"containerID", containerID[:12])
+			continue
+		}
+
 		ports, err := docker.InspectPorts(ctx, m.cfg.Host, controlPath, containerID)
 		if err != nil {
 			m.logger.Warn("failed to inspect container during startup",
@@ -576,12 +594,66 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	}
 
 	// Reconcile to establish forwards
+	// Note: Errors during startup reconciliation are expected (port conflicts, etc.)
+	// and should not be fatal. We log them but continue operation.
 	if err := m.triggerReconcile(ctx); err != nil {
-		return fmt.Errorf("startup reconciliation failed: %w", err)
+		m.logger.Warn("startup reconciliation encountered errors (this is normal for port conflicts)",
+			"error", err.Error())
+		// Don't return error - port conflicts are expected and non-fatal
 	}
 
 	m.logger.Info("startup reconciliation complete",
 		"containers", len(containerIDs))
 
 	return nil
+}
+
+// hasTestInfrastructureLabel checks if a container has the rdhpf.test-infrastructure label
+func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, containerID string) bool {
+	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
+	if err != nil {
+		m.logger.Warn("failed to parse SSH host", "error", err.Error())
+		return false
+	}
+
+	// Inspect container labels
+	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' %s", docker.LabelTestInfrastructure, containerID)
+	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+
+	args := []string{"-S", controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost, remoteCmd)
+
+	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(output)) == "true"
+}
+
+// cleanupAllForwards removes all active port forwards on shutdown.
+// Uses a background context to ensure cleanup completes even if original context is canceled.
+func (m *Manager) cleanupAllForwards(ctx context.Context) {
+	m.logger.Info("cleaning up all port forwards on shutdown")
+
+	// Get all containers with active forwards
+	containers := m.state.GetAllContainers()
+
+	// Clear desired state for all containers (signal all forwards should be removed)
+	for _, containerID := range containers {
+		m.state.SetDesired(containerID, []int{})
+	}
+
+	// Run final reconciliation to remove all forwards
+	if err := m.triggerReconcile(ctx); err != nil {
+		m.logger.Warn("cleanup reconciliation encountered errors",
+			"error", err.Error())
+	} else {
+		m.logger.Info("all port forwards removed successfully")
+	}
 }

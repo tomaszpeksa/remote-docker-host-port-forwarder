@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 )
 
 // Event represents a Docker container event
@@ -103,25 +105,31 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		defer close(events)
 		defer close(errors)
 
-		// Remove ssh:// prefix for SSH command
-		sshHost := strings.TrimPrefix(r.sshHost, "ssh://")
+		// Remove ssh:// prefix and parse port for SSH command
+		sshHost, port, err := ssh.ParseHost(r.sshHost)
+		if err != nil {
+			errors <- fmt.Errorf("failed to parse SSH host: %w", err)
+			return
+		}
 
 		// Build the docker command as a single quoted string to protect {{json .}} from shell expansion
 		dockerCmd := `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`
 
 		// Build SSH command that executes docker via sh -c
-		args := []string{
-			"-S", r.controlPath,
-			sshHost,
-			"sh", "-c", dockerCmd,
+		// Important: sh -c and the docker command must be passed as a single argument to SSH
+		remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+		args := []string{"-S", r.controlPath}
+		if port != "" {
+			args = append(args, "-p", port)
 		}
+		args = append(args, sshHost, remoteCmd)
 
 		// Log full SSH command before execution
-		fullCmd := fmt.Sprintf("ssh -S %s %s sh -c \"%s\"", r.controlPath, sshHost, dockerCmd)
 		r.logger.Info("executing docker events command via shell",
-			"command", fullCmd,
+			"args", fmt.Sprintf("%v", args),
 			"dockerCmd", dockerCmd,
-			"host", sshHost)
+			"host", sshHost,
+			"port", port)
 
 		// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 		cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -265,7 +273,7 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 				stdoutMu.Unlock()
 
 				r.logger.Error("docker events command failed",
-					"command", fullCmd,
+					"args", fmt.Sprintf("%v", args),
 					"error", err.Error(),
 					"exitCode", exitCode,
 					"signal", signalInfo,

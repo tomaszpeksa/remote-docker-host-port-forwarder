@@ -63,11 +63,11 @@ test-unit: ## Run unit tests
 	@go test $(GOTEST_FLAGS) -race -timeout=5m ./...
 	@printf "$(GREEN)✓ Unit tests passed$(NC)\n"
 
-itest-up: ## Start integration test harness (containerized SSH + docker shim)
+itest-up: ## Start integration test harness (SSH container with Docker socket mount)
 	@bash scripts/itest-up.sh
 
-itest: ## Run integration tests using harness (requires itest-up first)
-	@printf "$(GREEN)Running integration tests with harness...$(NC)\n"
+itest: ## Run integration tests (requires itest-up first)
+	@printf "$(GREEN)Running integration tests...$(NC)\n"
 	@HOME=$(PWD)/.itests/home \
 		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
 		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \

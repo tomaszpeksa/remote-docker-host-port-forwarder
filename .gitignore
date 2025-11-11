@@ -36,3 +36,4 @@ coverage.html
 
 # Integration test artifacts
 .itests/
+logs/

@@ -176,24 +176,28 @@ func TestDockerEventsCommandLogging(t *testing.T) {
 // with different SSH host formats
 func TestDockerEventsWithDifferentHosts(t *testing.T) {
 	testCases := []struct {
-		name        string
-		sshHost     string
-		expectedLog string
+		name         string
+		sshHost      string
+		expectedHost string
+		expectedPort string
 	}{
 		{
-			name:        "standard ssh URL",
-			sshHost:     "ssh://docker@host1",
-			expectedLog: "docker@host1",
+			name:         "standard ssh URL",
+			sshHost:      "ssh://docker@host1",
+			expectedHost: "docker@host1",
+			expectedPort: "",
 		},
 		{
-			name:        "with port",
-			sshHost:     "ssh://user@host2:2222",
-			expectedLog: "user@host2:2222",
+			name:         "with port",
+			sshHost:      "ssh://user@host2:2222",
+			expectedHost: "user@host2",
+			expectedPort: "2222",
 		},
 		{
-			name:        "IP address",
-			sshHost:     "ssh://root@192.168.1.100",
-			expectedLog: "root@192.168.1.100",
+			name:         "IP address",
+			sshHost:      "ssh://root@192.168.1.100",
+			expectedHost: "root@192.168.1.100",
+			expectedPort: "",
 		},
 	}
 
@@ -216,9 +220,18 @@ func TestDockerEventsWithDifferentHosts(t *testing.T) {
 
 			logStr := logOutput.String()
 
-			// Verify the host appears in the log (without ssh:// prefix)
-			if !strings.Contains(logStr, tc.expectedLog) {
-				t.Errorf("Expected log to contain '%s', but it doesn't:\n%s", tc.expectedLog, logStr)
+			// Verify the host appears in the log output
+			expectedHostLog := "host=" + tc.expectedHost
+			if !strings.Contains(logStr, expectedHostLog) {
+				t.Errorf("Expected log to contain '%s', but it doesn't:\n%s", expectedHostLog, logStr)
+			}
+
+			// Verify port appears correctly in log (or is empty)
+			if tc.expectedPort != "" {
+				expectedPortLog := "port=" + tc.expectedPort
+				if !strings.Contains(logStr, expectedPortLog) {
+					t.Errorf("Expected log to contain '%s', but it doesn't:\n%s", expectedPortLog, logStr)
+				}
 			}
 
 			// Verify sh -c is used regardless of host format

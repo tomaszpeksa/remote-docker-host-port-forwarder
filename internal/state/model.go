@@ -168,6 +168,25 @@ func (s *State) Clear(containerID string) {
 	delete(s.actual, containerID)
 }
 
+// ClearPort removes a specific port forward from a container's actual state.
+// This is used when removing individual forwards while keeping other ports active.
+//
+// Example usage:
+//
+//	state.ClearPort("container123", 8080) // removes only port 8080
+func (s *State) ClearPort(containerID string, port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if portMap, exists := s.actual[containerID]; exists {
+		delete(portMap, port)
+		// If no ports remain, remove the container entry entirely
+		if len(portMap) == 0 {
+			delete(s.actual, containerID)
+		}
+	}
+}
+
 // GetByContainer returns all actual port forward states for a specific container.
 //
 // Example usage:

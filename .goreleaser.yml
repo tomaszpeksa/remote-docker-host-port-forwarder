@@ -94,7 +94,8 @@ release:
     ```
 
 brews:
-  - repository:
+  - name: rdhpf
+    repository:
       owner: tomaszpeksa
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"

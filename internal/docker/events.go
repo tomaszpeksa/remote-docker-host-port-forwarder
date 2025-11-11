@@ -2,12 +2,15 @@ package docker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -115,15 +118,25 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 			"--filter", "event=stop",
 		}
 
-		r.logger.Debug("starting docker events stream",
+		// Log full SSH command before execution
+		fullCmd := fmt.Sprintf("ssh %s", strings.Join(args, " "))
+		r.logger.Info("executing docker events command",
+			"command", fullCmd,
 			"host", sshHost)
 
 		// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 		cmd := exec.CommandContext(ctx, "ssh", args...)
 
+		// Capture both stdout and stderr
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			errors <- fmt.Errorf("failed to get stdout pipe: %w", err)
+			return
+		}
+
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			errors <- fmt.Errorf("failed to get stderr pipe: %w", err)
 			return
 		}
 
@@ -144,10 +157,33 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		r.logger.Info("docker events stream started",
 			"host", sshHost)
 
-		// Read and parse JSON lines
+		// Buffer to collect stdout lines for error reporting
+		var stdoutLines []string
+		var stdoutMu sync.Mutex
+
+		// Buffer to collect all stderr output
+		var stderrBuf bytes.Buffer
+		var wg sync.WaitGroup
+
+		// Read stderr in a separate goroutine
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = io.Copy(&stderrBuf, stderr)
+		}()
+
+		// Read and parse JSON lines from stdout
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			// Keep last 50 lines for error reporting
+			stdoutMu.Lock()
+			stdoutLines = append(stdoutLines, line)
+			if len(stdoutLines) > 50 {
+				stdoutLines = stdoutLines[1:]
+			}
+			stdoutMu.Unlock()
 
 			var dockerEvent dockerEventJSON
 			if err := json.Unmarshal([]byte(line), &dockerEvent); err != nil {
@@ -186,6 +222,16 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 			}
 		}
 
+		// Wait for stderr reader to finish
+		wg.Wait()
+
+		// Get stderr content
+		stderrContent := stderrBuf.String()
+		if stderrContent != "" {
+			r.logger.Debug("docker events stderr output",
+				"stderr", stderrContent)
+		}
+
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
 			r.logger.Warn("docker events scanner error",
@@ -202,8 +248,32 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		if err := cmd.Wait(); err != nil {
 			// Don't report error if context was canceled
 			if ctx.Err() == nil {
-				r.logger.Warn("docker events command finished with error",
-					"error", err.Error())
+				// Extract exit code and signal information
+				exitCode := -1
+				signalInfo := ""
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+						exitCode = status.ExitStatus()
+						if status.Signaled() {
+							signalInfo = fmt.Sprintf("signal: %v", status.Signal())
+						}
+					}
+				}
+
+				// Log detailed failure information
+				stdoutMu.Lock()
+				stdoutStr := strings.Join(stdoutLines, "\n")
+				stdoutMu.Unlock()
+
+				r.logger.Error("docker events command failed",
+					"command", fullCmd,
+					"error", err.Error(),
+					"exitCode", exitCode,
+					"signal", signalInfo,
+					"stderr", stderrContent,
+					"stdoutLines", len(stdoutLines),
+					"stdout", stdoutStr)
+
 				// Send error to channel so manager can handle it
 				select {
 				case errors <- fmt.Errorf("docker events command failed: %w", err):

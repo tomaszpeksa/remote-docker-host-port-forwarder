@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Comprehensive debug logging for docker events SSH command execution
+  - Logs full SSH command with arguments before execution
+  - Captures and logs stderr separately (SSH warnings, error messages)
+  - Logs last 50 lines of stdout on failures
+  - Logs exit codes and signal information for better debugging
+
 ### Fixed
 - Fix GoReleaser Homebrew configuration schema (folder → directory) for v2 compatibility
 - Pin GoReleaser version to v2 series in release workflow for stability

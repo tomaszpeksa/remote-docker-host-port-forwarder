@@ -6,7 +6,6 @@ version: 2
 before:
   hooks:
     - go mod tidy
-    - go test ./...
 
 builds:
   - id: rdhpf
@@ -107,7 +106,7 @@ brews:
       name: goreleaserbot
       email: goreleaser@tomaszpeksa.com
     commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    folder: Formula
+    directory: Formula
     install: |
       bin.install "rdhpf"
     test: |

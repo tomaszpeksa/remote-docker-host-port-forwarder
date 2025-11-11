@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix GoReleaser Homebrew configuration schema (folder → directory) for v2 compatibility
 - Pin GoReleaser version to v2 series in release workflow for stability
 - Remove duplicate test execution in GoReleaser before.hooks (tests already run in workflow)
+- Set Homebrew formula name to 'rdhpf' for easier installation (was defaulting to repo name)
 
 ## [0.1.0]
 

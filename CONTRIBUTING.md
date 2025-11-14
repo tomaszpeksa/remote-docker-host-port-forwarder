@@ -173,17 +173,20 @@ make coverage
 
 ### Integration Tests
 
-Integration tests require an SSH server and Docker:
+Integration tests require Docker and use a containerized SSH server with Docker socket access:
 
 ```bash
-# Set up test environment
-export SSH_TEST_HOST=localhost
-export SSH_TEST_USER=testuser
-export SSH_TEST_PASSWORD=testpass
+# Start test environment (SSH container with Docker socket mount)
+make itest-up
 
 # Run integration tests
-make test-integration
+make itest
+
+# Stop test environment
+make itest-down
 ```
+
+For more details, see [`docs/ci-integration-tests.md`](docs/ci-integration-tests.md).
 
 Or run specific integration tests:
 

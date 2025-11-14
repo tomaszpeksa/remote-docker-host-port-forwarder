@@ -104,14 +104,10 @@ func (m *Master) SetRecoveryCallback(callback func()) {
 //	    log.Fatal(err)
 //	}
 func (m *Master) Open(ctx context.Context) error {
-	// Remove ssh:// prefix for SSH command
-	sshHost := strings.TrimPrefix(m.host, "ssh://")
-
-	// Extract port if specified (e.g., user@host:port -> user@host and port)
-	port := ""
-	if idx := strings.LastIndex(sshHost, ":"); idx != -1 {
-		port = sshHost[idx+1:]
-		sshHost = sshHost[:idx]
+	// Parse host and port from SSH URL
+	sshHost, port, err := ParseHost(m.host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
 	}
 
 	// Build SSH command
@@ -193,7 +189,10 @@ func (m *Master) Open(ctx context.Context) error {
 //
 //	defer master.Close()
 func (m *Master) Close() error {
-	sshHost := strings.TrimPrefix(m.host, "ssh://")
+	sshHost, port, err := ParseHost(m.host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
+	}
 
 	m.logger.Debug("closing SSH ControlMaster",
 		"host", sshHost,
@@ -203,11 +202,14 @@ func (m *Master) Close() error {
 	m.StopHealthMonitor()
 
 	// Execute SSH exit command
+	args := []string{"-S", m.controlPath, "-O", "exit"}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost)
+
 	// #nosec G204 - SSH command with validated host format (checked in NewMaster)
-	cmd := exec.Command("ssh",
-		"-S", m.controlPath,
-		"-O", "exit",
-		sshHost)
+	cmd := exec.Command("ssh", args...)
 
 	if err := cmd.Run(); err != nil {
 		m.logger.Warn("failed to cleanly exit SSH ControlMaster",
@@ -256,17 +258,23 @@ func (m *Master) Close() error {
 //	    log.Printf("Connection unhealthy: %v", err)
 //	}
 func (m *Master) Check() error {
-	sshHost := strings.TrimPrefix(m.host, "ssh://")
+	sshHost, port, err := ParseHost(m.host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
+	}
 
 	m.logger.Debug("checking SSH ControlMaster health",
 		"host", sshHost,
 		"controlPath", m.controlPath)
 
+	args := []string{"-S", m.controlPath, "-O", "check"}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost)
+
 	// #nosec G204 - SSH command with validated host format (checked in NewMaster)
-	cmd := exec.Command("ssh",
-		"-S", m.controlPath,
-		"-O", "check",
-		sshHost)
+	cmd := exec.Command("ssh", args...)
 
 	if err := cmd.Run(); err != nil {
 		m.logger.Debug("SSH ControlMaster check failed",
@@ -320,7 +328,10 @@ func (m *Master) EnsureAlive(ctx context.Context) error {
 
 	// Check if connection is alive
 	if err := m.Check(); err != nil {
-		sshHost := strings.TrimPrefix(m.host, "ssh://")
+		sshHost, _, parseErr := ParseHost(m.host)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse SSH host: %w", parseErr)
+		}
 
 		m.logger.Warn("SSH ControlMaster is dead, recreating",
 			"host", sshHost,

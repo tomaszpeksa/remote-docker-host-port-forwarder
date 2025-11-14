@@ -261,8 +261,8 @@ func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host stri
 			}
 		}
 
-		// Remove from state (whether successful or not, we tried)
-		r.state.Clear(action.ContainerID)
+		// Remove only this specific port from state (not all container ports)
+		r.state.ClearPort(action.ContainerID, action.Port)
 	}
 
 	// Process additions with tracking for summary

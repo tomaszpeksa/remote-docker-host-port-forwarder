@@ -1,3 +1,0 @@
-{"op":"emit","event":{"Type":"container","Action":"start","Actor":{"ID":"abc123def456","Attributes":{"image":"nginx:alpine","name":"test-nginx"}},"time":1699999990,"timeNano":1699999990000000000}}
-{"op":"sleep","ms":100}
-{"op":"emit","event":{"Type":"container","Action":"die","Actor":{"ID":"abc123def456","Attributes":{"image":"nginx:alpine","name":"test-nginx","exitCode":"0"}},"time":1699999995,"timeNano":1699999995000000000}}

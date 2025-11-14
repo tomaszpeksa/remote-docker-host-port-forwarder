@@ -174,17 +174,20 @@ func AddForwardWithRetry(ctx context.Context, controlPath, host string, localPor
 //	    log.Fatal(err)
 //	}
 func AddForward(ctx context.Context, controlPath, host string, localPort, remotePort int, logger *slog.Logger) error {
-	// Remove ssh:// prefix for SSH command
-	sshHost := strings.TrimPrefix(host, "ssh://")
-
-	// Build SSH command
-	forwardSpec := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort)
-	args := []string{
-		"-S", controlPath,
-		"-O", "forward",
-		"-L", forwardSpec,
-		sshHost,
+	// Parse host and port from SSH URL
+	sshHost, port, err := ParseHost(host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
 	}
+
+	// Build SSH command - port flag must come before control operations
+	// Use "localhost" for remote side so it can be resolved via /etc/hosts in test environments
+	forwardSpec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", localPort, remotePort)
+	args := []string{"-S", controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, "-O", "forward", "-L", forwardSpec, sshHost)
 
 	logger.Info("adding SSH port forward",
 		"localPort", localPort,
@@ -251,17 +254,20 @@ func AddForward(ctx context.Context, controlPath, host string, localPort, remote
 //	    log.Printf("Warning: %v", err)
 //	}
 func CancelForward(ctx context.Context, controlPath, host string, localPort, remotePort int, logger *slog.Logger) error {
-	// Remove ssh:// prefix for SSH command
-	sshHost := strings.TrimPrefix(host, "ssh://")
-
-	// Build SSH command
-	forwardSpec := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort)
-	args := []string{
-		"-S", controlPath,
-		"-O", "cancel",
-		"-L", forwardSpec,
-		sshHost,
+	// Parse host and port from SSH URL
+	sshHost, port, err := ParseHost(host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
 	}
+
+	// Build SSH command - port flag must come before control operations
+	// Use "localhost" for remote side so it can be resolved via /etc/hosts in test environments
+	forwardSpec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", localPort, remotePort)
+	args := []string{"-S", controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, "-O", "cancel", "-L", forwardSpec, sshHost)
 
 	logger.Info("canceling SSH port forward",
 		"localPort", localPort,

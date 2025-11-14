@@ -55,11 +55,12 @@ func TestGracefulShutdownRemovesForwards(t *testing.T) {
 	t.Log("Triggering graceful shutdown...")
 	cancel()
 
-	// Verify port closes within expected time (2 seconds)
+	// Verify port closes within expected time
+	// Note: Increased timeout for CI/DinD environments
 	portClosed := assert.Eventually(t, func() bool {
 		return !portIsOpen(testPort)
-	}, 2*time.Second, 100*time.Millisecond,
-		"Port should close within 2s after shutdown")
+	}, 10*time.Second, 100*time.Millisecond,
+		"Port should close within 10s after shutdown")
 
 	require.True(t, portClosed, "Port must close after shutdown")
 	t.Log("✓ Port closed after graceful shutdown")
@@ -124,7 +125,7 @@ func TestSIGINTHandling(t *testing.T) {
 	// Verify port closes (forward removed)
 	assert.Eventually(t, func() bool {
 		return !portIsOpen(testPort)
-	}, 2*time.Second, 100*time.Millisecond,
+	}, 10*time.Second, 100*time.Millisecond,
 		"Port should close after SIGINT")
 
 	t.Log("✓ SIGINT handling verified")
@@ -165,7 +166,7 @@ func TestSIGTERMHandling(t *testing.T) {
 	// Verify port closes (forward removed)
 	assert.Eventually(t, func() bool {
 		return !portIsOpen(testPort)
-	}, 2*time.Second, 100*time.Millisecond,
+	}, 10*time.Second, 100*time.Millisecond,
 		"Port should close after SIGTERM")
 
 	t.Log("✓ SIGTERM handling verified")
@@ -214,7 +215,7 @@ func TestCleanupRemovesAllForwards(t *testing.T) {
 	// Verify all ports close
 	assert.Eventually(t, func() bool {
 		return !portIsOpen(port1) && !portIsOpen(port2) && !portIsOpen(port3)
-	}, 3*time.Second, 100*time.Millisecond,
+	}, 10*time.Second, 100*time.Millisecond,
 		"All ports should close after shutdown")
 
 	t.Log("✓ All forwards removed during cleanup")

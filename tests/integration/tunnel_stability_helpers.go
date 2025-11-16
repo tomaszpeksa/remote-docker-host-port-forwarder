@@ -253,11 +253,11 @@ func verifyNoReconnectionWarnings(t *testing.T, logOutput string) []string {
 
 	// Patterns that indicate reconnections
 	patterns := map[string]string{
-		"Permanently added":                      "New SSH connection (not using ControlMaster)",
-		"event stream failed after":              "Event stream failures",
+		"Permanently added":                     "New SSH connection (not using ControlMaster)",
+		"event stream failed after":             "Event stream failures",
 		"SSH ControlMaster is dead, recreating": "ControlMaster recreation",
-		"consecutive_failures=[3-9]":             "Multiple consecutive failures (3+)",
-		"consecutive_failures=[1-9][0-9]":        "High failure count (10+)",
+		"consecutive_failures=[3-9]":            "Multiple consecutive failures (3+)",
+		"consecutive_failures=[1-9][0-9]":       "High failure count (10+)",
 	}
 
 	for pattern, description := range patterns {

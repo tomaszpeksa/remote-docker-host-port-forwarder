@@ -149,7 +149,7 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 
 		// DIAGNOSTIC: Track stream startup timing
 		streamStartTime := time.Now()
-		
+
 		if err := cmd.Start(); err != nil {
 			errors <- fmt.Errorf("failed to start docker events: %w", err)
 			return
@@ -195,12 +195,12 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		firstEventTime := time.Time{}
 		lastEventTime := time.Time{}
 		eventCount := 0
-		
+
 		// Read and parse JSON lines from stdout
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			
+
 			if !firstEventReceived {
 				firstEventReceived = true
 				firstEventTime = time.Now()

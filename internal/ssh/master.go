@@ -121,9 +121,9 @@ func (m *Master) Open(ctx context.Context) error {
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPersist=10m",
 		"-o", fmt.Sprintf("ControlPath=%s", m.controlPath),
-		"-o", "ServerAliveInterval=15",  // Every 15s (was 10s)
-		"-o", "ServerAliveCountMax=2",   // Fail after 30s (was 40s with CountMax=3)
-		"-o", "TCPKeepAlive=yes",        // Enable TCP-level keepalive
+		"-o", "ServerAliveInterval=15", // Every 15s (was 10s)
+		"-o", "ServerAliveCountMax=2", // Fail after 30s (was 40s with CountMax=3)
+		"-o", "TCPKeepAlive=yes", // Enable TCP-level keepalive
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -272,7 +272,7 @@ func (m *Master) Check() error {
 	// DIAGNOSTIC: Check socket file status before SSH check
 	socketInfo, err := os.Stat(m.controlPath)
 	socketExists := err == nil
-	
+
 	m.logger.Debug("DIAGNOSTIC: SSH ControlMaster health check starting",
 		"host", sshHost,
 		"controlPath", m.controlPath,

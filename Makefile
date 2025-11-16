@@ -91,9 +91,9 @@ lint: ## Run linters
 	@printf "  - go vet\n"
 	@go vet ./...
 	@printf "  - gofmt\n"
-	@if [ -n "$$(gofmt -s -l .)" ]; then \
+	@if [ -n "$$(find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*' -exec gofmt -s -l {} \;)" ]; then \
 		printf "$(RED)✗ Code is not formatted. Run 'make fmt'$(NC)\n"; \
-		gofmt -s -d .; \
+		find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*' -exec gofmt -s -d {} \;; \
 		exit 1; \
 	fi
 	@printf "  - golangci-lint (if available)\n"
@@ -107,7 +107,7 @@ lint: ## Run linters
 
 fmt: ## Format code with gofmt
 	@printf "$(GREEN)Formatting code...$(NC)\n"
-	@gofmt -s -w .
+	@gofmt -s -w $$(find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*')
 	@printf "$(GREEN)✓ Code formatted$(NC)\n"
 
 vet: ## Run go vet

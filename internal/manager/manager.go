@@ -200,18 +200,18 @@ func (m *Manager) Run(ctx context.Context) error {
 		// This prevents creating non-multiplexed SSH sessions that die immediately
 		m.logger.Info("Ensuring SSH ControlMaster is alive before starting event stream",
 			"attempt", consecutiveFailures+1)
-		
+
 		if err := m.sshMaster.EnsureAlive(ctx); err != nil {
 			m.logger.Error("Failed to ensure SSH ControlMaster is alive",
 				"error", err.Error(),
 				"consecutive_failures", consecutiveFailures)
 			consecutiveFailures++
-			
+
 			// Check if we've exceeded max failures
 			if consecutiveFailures >= maxConsecutiveFailures {
 				return fmt.Errorf("SSH ControlMaster failed after %d consecutive failures", maxConsecutiveFailures)
 			}
-			
+
 			// Calculate backoff delay
 			backoffFactor := consecutiveFailures - 1
 			if backoffFactor < 0 {
@@ -225,12 +225,12 @@ func (m *Manager) Run(ctx context.Context) error {
 			if delay > 30*time.Second {
 				delay = 30 * time.Second
 			}
-			
+
 			m.logger.Warn("SSH ControlMaster unavailable, retrying after backoff",
 				"consecutive_failures", consecutiveFailures,
 				"backoff_delay", delay,
 				"max_failures", maxConsecutiveFailures)
-			
+
 			// Wait before retry
 			select {
 			case <-time.After(delay):
@@ -246,7 +246,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.logger.Info("DIAGNOSTIC: SSH ControlMaster verified healthy before stream start",
 				"control_path", controlPath,
 				"consecutive_failures", consecutiveFailures)
-			
+
 			// Test Docker daemon connectivity with a simple command
 			if err := m.validateDockerConnectivity(ctx, controlPath); err != nil {
 				m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed",
@@ -262,7 +262,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			"attempt_number", consecutiveFailures+1,
 			"max_attempts", maxConsecutiveFailures,
 			"timestamp", streamStartTime.Format(time.RFC3339))
-		
+
 		events, errs := m.eventReader.Stream(ctx)
 
 		if consecutiveFailures > 0 {
@@ -737,22 +737,22 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 
 	// #nosec G204 - SSH command with validated host format
 	cmd := exec.CommandContext(testCtx, "ssh", args...)
-	
+
 	testStart := time.Now()
 	output, err := cmd.Output()
 	testDuration := time.Since(testStart)
-	
+
 	if err != nil {
 		m.logger.Warn("DIAGNOSTIC: Docker connectivity test failed",
 			"duration_ms", testDuration.Milliseconds(),
 			"error", err.Error())
 		return fmt.Errorf("docker connectivity test failed: %w", err)
 	}
-	
+
 	m.logger.Info("DIAGNOSTIC: Docker connectivity test succeeded",
 		"duration_ms", testDuration.Milliseconds(),
 		"docker_version", strings.TrimSpace(string(output)))
-	
+
 	return nil
 }
 

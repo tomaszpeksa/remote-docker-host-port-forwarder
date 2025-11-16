@@ -147,22 +147,33 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 			return
 		}
 
+		// DIAGNOSTIC: Track stream startup timing
+		streamStartTime := time.Now()
+
 		if err := cmd.Start(); err != nil {
 			errors <- fmt.Errorf("failed to start docker events: %w", err)
 			return
 		}
 
+		startupDuration := time.Since(streamStartTime)
+
 		// Ensure process is killed when context is canceled
 		go func() {
 			<-ctx.Done()
 			if cmd.Process != nil {
+				// DIAGNOSTIC: Log cancellation
+				r.logger.Info("DIAGNOSTIC: Context canceled, terminating Docker events stream",
+					"host", sshHost,
+					"pid", cmd.Process.Pid)
 				// Interrupt the SSH process gracefully
 				_ = cmd.Process.Signal(syscall.SIGTERM)
 			}
 		}()
 
 		r.logger.Info("docker events stream started",
-			"host", sshHost)
+			"host", sshHost,
+			"startup_duration_ms", startupDuration.Milliseconds(),
+			"pid", cmd.Process.Pid)
 
 		// Buffer to collect stdout lines for error reporting
 		var stdoutLines []string
@@ -179,10 +190,25 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 			_, _ = io.Copy(&stderrBuf, stderr)
 		}()
 
+		// DIAGNOSTIC: Track when we start receiving events
+		firstEventReceived := false
+		firstEventTime := time.Time{}
+		lastEventTime := time.Time{}
+		eventCount := 0
+
 		// Read and parse JSON lines from stdout
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			if !firstEventReceived {
+				firstEventReceived = true
+				firstEventTime = time.Now()
+				r.logger.Info("DIAGNOSTIC: First Docker event received",
+					"time_since_start_ms", time.Since(streamStartTime).Milliseconds())
+			}
+			lastEventTime = time.Now()
+			eventCount++
 
 			// Keep last 50 lines for error reporting
 			stdoutMu.Lock()
@@ -239,10 +265,30 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 				"stderr", stderrContent)
 		}
 
+		// DIAGNOSTIC: Log stream statistics before exit
+		streamDuration := time.Since(streamStartTime)
+		r.logger.Info("DIAGNOSTIC: Docker events stream scanner finished",
+			"total_duration_ms", streamDuration.Milliseconds(),
+			"events_received", eventCount,
+			"first_event_received", firstEventReceived,
+			"time_to_first_event_ms", func() int64 {
+				if firstEventReceived {
+					return firstEventTime.Sub(streamStartTime).Milliseconds()
+				}
+				return 0
+			}(),
+			"time_since_last_event_ms", func() int64 {
+				if !lastEventTime.IsZero() {
+					return time.Since(lastEventTime).Milliseconds()
+				}
+				return 0
+			}())
+
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
 			r.logger.Warn("docker events scanner error",
-				"error", err.Error())
+				"error", err.Error(),
+				"stream_duration_ms", streamDuration.Milliseconds())
 			// Send error to channel so manager can handle it
 			select {
 			case errors <- fmt.Errorf("scanner error: %w", err):
@@ -279,7 +325,10 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 					"signal", signalInfo,
 					"stderr", stderrContent,
 					"stdoutLines", len(stdoutLines),
-					"stdout", stdoutStr)
+					"stdout", stdoutStr,
+					"stream_duration_ms", streamDuration.Milliseconds(),
+					"events_received", eventCount,
+					"pid", cmd.Process.Pid)
 
 				// Send error to channel so manager can handle it
 				select {
@@ -291,7 +340,9 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		}
 
 		r.logger.Info("docker events stream ended",
-			"host", sshHost)
+			"host", sshHost,
+			"total_duration_ms", streamDuration.Milliseconds(),
+			"events_received", eventCount)
 	}()
 
 	return events, errors

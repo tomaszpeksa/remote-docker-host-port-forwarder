@@ -1,4 +1,4 @@
-.PHONY: help build test test-unit test-integration itest-up itest itest-down lint clean install release fmt vet security coverage deps
+.PHONY: help build test test-unit test-integration itest-up itest itest-stability itest-down lint clean install release fmt vet security coverage deps
 
 # Default target
 .DEFAULT_GOAL := help
@@ -71,8 +71,17 @@ itest: ## Run integration tests (requires itest-up first)
 	@HOME=$(PWD)/.itests/home \
 		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
 		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
-		go test $(GOTEST_FLAGS) -timeout=10m ./tests/integration/...
+		go test $(GOTEST_FLAGS) -timeout=15m ./tests/integration/...
 	@printf "$(GREEN)✓ Integration tests passed$(NC)\n"
+
+itest-stability: ## Run only stability tests (requires itest-up first, ~7 min)
+	@printf "$(GREEN)Running tunnel stability tests (this will take ~7 minutes)...$(NC)\n"
+	@printf "$(YELLOW)Note: Tests run serially to prevent interference$(NC)\n"
+	@HOME=$(PWD)/.itests/home \
+		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
+		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
+		go test $(GOTEST_FLAGS) -timeout=10m -run 'TestManager_(LongRunning|TunnelStability)' ./tests/integration/
+	@printf "$(GREEN)✓ Stability tests passed$(NC)\n"
 
 itest-down: ## Stop integration test harness
 	@bash scripts/itest-down.sh
@@ -82,9 +91,9 @@ lint: ## Run linters
 	@printf "  - go vet\n"
 	@go vet ./...
 	@printf "  - gofmt\n"
-	@if [ -n "$$(gofmt -s -l .)" ]; then \
+	@if [ -n "$$(find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*' -exec gofmt -s -l {} \;)" ]; then \
 		printf "$(RED)✗ Code is not formatted. Run 'make fmt'$(NC)\n"; \
-		gofmt -s -d .; \
+		find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*' -exec gofmt -s -d {} \;; \
 		exit 1; \
 	fi
 	@printf "  - golangci-lint (if available)\n"
@@ -98,7 +107,7 @@ lint: ## Run linters
 
 fmt: ## Format code with gofmt
 	@printf "$(GREEN)Formatting code...$(NC)\n"
-	@gofmt -s -w .
+	@gofmt -s -w $$(find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*')
 	@printf "$(GREEN)✓ Code formatted$(NC)\n"
 
 vet: ## Run go vet

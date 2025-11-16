@@ -85,6 +85,11 @@ func (m *Master) SetRecoveryCallback(callback func()) {
 	m.onRecovery = callback
 }
 
+// ControlPath returns the path to the control socket for this SSH connection.
+func (m *Master) ControlPath() string {
+	return m.controlPath
+}
+
 // Open establishes the SSH ControlMaster connection.
 // It starts the SSH process in background mode and waits for the control
 // socket to appear.
@@ -116,8 +121,9 @@ func (m *Master) Open(ctx context.Context) error {
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPersist=10m",
 		"-o", fmt.Sprintf("ControlPath=%s", m.controlPath),
-		"-o", "ServerAliveInterval=10",
-		"-o", "ServerAliveCountMax=3",
+		"-o", "ServerAliveInterval=15",  // Every 15s (was 10s)
+		"-o", "ServerAliveCountMax=2",   // Fail after 30s (was 40s with CountMax=3)
+		"-o", "TCPKeepAlive=yes",        // Enable TCP-level keepalive
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -263,9 +269,26 @@ func (m *Master) Check() error {
 		return fmt.Errorf("failed to parse SSH host: %w", err)
 	}
 
-	m.logger.Debug("checking SSH ControlMaster health",
+	// DIAGNOSTIC: Check socket file status before SSH check
+	socketInfo, err := os.Stat(m.controlPath)
+	socketExists := err == nil
+	
+	m.logger.Debug("DIAGNOSTIC: SSH ControlMaster health check starting",
 		"host", sshHost,
-		"controlPath", m.controlPath)
+		"controlPath", m.controlPath,
+		"socket_exists", socketExists,
+		"socket_size", func() int64 {
+			if socketInfo != nil {
+				return socketInfo.Size()
+			}
+			return 0
+		}(),
+		"socket_mode", func() string {
+			if socketInfo != nil {
+				return socketInfo.Mode().String()
+			}
+			return "n/a"
+		}())
 
 	args := []string{"-S", m.controlPath, "-O", "check"}
 	if port != "" {
@@ -277,9 +300,10 @@ func (m *Master) Check() error {
 	cmd := exec.Command("ssh", args...)
 
 	if err := cmd.Run(); err != nil {
-		m.logger.Debug("SSH ControlMaster check failed",
+		m.logger.Debug("DIAGNOSTIC: SSH ControlMaster check failed",
 			"host", sshHost,
-			"error", err.Error())
+			"error", err.Error(),
+			"socket_exists", socketExists)
 		return fmt.Errorf("SSH ControlMaster check failed: %w", err)
 	}
 
@@ -336,6 +360,18 @@ func (m *Master) EnsureAlive(ctx context.Context) error {
 		m.logger.Warn("SSH ControlMaster is dead, recreating",
 			"host", sshHost,
 			"error", err.Error())
+
+		// Remove stale socket file before attempting Close/Open
+		// This ensures we don't have leftover socket preventing recreation
+		if _, statErr := os.Stat(m.controlPath); statErr == nil {
+			m.logger.Info("Removing stale control socket before recreation",
+				"path", m.controlPath)
+			if removeErr := os.Remove(m.controlPath); removeErr != nil {
+				m.logger.Warn("Failed to remove stale socket",
+					"path", m.controlPath,
+					"error", removeErr.Error())
+			}
+		}
 
 		// Close old connection (ignore errors)
 		_ = m.Close()
@@ -433,13 +469,17 @@ func (m *Master) StartHealthMonitor(ctx context.Context, interval time.Duration)
 				return
 
 			case <-ticker.C:
-				m.logger.Debug("performing SSH health check")
+				checkStart := time.Now()
+				m.logger.Debug("DIAGNOSTIC: Performing SSH health check",
+					"time", checkStart.Format(time.RFC3339))
 
 				if err := m.EnsureAlive(healthCtx); err != nil {
-					m.logger.Warn("SSH health check failed",
-						"error", err.Error())
+					m.logger.Warn("DIAGNOSTIC: SSH health check failed",
+						"error", err.Error(),
+						"check_duration_ms", time.Since(checkStart).Milliseconds())
 				} else {
-					m.logger.Debug("SSH health check passed")
+					m.logger.Debug("DIAGNOSTIC: SSH health check passed",
+						"check_duration_ms", time.Since(checkStart).Milliseconds())
 				}
 			}
 		}

@@ -168,9 +168,11 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 	})
 
-	// Start SSH health monitor (check every 30 seconds)
-	m.sshMaster.StartHealthMonitor(ctx, 30*time.Second)
-	m.logger.Info("SSH health monitoring started")
+	// Start SSH health monitor (check every 15 seconds for faster failure detection)
+	m.sshMaster.StartHealthMonitor(ctx, 15*time.Second)
+	m.logger.Info("SSH health monitoring started",
+		"check_interval", "15s",
+		"control_path", m.sshMaster.ControlPath())
 
 	// Start performance metrics logger (log every 5 minutes)
 	go m.logPerformanceMetrics(ctx, 5*time.Minute)
@@ -194,7 +196,73 @@ func (m *Manager) Run(ctx context.Context) error {
 			return nil
 		}
 
-		// Start event stream
+		// CRITICAL: Ensure SSH ControlMaster is alive before starting event stream
+		// This prevents creating non-multiplexed SSH sessions that die immediately
+		m.logger.Info("Ensuring SSH ControlMaster is alive before starting event stream",
+			"attempt", consecutiveFailures+1)
+		
+		if err := m.sshMaster.EnsureAlive(ctx); err != nil {
+			m.logger.Error("Failed to ensure SSH ControlMaster is alive",
+				"error", err.Error(),
+				"consecutive_failures", consecutiveFailures)
+			consecutiveFailures++
+			
+			// Check if we've exceeded max failures
+			if consecutiveFailures >= maxConsecutiveFailures {
+				return fmt.Errorf("SSH ControlMaster failed after %d consecutive failures", maxConsecutiveFailures)
+			}
+			
+			// Calculate backoff delay
+			backoffFactor := consecutiveFailures - 1
+			if backoffFactor < 0 {
+				backoffFactor = 0
+			}
+			if backoffFactor > 31 {
+				backoffFactor = 31
+			}
+			// #nosec G115 - backoffFactor is bounds-checked above
+			delay := baseDelay * time.Duration(1<<uint(backoffFactor))
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			
+			m.logger.Warn("SSH ControlMaster unavailable, retrying after backoff",
+				"consecutive_failures", consecutiveFailures,
+				"backoff_delay", delay,
+				"max_failures", maxConsecutiveFailures)
+			
+			// Wait before retry
+			select {
+			case <-time.After(delay):
+				continue // Retry from top of loop
+			case <-ctx.Done():
+				return nil
+			}
+		}
+
+		// DIAGNOSTIC: Pre-flight checks before starting stream
+		controlPath, err := ssh.DeriveControlPath(m.cfg.Host)
+		if err == nil {
+			m.logger.Info("DIAGNOSTIC: SSH ControlMaster verified healthy before stream start",
+				"control_path", controlPath,
+				"consecutive_failures", consecutiveFailures)
+			
+			// Test Docker daemon connectivity with a simple command
+			if err := m.validateDockerConnectivity(ctx, controlPath); err != nil {
+				m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed",
+					"error", err.Error())
+			} else {
+				m.logger.Info("DIAGNOSTIC: Docker daemon connectivity validated")
+			}
+		}
+
+		// Start event stream with healthy ControlMaster
+		streamStartTime := time.Now()
+		m.logger.Info("DIAGNOSTIC: Starting Docker events stream",
+			"attempt_number", consecutiveFailures+1,
+			"max_attempts", maxConsecutiveFailures,
+			"timestamp", streamStartTime.Format(time.RFC3339))
+		
 		events, errs := m.eventReader.Stream(ctx)
 
 		if consecutiveFailures > 0 {
@@ -207,6 +275,14 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		// Run event loop until stream closes or errors
 		streamClosed := m.runEventLoop(ctx, events, errs)
+		streamDuration := time.Since(streamStartTime)
+
+		// DIAGNOSTIC: Log stream end with timing
+		m.logger.Info("DIAGNOSTIC: Docker events stream ended",
+			"duration", streamDuration.String(),
+			"duration_ms", streamDuration.Milliseconds(),
+			"clean_close", streamClosed,
+			"consecutive_failures", consecutiveFailures)
 
 		// If stream closed cleanly due to context cancellation, cleanup and exit
 		if ctx.Err() != nil {
@@ -239,10 +315,13 @@ func (m *Manager) Run(ctx context.Context) error {
 				delay = 30 * time.Second
 			}
 
+			// DIAGNOSTIC: Log detailed failure context
 			m.logger.Warn("event stream error, restarting after backoff",
 				"consecutive_failures", consecutiveFailures,
 				"backoff_delay", delay,
-				"max_failures", maxConsecutiveFailures)
+				"max_failures", maxConsecutiveFailures,
+				"stream_duration_ms", streamDuration.Milliseconds(),
+				"timestamp", time.Now().Format(time.RFC3339))
 
 			// Wait before retry
 			select {
@@ -634,6 +713,47 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 	}
 
 	return strings.TrimSpace(string(output)) == "true"
+}
+
+// validateDockerConnectivity performs a quick test of Docker daemon connectivity
+func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath string) error {
+	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
+	}
+
+	// Simple docker version command to test connectivity
+	dockerCmd := "docker version --format '{{.Server.Version}}'"
+	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+	args := []string{"-S", controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost, remoteCmd)
+
+	// Create a short timeout context for this test
+	testCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// #nosec G204 - SSH command with validated host format
+	cmd := exec.CommandContext(testCtx, "ssh", args...)
+	
+	testStart := time.Now()
+	output, err := cmd.Output()
+	testDuration := time.Since(testStart)
+	
+	if err != nil {
+		m.logger.Warn("DIAGNOSTIC: Docker connectivity test failed",
+			"duration_ms", testDuration.Milliseconds(),
+			"error", err.Error())
+		return fmt.Errorf("docker connectivity test failed: %w", err)
+	}
+	
+	m.logger.Info("DIAGNOSTIC: Docker connectivity test succeeded",
+		"duration_ms", testDuration.Milliseconds(),
+		"docker_version", strings.TrimSpace(string(output)))
+	
+	return nil
 }
 
 // cleanupAllForwards removes all active port forwards on shutdown.

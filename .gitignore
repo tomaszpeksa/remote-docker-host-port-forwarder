@@ -34,6 +34,9 @@ dist/
 coverage.out
 coverage.html
 
+# Security scan reports
+gosec-report*.json
+
 # Integration test artifacts
 .itests/
 logs/

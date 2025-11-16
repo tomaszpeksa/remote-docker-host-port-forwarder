@@ -44,14 +44,12 @@ func TestManager_LongRunningTunnelStability(t *testing.T) {
 	t.Log("Step 2: Starting 3 nginx containers on different ports...")
 
 	ports := []int{19081, 19082, 19083}
-	containers := make([]string, 0, len(ports))
 	cleanups := make([]func(), 0, len(ports))
 
 	for _, port := range ports {
 		containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
 			port: 80,
 		})
-		containers = append(containers, containerID)
 		cleanups = append(cleanups, cleanup)
 
 		t.Logf("  Container %s started on port %d", containerID[:12], port)

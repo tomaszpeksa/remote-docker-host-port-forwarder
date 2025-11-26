@@ -16,6 +16,100 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
 
+// dockerPingRunner executes local docker run commands for health pings
+type dockerPingRunner interface {
+	Ping(ctx context.Context) error
+}
+
+// localDockerPingRunner runs docker commands locally (using DOCKER_HOST config)
+type localDockerPingRunner struct {
+	logger *slog.Logger
+}
+
+func newLocalDockerPingRunner(logger *slog.Logger) dockerPingRunner {
+	return &localDockerPingRunner{logger: logger}
+}
+
+func (r *localDockerPingRunner) Ping(ctx context.Context) error {
+	name := fmt.Sprintf("rdhpf-ping-%d", time.Now().UnixNano())
+	args := []string{
+		"run", "--rm",
+		"--name", name,
+		"--label", "rdhpf.health-check=true",
+		"alpine:latest",
+		"echo", "works",
+	}
+
+	// #nosec G204 - docker command with controlled args
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.logger.Warn("event health ping docker run failed",
+			"error", err.Error(),
+			"output", string(out))
+		return fmt.Errorf("event health ping docker run failed: %w", err)
+	}
+
+	r.logger.Debug("event health ping docker run succeeded",
+		"output", strings.TrimSpace(string(out)))
+	return nil
+}
+
+// eventWatchdog monitors Docker event stream health via periodic pings
+type eventWatchdog struct {
+	now           func() time.Time
+	dockerPing    dockerPingRunner
+	idleThreshold time.Duration // 30s - when to start pinging
+	fatalAfter    time.Duration // 60s - when to consider stream dead
+
+	mu        sync.RWMutex
+	lastEvent time.Time
+}
+
+func newEventWatchdog(now func() time.Time, ping dockerPingRunner) *eventWatchdog {
+	t := now()
+	return &eventWatchdog{
+		now:           now,
+		dockerPing:    ping,
+		idleThreshold: 30 * time.Second,
+		fatalAfter:    60 * time.Second,
+		lastEvent:     t,
+	}
+}
+
+// OnEvent should be called whenever any Docker event is processed
+func (w *eventWatchdog) OnEvent() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lastEvent = w.now()
+}
+
+// Tick should be called periodically (~10s) to check event stream health
+// Returns a fatal error if no events have been seen for >= fatalAfter duration
+func (w *eventWatchdog) Tick(ctx context.Context) error {
+	w.mu.RLock()
+	last := w.lastEvent
+	w.mu.RUnlock()
+
+	now := w.now()
+	dt := now.Sub(last)
+
+	switch {
+	case dt < w.idleThreshold:
+		// Recent events; stream is healthy
+		return nil
+
+	case dt < w.fatalAfter:
+		// Idle window: try to generate an event via ping
+		_ = w.dockerPing.Ping(ctx) // Errors are logged inside Ping; don't make them fatal
+		return nil
+
+	default:
+		// Too long without any event (including pings)
+		return fmt.Errorf("event stream unhealthy: no events for %s", dt.Round(time.Second))
+	}
+}
+
 // Manager orchestrates Docker event handling and port forward reconciliation.
 type Manager struct {
 	cfg         *config.Config
@@ -24,6 +118,11 @@ type Manager struct {
 	sshMaster   *ssh.Master
 	state       *state.State
 	logger      *slog.Logger
+
+	// Event stream health monitoring
+	watchdog   *eventWatchdog
+	now        func() time.Time
+	dockerPing dockerPingRunner
 
 	// Performance metrics
 	metrics performanceMetrics
@@ -125,6 +224,9 @@ func NewManager(
 	state *state.State,
 	logger *slog.Logger,
 ) *Manager {
+	now := time.Now
+	dockerPing := newLocalDockerPingRunner(logger)
+	
 	return &Manager{
 		cfg:         cfg,
 		eventReader: eventReader,
@@ -132,6 +234,9 @@ func NewManager(
 		sshMaster:   sshMaster,
 		state:       state,
 		logger:      logger,
+		now:         now,
+		dockerPing:  dockerPing,
+		watchdog:    newEventWatchdog(now, dockerPing),
 		metrics: performanceMetrics{
 			startTime: time.Now(),
 		},
@@ -177,6 +282,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	// Start performance metrics logger (log every 5 minutes)
 	go m.logPerformanceMetrics(ctx, 5*time.Minute)
 
+	// Start event stream watchdog (checks every 10s, pings after 30s idle, fatal after 60s)
+	fatalCh := make(chan error, 1)
+	go m.startEventWatchdogLoop(ctx, fatalCh)
+	m.logger.Info("event stream watchdog started",
+		"tick_interval", "10s",
+		"idle_threshold", "30s",
+		"fatal_after", "60s")
+
 	// Perform startup reconciliation
 	if err := m.reconcileStartup(ctx); err != nil {
 		return fmt.Errorf("startup reconciliation failed: %w", err)
@@ -189,6 +302,19 @@ func (m *Manager) Run(ctx context.Context) error {
 	baseDelay := 1 * time.Second
 
 	for {
+		// Check for watchdog fatal error
+		select {
+		case err := <-fatalCh:
+			if err != nil {
+				m.logger.Error("event stream watchdog detected failure, shutting down",
+					"error", err.Error())
+				m.cleanupAllForwards(context.Background())
+				return err
+			}
+		default:
+			// Continue with normal loop
+		}
+
 		// Check if context is canceled before starting/restarting
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
@@ -347,6 +473,31 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
+// startEventWatchdogLoop runs the event stream health watchdog
+func (m *Manager) startEventWatchdogLoop(ctx context.Context, fatalCh chan<- error) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			if err := m.watchdog.Tick(ctx); err != nil {
+				m.logger.Error("event stream watchdog tick failed",
+					"error", err.Error())
+				select {
+				case fatalCh <- err:
+				default:
+					// Channel already has a fatal error; drop this one
+				}
+				return
+			}
+		}
+	}
+}
+
 // runEventLoop processes events until the stream closes or errors.
 // Implements debouncing: instead of reconciling on every event, it batches
 // events together and reconciles 200ms after the last event received.
@@ -409,6 +560,8 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 				} else {
 					eventCount++
 					resetDebounceTimer()
+					// Notify watchdog that we received an event
+					m.watchdog.OnEvent()
 				}
 
 			case "die", "stop":
@@ -419,6 +572,8 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 				} else {
 					eventCount++
 					resetDebounceTimer()
+					// Notify watchdog that we received an event
+					m.watchdog.OnEvent()
 				}
 
 			default:

@@ -48,7 +48,7 @@ func TestEventWatchdog_PingRunsAndDoesNotKillManagerWhenHealthy(t *testing.T) {
 	t.Logf("Running for %v to allow watchdog to trigger...", testDuration)
 
 	startTime := time.Now()
-	
+
 	// Wait for test duration
 	select {
 	case <-time.After(testDuration):
@@ -78,17 +78,17 @@ func TestEventWatchdog_PingRunsAndDoesNotKillManagerWhenHealthy(t *testing.T) {
 
 	// Assertions
 	require.True(t, hasWatchdogStart, "Logs should contain watchdog startup message")
-	
+
 	// Ping should have been executed at least once after 30s idle
-	require.True(t, hasPingLog, 
+	require.True(t, hasPingLog,
 		"Logs should contain evidence of ping execution after 30s+ idle time")
-	
+
 	// Manager should NOT have exited with watchdog error
 	require.False(t, hasFatalError,
 		"Manager should not have fatal watchdog error if pings are working")
 
 	t.Log("\n✅ Watchdog test passed - pings executed without killing manager")
-	
+
 	_ = mgr
 }
 
@@ -116,7 +116,7 @@ func TestEventWatchdog_ExecutesPingLocally(t *testing.T) {
 	waitForManagerReady(t, 2*time.Second)
 
 	t.Log("Waiting for idle period to trigger ping...")
-	
+
 	// Wait long enough to trigger at least one ping cycle
 	// Idle threshold is 30s, so we need to wait at least that long
 	select {
@@ -131,13 +131,13 @@ func TestEventWatchdog_ExecutesPingLocally(t *testing.T) {
 
 	// Verify ping was attempted
 	hasPingAttempt := strings.Contains(logOutput, "event health ping docker run")
-	
+
 	t.Logf("Ping attempt log found: %v", hasPingAttempt)
 
 	require.True(t, hasPingAttempt,
 		"Should see at least one ping attempt in logs")
 
 	t.Log("✅ Ping execution confirmed")
-	
+
 	_ = mgr
 }

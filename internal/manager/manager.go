@@ -226,7 +226,7 @@ func NewManager(
 ) *Manager {
 	now := time.Now
 	dockerPing := newLocalDockerPingRunner(logger)
-	
+
 	return &Manager{
 		cfg:         cfg,
 		eventReader: eventReader,

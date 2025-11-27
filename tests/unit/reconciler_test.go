@@ -15,7 +15,7 @@ import (
 func TestReconciler_Diff_Idempotent(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup: Container wants port 8080, none exist yet
 	st.SetDesired("container1", []int{8080})
@@ -48,7 +48,7 @@ func TestReconciler_Diff_Idempotent(t *testing.T) {
 func TestReconciler_Diff_NoOpWhenEqual(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup: Container wants port 8080 and it's already active
 	st.SetDesired("container1", []int{8080})
@@ -66,7 +66,7 @@ func TestReconciler_Diff_NoOpWhenEqual(t *testing.T) {
 func TestReconciler_Diff_NoOpMultipleContainers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup: Two containers, each with their ports already active
 	st.SetDesired("container1", []int{8080, 8081})
@@ -89,7 +89,7 @@ func TestReconciler_Diff_NoOpMultipleContainers(t *testing.T) {
 func TestReconciler_Apply_IdempotentDecisions(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup: Container wants port 8080
 	st.SetDesired("container1", []int{8080})
@@ -117,7 +117,7 @@ func TestReconciler_Apply_IdempotentDecisions(t *testing.T) {
 func TestReconciler_Diff_SkipsAlreadyCompleted(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Container wants ports 8080 and 808, but 8080 is already active
 	st.SetDesired("container1", []int{8080, 8081})
@@ -136,7 +136,7 @@ func TestReconciler_Diff_SkipsAlreadyCompleted(t *testing.T) {
 func TestReconciler_Diff_SkipsRemovalIfAlreadyGone(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Container initially had port 8080, but now wants nothing
 	// However, actual state shows no active forwards (already cleaned)
@@ -154,7 +154,7 @@ func TestReconciler_Diff_SkipsRemovalIfAlreadyGone(t *testing.T) {
 func TestReconciler_Diff_OnlyCountsActiveForwards(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Container wants port 8080
 	st.SetDesired("container1", []int{8080})
@@ -183,7 +183,7 @@ func TestReconciler_Diff_OnlyCountsActiveForwards(t *testing.T) {
 func TestReconciler_Diff_BatchAddMultipleContainers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Add 2 containers with multiple ports each
 	st.SetDesired("container1", []int{8080, 8081, 8082})
@@ -225,7 +225,7 @@ func TestReconciler_Diff_BatchAddMultipleContainers(t *testing.T) {
 func TestReconciler_Diff_RemoveOneKeepAnother(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup: Two containers with active forwards
 	st.SetDesired("container1", []int{8080, 8081})
@@ -257,7 +257,7 @@ func TestReconciler_Diff_RemoveOneKeepAnother(t *testing.T) {
 func TestReconciler_Diff_OperationsGroupedByContainer(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Container1: add 2 ports
 	st.SetDesired("container1", []int{8080, 8081})
@@ -299,7 +299,7 @@ func TestReconciler_Diff_OperationsGroupedByContainer(t *testing.T) {
 func TestReconciler_Diff_MixedOperationsMultipleContainers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Container1: has 8080, wants 8080 and 8081 (add 8081)
 	st.SetDesired("container1", []int{8080, 8081})

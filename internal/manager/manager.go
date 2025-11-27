@@ -12,8 +12,10 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/socket"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/statefile"
 )
 
 // dockerPingRunner executes local docker run commands for health pings
@@ -126,6 +128,12 @@ type Manager struct {
 
 	// Performance metrics
 	metrics performanceMetrics
+
+	// State persistence and IPC
+	history      *state.History
+	stateWriter  *statefile.Writer
+	socketServer *socket.Server
+	startedAt    time.Time
 }
 
 // performanceMetrics tracks performance data
@@ -208,11 +216,12 @@ func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHT
 //   - reconciler: Reconciler for computing and applying actions
 //   - sshMaster: SSH ControlMaster connection
 //   - state: Shared state manager
+//   - history: History manager for tracking removed forwards
 //   - logger: Structured logger for operation logging
 //
 // Example usage:
 //
-//	manager := NewManager(cfg, eventReader, reconciler, sshMaster, state, logger)
+//	manager := NewManager(cfg, eventReader, reconciler, sshMaster, state, history, logger)
 //	if err := manager.Run(ctx); err != nil {
 //	    log.Fatal(err)
 //	}
@@ -222,10 +231,12 @@ func NewManager(
 	reconciler *reconcile.Reconciler,
 	sshMaster *ssh.Master,
 	state *state.State,
+	history *state.History,
 	logger *slog.Logger,
 ) *Manager {
 	now := time.Now
 	dockerPing := newLocalDockerPingRunner(logger)
+	startedAt := time.Now()
 
 	return &Manager{
 		cfg:         cfg,
@@ -238,8 +249,10 @@ func NewManager(
 		dockerPing:  dockerPing,
 		watchdog:    newEventWatchdog(now, dockerPing),
 		metrics: performanceMetrics{
-			startTime: time.Now(),
+			startTime: startedAt,
 		},
+		history:   history,
+		startedAt: startedAt,
 	}
 }
 
@@ -263,6 +276,27 @@ func NewManager(
 //	}
 func (m *Manager) Run(ctx context.Context) error {
 	m.logger.Info("manager starting")
+
+	// Initialize state writer
+	var err error
+	m.stateWriter, err = statefile.NewWriter(m.cfg.Host, m.startedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create state writer: %w", err)
+	}
+	defer m.stateWriter.Close()
+
+	// Initialize socket server
+	m.socketServer, err = socket.NewServer(m.cfg.Host, m.state, m.history, m.startedAt, m.logger)
+	if err != nil {
+		m.logger.Warn("failed to create socket server, status will use file only", "error", err)
+	} else {
+		go m.socketServer.Start(ctx)
+		defer m.socketServer.Close()
+		m.logger.Info("socket server started")
+	}
+
+	// Start background state writer
+	go m.startStateWriter(ctx)
 
 	// Set up SSH master recovery callback to trigger reconciliation
 	m.sshMaster.SetRecoveryCallback(func() {
@@ -911,10 +945,48 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	return nil
 }
 
+// startStateWriter runs background state file updates
+func (m *Manager) startStateWriter(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Write final state before exit
+			forwards := m.state.GetActual()
+			history := m.history.GetAll()
+			if err := m.stateWriter.Write(forwards, history); err != nil {
+				m.logger.Warn("failed to write final state", "error", err)
+			}
+			return
+
+		case <-ticker.C:
+			forwards := m.state.GetActual()
+			history := m.history.GetAll()
+			if err := m.stateWriter.Write(forwards, history); err != nil {
+				m.logger.Warn("failed to write state", "error", err)
+			}
+		}
+	}
+}
+
 // cleanupAllForwards removes all active port forwards on shutdown.
 // Uses a background context to ensure cleanup completes even if original context is canceled.
 func (m *Manager) cleanupAllForwards(ctx context.Context) {
 	m.logger.Info("cleaning up all port forwards on shutdown")
+
+	// Add all current forwards to history before removing them
+	for _, forward := range m.state.GetActual() {
+		m.history.Add(state.HistoryEntry{
+			ContainerID: forward.ContainerID,
+			Port:        forward.Port,
+			StartedAt:   forward.CreatedAt,
+			EndedAt:     time.Now(),
+			EndReason:   "rdhpf shutdown",
+			FinalStatus: forward.Status,
+		})
+	}
 
 	// Get all containers with active forwards
 	containers := m.state.GetAllContainers()

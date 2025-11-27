@@ -5,11 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
-	"regexp"
-	"strconv"
-	"strings"
+	"sort"
 	"syscall"
 	"time"
 
@@ -19,8 +16,10 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/socket"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/statefile"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/status"
 )
 
@@ -197,11 +196,12 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// 3. Create Docker event reader
 	eventReader := docker.NewEventReader(cfg.Host, controlPath, logger)
 
-	// 4. Create shared state
+	// 4. Create shared state and history
 	stateManager := state.NewState()
+	history := state.NewHistory()
 
 	// 5. Create reconciler
-	reconciler := reconcile.NewReconciler(stateManager, logger)
+	reconciler := reconcile.NewReconciler(stateManager, history, logger)
 
 	// 6. Create manager
 	mgr := manager.NewManager(
@@ -210,6 +210,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		reconciler,
 		sshMaster,
 		stateManager,
+		history,
 		logger,
 	)
 
@@ -254,6 +255,29 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get active forwards: %w", err)
 	}
 
+	// Sort by most recent activity (current forwards first, then by most recent end time for history)
+	sort.Slice(forwards, func(i, j int) bool {
+		// Current forwards always come before history
+		if !forwards[i].IsHistory && forwards[j].IsHistory {
+			return true
+		}
+		if forwards[i].IsHistory && !forwards[j].IsHistory {
+			return false
+		}
+		
+		// Within same type, sort by most recent activity
+		// For current forwards, use duration (shorter = more recent)
+		// For history, use EndedAt (more recent = later)
+		if forwards[i].IsHistory {
+			if forwards[i].EndedAt != nil && forwards[j].EndedAt != nil {
+				return forwards[i].EndedAt.After(*forwards[j].EndedAt)
+			}
+			return false
+		}
+		// For current forwards, shorter duration = more recent
+		return forwards[i].Duration < forwards[j].Duration
+	})
+
 	// Format and display output
 	var output string
 	switch flagFormat {
@@ -269,119 +293,81 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// getActiveForwards queries the SSH ControlMaster to get currently active port forwards
+// getActiveForwards queries status via socket or state file
 func getActiveForwards(ctx context.Context, host string) ([]status.Forward, error) {
-	// Derive control path
-	controlPath, err := ssh.DeriveControlPath(host)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive control path: %w", err)
+	// Try socket first (real-time)
+	client, err := socket.NewClient(host)
+	if err == nil {
+		snapshot, err := client.GetStatus()
+		if err == nil {
+			return convertSnapshotToForwards(snapshot), nil
+		}
+		// Socket failed, fall back to file
 	}
 
-	// Remove ssh:// prefix for SSH command
-	sshHost := strings.TrimPrefix(host, "ssh://")
+	// Fallback to state file
+	reader, err := statefile.NewReader(host)
+	if err != nil {
+		return nil, fmt.Errorf("no running rdhpf instance found: %w", err)
+	}
 
-	// Check SSH connection and get forwarded ports
-	// Use ssh -O check to see if ControlMaster is active
-	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
-	checkCmd := exec.CommandContext(ctx, "ssh",
-		"-S", controlPath,
-		"-O", "check",
-		sshHost)
-
-	checkOutput, checkErr := checkCmd.CombinedOutput()
-
-	// If control master is not running, return empty list
-	if checkErr != nil {
-		// ControlMaster not running means no forwards
-		if strings.Contains(string(checkOutput), "No such file") ||
-			strings.Contains(string(checkOutput), "Control socket connect") {
+	snapshot, err := reader.Read()
+	if err != nil {
+		if os.IsNotExist(err) {
 			return []status.Forward{}, nil
 		}
-		return nil, fmt.Errorf("failed to check SSH connection: %w", checkErr)
+		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
-	// Use netstat or ss to find active SSH tunnels
-	// This is a simplified approach - parse SSH control master state
-	// For now, we'll return empty list as we don't have a state file yet
-	// In a real implementation, we would parse the SSH control master state
-	// or maintain a state file
-
-	// Try to get forwarded ports from SSH process
-	forwards, err := parseSSHForwards(ctx, controlPath, sshHost)
-	if err != nil {
-		// If we can't parse, return empty list rather than error
-		// (ControlMaster is running but no forwards detected)
-		return []status.Forward{}, nil
+	// Check staleness
+	if snapshot.IsStale() {
+		age := time.Since(snapshot.UpdatedAt)
+		fmt.Fprintf(os.Stderr, "Warning: State is %v old (rdhpf may not be running)\n",
+			age.Round(time.Second))
 	}
 
-	return forwards, nil
+	return convertSnapshotToForwards(snapshot), nil
 }
 
-// parseSSHForwards attempts to parse active SSH port forwards
-// This is a best-effort implementation using SSH -O forward -L output
-func parseSSHForwards(ctx context.Context, controlPath, sshHost string) ([]status.Forward, error) {
-	// List active port forwards using netstat/lsof
-	// Look for processes listening on 127.0.0.1 spawned by our SSH connection
+// convertSnapshotToForwards converts state file snapshot to status forwards
+func convertSnapshotToForwards(snapshot *statefile.StateFile) []status.Forward {
+	// Combine current forwards and history
+	allForwards := make([]status.Forward, 0, len(snapshot.Forwards)+len(snapshot.History))
 
-	// Use lsof to find ports forwarded by SSH process using our control socket
-	lsofCmd := exec.CommandContext(ctx, "lsof",
-		"-iTCP",
-		"-sTCP:LISTEN",
-		"-n",
-		"-P",
-		"-F", "pcn")
-
-	output, err := lsofCmd.Output()
-	if err != nil {
-		// lsof might not be available or no ports open
-		return []status.Forward{}, nil
+	// Add current forwards
+	for _, f := range snapshot.Forwards {
+		allForwards = append(allForwards, status.Forward{
+			ContainerID: f.ContainerID,
+			LocalPort:   f.Port,
+			RemotePort:  f.Port,
+			State:       f.Status,
+			Duration:    time.Since(f.CreatedAt),
+			Reason:      f.Reason,
+			IsHistory:   false,
+		})
 	}
 
-	// Parse lsof output to find SSH-forwarded ports
-	forwards := parseLsofOutput(string(output), controlPath)
-
-	return forwards, nil
-}
-
-// parseLsofOutput parses lsof -F output to find SSH port forwards
-func parseLsofOutput(output, controlPath string) []status.Forward {
-	var forwards []status.Forward
-
-	lines := strings.Split(output, "\n")
-	var currentCmd string
-
-	for _, line := range lines {
-		if len(line) < 2 {
-			continue
+	// Add history entries
+	for _, h := range snapshot.History {
+		// Determine display status based on final status
+		displayStatus := "stopped"
+		if h.FinalStatus == "conflict" {
+			displayStatus = "conflict"
 		}
 
-		switch line[0] {
-		case 'c': // Command name
-			currentCmd = line[1:]
-		case 'n': // Name/address
-			// Look for 127.0.0.1:PORT or localhost:PORT
-			if currentCmd == "ssh" && strings.Contains(line, "127.0.0.1:") {
-				// Parse port from format like "127.0.0.1:8080"
-				re := regexp.MustCompile(`127\.0\.0\.1:(\d+)`)
-				matches := re.FindStringSubmatch(line)
-				if len(matches) > 1 {
-					port, err := strconv.Atoi(matches[1])
-					if err == nil {
-						// Add as unknown state since we don't track duration yet
-						forwards = append(forwards, status.Forward{
-							ContainerID: "unknown",
-							LocalPort:   port,
-							RemotePort:  port,
-							State:       "active",
-							Duration:    0,
-						})
-					}
-				}
-			}
-		}
+		allForwards = append(allForwards, status.Forward{
+			ContainerID: h.ContainerID,
+			LocalPort:   h.Port,
+			RemotePort:  h.Port,
+			State:       displayStatus,
+			Duration:    h.EndedAt.Sub(h.StartedAt),
+			Reason:      h.EndReason,
+			IsHistory:   true,
+			EndedAt:     &h.EndedAt,
+		})
 	}
 
-	return forwards
+	return allForwards
 }
 
 // cleanup removes all active forwards before shutdown.

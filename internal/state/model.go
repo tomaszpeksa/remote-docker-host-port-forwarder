@@ -2,6 +2,7 @@ package state
 
 import (
 	"sync"
+	"time"
 )
 
 // ContainerPorts represents the desired port forwards for a container
@@ -14,8 +15,10 @@ type ContainerPorts struct {
 type ForwardState struct {
 	ContainerID string
 	Port        int
-	Status      string // "active", "conflict", "pending"
-	Reason      string // explanation for conflict/pending status
+	Status      string    // "active", "conflict", "pending"
+	Reason      string    // explanation for conflict/pending status
+	CreatedAt   time.Time // when forward was first attempted
+	UpdatedAt   time.Time // last status change
 }
 
 // State manages the desired and actual state of port forwards
@@ -99,11 +102,21 @@ func (s *State) SetActual(containerID string, port int, status string, reason st
 		s.actual[containerID] = make(map[int]ForwardState)
 	}
 
+	// Get existing state to preserve CreatedAt, or use current time for new forwards
+	existing := s.actual[containerID][port]
+	now := time.Now()
+	createdAt := now
+	if !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
+
 	s.actual[containerID][port] = ForwardState{
 		ContainerID: containerID,
 		Port:        port,
 		Status:      status,
 		Reason:      reason,
+		CreatedAt:   createdAt,
+		UpdatedAt:   now,
 	}
 }
 

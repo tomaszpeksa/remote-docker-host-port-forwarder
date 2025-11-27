@@ -135,7 +135,7 @@ func setupManagerWithLogger(
 	st := state.NewState()
 
 	// Create reconciler
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Create event reader
 	eventReader := docker.NewEventReader(sshHost, controlPath, logger)

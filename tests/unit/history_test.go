@@ -78,8 +78,8 @@ func TestHistoryAdd_SizeTrimming(t *testing.T) {
 	}
 
 	entries := h.GetAll()
-	assert.Equal(t, 100, len(entries), "Should only keep most recent 100 entries")
-	assert.Equal(t, 100, h.Count(), "Count should return 100")
+	assert.Equal(t, 60, len(entries), "Should only keep most recent 60 entries")
+	assert.Equal(t, 60, h.Count(), "Count should return 60")
 }
 
 func TestHistoryAdd_CombinedTrimming(t *testing.T) {

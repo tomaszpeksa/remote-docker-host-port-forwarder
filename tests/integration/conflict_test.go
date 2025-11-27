@@ -22,7 +22,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 
 	logger := logging.NewLogger("debug")
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup SSH ControlMaster
 	master, err := ssh.NewMaster(sshHost, logger)
@@ -106,7 +106,7 @@ func TestConflict_PortReleased(t *testing.T) {
 
 	logger := logging.NewLogger("debug")
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	// Setup SSH ControlMaster
 	master, err := ssh.NewMaster(sshHost, logger)
@@ -183,7 +183,7 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 
 	logger := logging.NewLogger("debug")
 	st := state.NewState()
-	reconciler := reconcile.NewReconciler(st, logger)
+	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
 	master, err := ssh.NewMaster(sshHost, logger)
 	require.NoError(t, err)

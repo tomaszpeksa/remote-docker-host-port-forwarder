@@ -134,8 +134,11 @@ func setupManagerWithLogger(
 	// Create state
 	st := state.NewState()
 
+	// Create history
+	history := state.NewHistory()
+
 	// Create reconciler
-	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
+	reconciler := reconcile.NewReconciler(st, history, logger)
 
 	// Create event reader
 	eventReader := docker.NewEventReader(sshHost, controlPath, logger)
@@ -146,7 +149,7 @@ func setupManagerWithLogger(
 	}
 
 	// Create manager
-	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, logger)
+	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, history, logger)
 
 	// Start manager in background
 	go func() {

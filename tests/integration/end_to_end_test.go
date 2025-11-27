@@ -106,8 +106,11 @@ func setupManager(t *testing.T, ctx context.Context, sshHost string) *manager.Ma
 	// Create state
 	st := state.NewState()
 
+	// Create history
+	history := state.NewHistory()
+
 	// Create reconciler
-	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
+	reconciler := reconcile.NewReconciler(st, history, logger)
 
 	// Create event reader
 	eventReader := docker.NewEventReader(sshHost, controlPath, logger)
@@ -118,7 +121,7 @@ func setupManager(t *testing.T, ctx context.Context, sshHost string) *manager.Ma
 	}
 
 	// Create manager
-	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, logger)
+	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, history, logger)
 
 	// Start manager in background goroutine
 	go func() {

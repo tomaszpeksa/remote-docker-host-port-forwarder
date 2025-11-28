@@ -16,7 +16,6 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -36,9 +35,6 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
-    format_overrides:
-      - goos: windows
-        format: zip
     files:
       - LICENSE
       - README.md
@@ -81,9 +77,6 @@ release:
     # Linux/macOS
     tar xzf rdhpf_*.tar.gz
     sudo mv rdhpf /usr/local/bin/
-    
-    # Windows
-    # Extract the zip file and add rdhpf.exe to your PATH
     ```
     
     ## Checksums

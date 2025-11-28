@@ -82,7 +82,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 // handleConnection handles a single client connection
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	// Get current state
 	forwards := s.state.GetActual()

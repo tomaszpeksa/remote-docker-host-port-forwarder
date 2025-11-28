@@ -198,7 +198,9 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	// Occupy port 19090 (using high port to avoid conflicts)
 	listener, err := net.Listen("tcp", "127.0.0.1:19090")
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func() {
+		_ = listener.Close()
+	}()
 
 	// Container 1: wants conflicting port 19090
 	container1 := "container1"

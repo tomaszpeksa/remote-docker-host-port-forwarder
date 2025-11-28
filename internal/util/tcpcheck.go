@@ -43,7 +43,7 @@ func ProbePort(ctx context.Context, port int) error {
 	}
 
 	// Close connection immediately - we only wanted to verify it's listening
-	conn.Close()
+	_ = conn.Close()
 
 	return nil
 }

@@ -367,7 +367,7 @@ func generateLoad(
 					} else {
 						stats.FailureCount++
 						if resp != nil {
-							resp.Body.Close()
+							_ = resp.Body.Close()
 						}
 					}
 					mu.Unlock()

@@ -98,7 +98,7 @@ func (w *Writer) writeAtomic(snapshot StateFile) error {
 	}
 
 	// Release lock and close
-	unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
+	_ = unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}

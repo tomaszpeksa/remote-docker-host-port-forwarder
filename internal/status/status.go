@@ -141,18 +141,6 @@ func FormatYAML(forwards []Forward) string {
 	return string(data)
 }
 
-// formatDuration formats a duration in a human-readable way
-func formatDuration(d time.Duration) string {
-	if d == 0 {
-		return "0s"
-	}
-
-	// Round to seconds for display
-	d = d.Round(time.Second)
-
-	return d.String()
-}
-
 // formatTimeAgo formats a duration as "X ago" for display
 func formatTimeAgo(d time.Duration, isLifetime bool) string {
 	if d < time.Minute {

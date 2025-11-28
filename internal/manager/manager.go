@@ -758,9 +758,10 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 			activeCount := 0
 			conflictCount := 0
 			for _, fs := range actualStates {
-				if fs.Status == "active" {
+				switch fs.Status {
+				case "active":
 					activeCount++
-				} else if fs.Status == "conflict" {
+				case "conflict":
 					conflictCount++
 				}
 			}

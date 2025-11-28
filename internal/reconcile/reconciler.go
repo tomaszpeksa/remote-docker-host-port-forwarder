@@ -219,9 +219,10 @@ func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host stri
 	// Separate actions by type for ordered processing
 	var removeActions, addActions []Action
 	for _, action := range actions {
-		if action.Type == "remove" {
+		switch action.Type {
+		case "remove":
 			removeActions = append(removeActions, action)
-		} else if action.Type == "add" {
+		case "add":
 			addActions = append(addActions, action)
 		}
 	}

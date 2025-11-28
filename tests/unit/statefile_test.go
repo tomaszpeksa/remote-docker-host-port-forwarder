@@ -187,7 +187,9 @@ func TestWriter_AtomicWrite(t *testing.T) {
 
 	writer, err := statefile.NewWriter(host, time.Now())
 	require.NoError(t, err)
-	defer writer.Delete()
+	defer func() {
+		_ = writer.Delete()
+	}()
 
 	// Write data
 	forwards := []state.ForwardState{

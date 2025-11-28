@@ -143,7 +143,9 @@ func TestSocket_MultipleClients(t *testing.T) {
 	// Create and start server
 	server, err := socket.NewServer(host, st, hist, time.Now(), logger)
 	require.NoError(t, err)
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

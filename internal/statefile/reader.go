@@ -37,7 +37,9 @@ func (r *Reader) Read() (*StateFile, error) {
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_SH); err != nil {
 		return nil, fmt.Errorf("failed to lock state file: %w", err)
 	}
-	defer unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	defer func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	}()
 
 	var snapshot StateFile
 	if err := json.NewDecoder(file).Decode(&snapshot); err != nil {

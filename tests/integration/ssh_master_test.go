@@ -167,7 +167,9 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 
 	err = master2.Open(ctx2)
 	require.NoError(t, err, "Second master should open successfully")
-	defer master2.Close()
+	defer func() {
+		_ = master2.Close()
+	}()
 
 	// Verify socket exists again
 	_, err = os.Stat(controlPath)

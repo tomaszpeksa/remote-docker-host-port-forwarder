@@ -114,7 +114,7 @@ func TestHistoryAdd_CombinedTrimming(t *testing.T) {
 
 	entries := h.GetAll()
 	assert.LessOrEqual(t, len(entries), 100, "Should not exceed 100 entries")
-	
+
 	// Verify no old entries remain
 	for _, e := range entries {
 		assert.Contains(t, e.ContainerID, "recent-", "Should only have recent entries")

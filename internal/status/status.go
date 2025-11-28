@@ -112,7 +112,8 @@ func FormatTable(forwards []Forward) string {
 			containerID, port, status, started, ended, reason))
 	}
 
-	return sb.String()}
+	return sb.String()
+}
 
 // FormatJSON formats forwards as JSON
 func FormatJSON(forwards []Forward) string {

@@ -264,7 +264,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if forwards[i].IsHistory && !forwards[j].IsHistory {
 			return false
 		}
-		
+
 		// Within same type, sort by most recent activity
 		// For current forwards, use duration (shorter = more recent)
 		// For history, use EndedAt (more recent = later)

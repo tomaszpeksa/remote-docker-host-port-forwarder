@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
@@ -21,8 +22,9 @@ type Action struct {
 
 // Reconciler compares desired and actual state to compute reconciliation actions
 type Reconciler struct {
-	state  *state.State
-	logger *slog.Logger
+	state   *state.State
+	history *state.History
+	logger  *slog.Logger
 }
 
 // safeLogID returns a short version of containerID for logging.
@@ -40,16 +42,18 @@ func safeLogID(id string) string {
 //
 // Parameters:
 //   - state: Shared state manager
+//   - history: History manager for tracking removed forwards
 //   - logger: Structured logger for operation logging
 //
 // Example usage:
 //
-//	reconciler := NewReconciler(state, logger)
+//	reconciler := NewReconciler(state, history, logger)
 //	toAdd, toRemove := reconciler.Diff()
-func NewReconciler(state *state.State, logger *slog.Logger) *Reconciler {
+func NewReconciler(state *state.State, history *state.History, logger *slog.Logger) *Reconciler {
 	return &Reconciler{
-		state:  state,
-		logger: logger,
+		state:   state,
+		history: history,
+		logger:  logger,
 	}
 }
 
@@ -215,9 +219,10 @@ func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host stri
 	// Separate actions by type for ordered processing
 	var removeActions, addActions []Action
 	for _, action := range actions {
-		if action.Type == "remove" {
+		switch action.Type {
+		case "remove":
 			removeActions = append(removeActions, action)
-		} else if action.Type == "add" {
+		case "add":
 			addActions = append(addActions, action)
 		}
 	}
@@ -232,9 +237,12 @@ func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host stri
 		// This makes Apply() idempotent even if called multiple times
 		actualState := r.state.GetByContainer(action.ContainerID)
 		alreadyRemoved := true
+		var forwardToRemove *state.ForwardState
 		for _, fs := range actualState {
 			if fs.Port == action.Port && fs.Status == "active" {
 				alreadyRemoved = false
+				fsCopy := fs // Make a copy for history
+				forwardToRemove = &fsCopy
 				break
 			}
 		}
@@ -259,6 +267,28 @@ func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host stri
 			if firstError == nil {
 				firstError = err
 			}
+		}
+
+		// Add to history before removing from state
+		if forwardToRemove != nil {
+			// Determine end reason based on context
+			endReason := "container stopped"
+			// Check if this is a port transfer (another container wants this port)
+			for _, addAction := range addActions {
+				if addAction.Port == action.Port && addAction.ContainerID != action.ContainerID {
+					endReason = fmt.Sprintf("port claimed by %s", safeLogID(addAction.ContainerID))
+					break
+				}
+			}
+
+			r.history.Add(state.HistoryEntry{
+				ContainerID: forwardToRemove.ContainerID,
+				Port:        forwardToRemove.Port,
+				StartedAt:   forwardToRemove.CreatedAt,
+				EndedAt:     time.Now(),
+				EndReason:   endReason,
+				FinalStatus: forwardToRemove.Status,
+			})
 		}
 
 		// Remove only this specific port from state (not all container ports)

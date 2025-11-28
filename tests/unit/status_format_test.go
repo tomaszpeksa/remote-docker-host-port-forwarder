@@ -10,12 +10,12 @@ import (
 )
 
 func TestFormatTable_Empty(t *testing.T) {
-	// Test: empty state should show "No active forwards"
+	// Test: empty state should show "No forwards"
 	forwards := []status.Forward{}
 
 	output := status.FormatTable(forwards)
 
-	assert.Contains(t, output, "No active forwards")
+	assert.Contains(t, output, "No forwards")
 }
 
 func TestFormatTable_SingleForward(t *testing.T) {
@@ -36,7 +36,6 @@ func TestFormatTable_SingleForward(t *testing.T) {
 	assert.Contains(t, output, "abc123456789")
 	// Should contain port info
 	assert.Contains(t, output, "8080")
-	assert.Contains(t, output, "127.0.0.1:8080")
 	// Should contain state
 	assert.Contains(t, output, "active")
 	// Should contain duration

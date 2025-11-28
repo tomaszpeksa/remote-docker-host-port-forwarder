@@ -290,8 +290,16 @@ func (m *Manager) Run(ctx context.Context) error {
 	if err != nil {
 		m.logger.Warn("failed to create socket server, status will use file only", "error", err)
 	} else {
-		go m.socketServer.Start(ctx)
-		defer m.socketServer.Close()
+		go func() {
+			if err := m.socketServer.Start(ctx); err != nil && ctx.Err() == nil {
+				m.logger.Warn("socket server error", "error", err)
+			}
+		}()
+		defer func() {
+			if err := m.socketServer.Close(); err != nil {
+				m.logger.Warn("failed to close socket server", "error", err)
+			}
+		}()
 		m.logger.Info("socket server started")
 	}
 

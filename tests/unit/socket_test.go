@@ -56,7 +56,9 @@ func TestSocket_ServerLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// Close server
@@ -91,12 +93,16 @@ func TestSocket_ClientQuery(t *testing.T) {
 	// Create and start server
 	server, err := socket.NewServer(host, st, hist, time.Now(), logger)
 	require.NoError(t, err)
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// Query from client
@@ -150,7 +156,9 @@ func TestSocket_MultipleClients(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// Query from multiple clients concurrently
@@ -200,12 +208,16 @@ func TestSocket_StateChangesReflected(t *testing.T) {
 	// Create and start server
 	server, err := socket.NewServer(host, st, hist, time.Now(), logger)
 	require.NoError(t, err)
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// First query
@@ -249,12 +261,16 @@ func TestSocket_EmptyState(t *testing.T) {
 	// Create and start server
 	server, err := socket.NewServer(host, st, hist, time.Now(), logger)
 	require.NoError(t, err)
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// Query
@@ -299,12 +315,16 @@ func TestSocket_HistoryReturned(t *testing.T) {
 	// Create and start server
 	server, err := socket.NewServer(host, st, hist, time.Now(), logger)
 	require.NoError(t, err)
-	defer server.Close()
+	defer func() {
+		_ = server.Close()
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go server.Start(ctx)
+	go func() {
+		_ = server.Start(ctx)
+	}()
 	time.Sleep(50 * time.Millisecond) // Let server start
 
 	// Query

@@ -73,11 +73,13 @@ func (w *Writer) writeAtomic(snapshot StateFile) error {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath) // Clean up temp file if we fail
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
 	// Acquire exclusive lock on temp file
 	if err := unix.Flock(int(tmpFile.Fd()), unix.LOCK_EX); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to lock temp file: %w", err)
 	}
 
@@ -85,15 +87,15 @@ func (w *Writer) writeAtomic(snapshot StateFile) error {
 	encoder := json.NewEncoder(tmpFile)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(snapshot); err != nil {
-		unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
-		tmpFile.Close()
+		_ = unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to encode state: %w", err)
 	}
 
 	// Sync to disk
 	if err := tmpFile.Sync(); err != nil {
-		unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
-		tmpFile.Close()
+		_ = unix.Flock(int(tmpFile.Fd()), unix.LOCK_UN)
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}
 

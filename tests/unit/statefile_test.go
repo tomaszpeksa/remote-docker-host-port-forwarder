@@ -43,7 +43,9 @@ func TestStateFile_WriteRead_Roundtrip(t *testing.T) {
 
 	writer, err := statefile.NewWriter(host, startedAt)
 	require.NoError(t, err)
-	defer writer.Delete()
+	defer func() {
+		_ = writer.Delete()
+	}()
 
 	// Create test data
 	forwards := []state.ForwardState{

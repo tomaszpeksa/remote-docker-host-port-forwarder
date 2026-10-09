@@ -93,13 +93,11 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	// Ports with only EXPOSE (no -p) have empty HostPort and are explicitly ignored.
 	ports := make([]int, 0)
 	seen := make(map[int]bool) // Deduplicate ports
-	exposedOnly := 0
 
 	for _, bindings := range portBindings {
 		for _, binding := range bindings {
 			// Skip if no host port is set (exposed-only)
 			if binding.HostPort == "" {
-				exposedOnly++
 				continue
 			}
 

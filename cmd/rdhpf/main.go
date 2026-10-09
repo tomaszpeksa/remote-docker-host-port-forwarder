@@ -397,7 +397,7 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 		"count", len(toRemove))
 
 	// Apply removal actions
-	if err := reconciler.Apply(cleanupCtx, sshMaster, host, toRemove); err != nil {
+	if err := reconciler.Apply(cleanupCtx, host, toRemove); err != nil {
 		return fmt.Errorf("failed to remove forwards: %w", err)
 	}
 

@@ -53,7 +53,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 	actions := append(toRemove, toAdd...)
 
 	// STEP 3: Apply actions - expect 6379 to fail, 8080 to succeed
-	err = reconciler.Apply(ctx, master, sshHost, actions)
+	err = reconciler.Apply(ctx, sshHost, actions)
 	// We expect an error because one port failed
 	assert.Error(t, err, "Apply should return error due to conflict on port 6379")
 	assert.Contains(t, err.Error(), "reconciliation completed with errors",
@@ -95,7 +95,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 	st.SetDesired(containerID, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, master, sshHost, actions)
+	_ = reconciler.Apply(ctx, sshHost, actions)
 }
 
 // T047: Integration test - Port released scenario
@@ -134,7 +134,7 @@ func TestConflict_PortReleased(t *testing.T) {
 	actions := append(toRemove, toAdd...)
 
 	// First attempt should fail
-	err = reconciler.Apply(ctx, master, sshHost, actions)
+	err = reconciler.Apply(ctx, sshHost, actions)
 	assert.Error(t, err, "First apply should fail due to conflict")
 
 	// Verify conflict state
@@ -159,7 +159,7 @@ func TestConflict_PortReleased(t *testing.T) {
 	require.Len(t, toAdd, 1, "Should want to retry adding port 17070")
 
 	actions = append(toRemove, toAdd...)
-	err = reconciler.Apply(ctx, master, sshHost, actions)
+	err = reconciler.Apply(ctx, sshHost, actions)
 	assert.NoError(t, err, "Second apply should succeed after port released")
 
 	// STEP 5: Verify port is now active
@@ -173,7 +173,7 @@ func TestConflict_PortReleased(t *testing.T) {
 	st.SetDesired(containerID, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, master, sshHost, actions)
+	_ = reconciler.Apply(ctx, sshHost, actions)
 }
 
 // TestConflict_MultipleContainersOneConflict verifies that a conflict in one
@@ -214,7 +214,7 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	toAdd, toRemove := reconciler.Diff()
 	actions := append(toRemove, toAdd...)
 
-	err = reconciler.Apply(ctx, master, sshHost, actions)
+	err = reconciler.Apply(ctx, sshHost, actions)
 	// Expect error due to container1's conflict
 	assert.Error(t, err, "Should have error from container1")
 
@@ -240,5 +240,5 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	st.SetDesired(container2, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, master, sshHost, actions)
+	_ = reconciler.Apply(ctx, sshHost, actions)
 }

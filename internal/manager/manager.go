@@ -122,9 +122,7 @@ type Manager struct {
 	logger      *slog.Logger
 
 	// Event stream health monitoring
-	watchdog   *eventWatchdog
-	now        func() time.Time
-	dockerPing dockerPingRunner
+	watchdog *eventWatchdog
 
 	// Performance metrics
 	metrics performanceMetrics
@@ -245,8 +243,6 @@ func NewManager(
 		sshMaster:   sshMaster,
 		state:       state,
 		logger:      logger,
-		now:         now,
-		dockerPing:  dockerPing,
 		watchdog:    newEventWatchdog(now, dockerPing),
 		metrics: performanceMetrics{
 			startTime: startedAt,
@@ -741,7 +737,7 @@ func (m *Manager) triggerReconcile(ctx context.Context) error {
 	m.logger.Info("reconciliation starting",
 		"actions", len(actions))
 
-	if err := m.reconciler.Apply(ctx, m.sshMaster, m.cfg.Host, actions); err != nil {
+	if err := m.reconciler.Apply(ctx, m.cfg.Host, actions); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 

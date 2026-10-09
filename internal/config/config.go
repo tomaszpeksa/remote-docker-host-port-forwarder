@@ -16,9 +16,6 @@ type Config struct {
 	// LogLevel controls logging verbosity: debug, info, warn, error (default: "info")
 	LogLevel string
 
-	// ControlPath is the SSH control socket path
-	ControlPath string
-
 	// EnableLabelPorts enables port discovery from rdhpf.forward.* labels
 	// This is primarily for testing scenarios where containers don't publish ports
 	// Set via RDHPF_ENABLE_LABEL_PORTS=1 environment variable

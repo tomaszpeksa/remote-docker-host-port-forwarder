@@ -194,15 +194,14 @@ func (r *Reconciler) Diff() (toAdd, toRemove []Action) {
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - sshMaster: SSH master connection to use
 //   - host: SSH host string (ssh://user@host)
 //   - actions: Combined list of add and remove actions
 //
 // Example usage:
 //
 //	actions := append(toRemove, toAdd...)
-//	err := reconciler.Apply(ctx, sshMaster, "ssh://user@host", actions)
-func (r *Reconciler) Apply(ctx context.Context, sshMaster *ssh.Master, host string, actions []Action) error {
+//	err := reconciler.Apply(ctx, "ssh://user@host", actions)
+func (r *Reconciler) Apply(ctx context.Context, host string, actions []Action) error {
 	if len(actions) == 0 {
 		r.logger.Debug("no actions to apply")
 		return nil

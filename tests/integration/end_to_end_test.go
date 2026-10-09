@@ -160,7 +160,8 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean, "docker", "run", "-d", "--rm")
+	args = append(args, sshHostClean, "docker", "run", "-d", "--rm",
+		"--label", "rdhpf.s01-diagnostic="+os.Getenv("S01_DIAGNOSTIC_OWNER"))
 
 	// Publish ports to Docker bridge IP (172.17.0.1) to avoid conflicts with SSH forwards on 127.0.0.1
 	// This makes ports accessible via Docker gateway from SSH container, while leaving localhost free
@@ -184,7 +185,12 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 
 	t.Logf("Started container: %s (image: %s)", containerID[:12], image)
 
+	diagnosticCaptured := false
 	cleanup := func() {
+		if !diagnosticCaptured {
+			diagnosticCaptured = true
+			captureS01Diagnostic(t, containerID)
+		}
 		t.Logf("Stopping container: %s", containerID[:12])
 		stopArgs := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
 		if keyPath != "" {

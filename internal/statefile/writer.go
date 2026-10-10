@@ -41,26 +41,9 @@ func (w *Writer) Write(forwards []state.ForwardState, history []state.HistoryEnt
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Convert to snapshot format
-	forwardSnapshots := make([]ForwardSnapshot, len(forwards))
-	for i, f := range forwards {
-		forwardSnapshots[i] = FromForwardState(f)
-	}
-
-	historySnapshots := make([]HistorySnapshot, len(history))
-	for i, h := range history {
-		historySnapshots[i] = FromHistoryEntry(h)
-	}
-
-	snapshot := StateFile{
-		Version:   CurrentVersion,
-		Host:      w.host,
-		PID:       w.pid,
-		StartedAt: w.startedAt,
-		UpdatedAt: time.Now(),
-		Forwards:  forwardSnapshots,
-		History:   historySnapshots,
-	}
+	snapshot := NewSnapshot(w.host, w.pid, w.startedAt, time.Time{}, forwards, history)
+	// Observe the update time after conversion, before publishing the snapshot.
+	snapshot.UpdatedAt = time.Now()
 
 	return w.writeAtomic(snapshot)
 }

@@ -90,27 +90,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	forwards := s.state.GetActual()
 	history := s.history.GetAll()
 
-	// Convert to snapshot format
-	forwardSnapshots := make([]statefile.ForwardSnapshot, len(forwards))
-	for i, f := range forwards {
-		forwardSnapshots[i] = statefile.FromForwardState(f)
-	}
-
-	historySnapshots := make([]statefile.HistorySnapshot, len(history))
-	for i, h := range history {
-		historySnapshots[i] = statefile.FromHistoryEntry(h)
-	}
-
-	// Create snapshot
-	snapshot := statefile.StateFile{
-		Version:   statefile.CurrentVersion,
-		Host:      s.host,
-		PID:       s.pid,
-		StartedAt: s.startedAt,
-		UpdatedAt: time.Now(),
-		Forwards:  forwardSnapshots,
-		History:   historySnapshots,
-	}
+	snapshot := statefile.NewSnapshot(s.host, s.pid, s.startedAt, time.Time{}, forwards, history)
+	// Observe the update time after conversion, before publishing the snapshot.
+	snapshot.UpdatedAt = time.Now()
 
 	// Write JSON and close
 	encoder := json.NewEncoder(conn)

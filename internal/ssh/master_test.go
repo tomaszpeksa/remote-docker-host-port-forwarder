@@ -110,6 +110,17 @@ func TestMasterProcess(t *testing.T) {
 		command, _ := bufio.NewReader(conn).ReadString('\n')
 		switch strings.TrimSpace(command) {
 		case "check":
+			if marker := os.Getenv("S06_CHECK_BLOCK"); marker != "" {
+				if _, err := os.Stat(marker); err == nil {
+					gate, err := net.Dial("unix", os.Getenv("S06_CHECK_GATE"))
+					if err != nil {
+						os.Exit(8)
+					}
+					fmt.Fprintln(gate, "check blocked")
+					_, _ = bufio.NewReader(gate).ReadByte()
+					gate.Close()
+				}
+			}
 			fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
 			report("check")
 		case "crash":
@@ -524,7 +535,9 @@ func TestMasterUncertainWaitRetainsOwnership(t *testing.T) {
 	close(done)
 	connection := &masterConnection{cmd: &exec.Cmd{}, done: done, waitErr: fmt.Errorf("wait failed")}
 	m := &Master{connection: connection, ready: true}
-	require.ErrorContains(t, m.retireConnection(), "did not establish retirement")
+	err := m.retireConnection()
+	require.ErrorContains(t, err, "did not establish retirement")
+	require.ErrorIs(t, err, ErrRetirementUncertain)
 	require.Same(t, connection, m.connection)
 	require.Zero(t, m.generation)
 	require.False(t, m.ready)

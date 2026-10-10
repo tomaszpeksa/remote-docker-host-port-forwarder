@@ -31,9 +31,12 @@ func TestConnectionLossRecovery(t *testing.T) {
 
 func runTwoLossRecovery(t *testing.T, forceLoss func(context.Context, *ssh.Master, string) (uint64, int, error)) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("disruptive recovery integration")
+	if os.Getenv("RDHPF_HOSTED_RECOVERY") != "1" {
+		t.Skip("hosted-only disruptive recovery: not selected by the owned Actions harness")
 	}
+	require.False(t, testing.Short(), "selected hosted recovery must execute fully")
+	require.Equal(t, "true", os.Getenv("GITHUB_ACTIONS"), "selected recovery requires the owned Actions harness")
+	require.NotEmpty(t, os.Getenv("SSH_TEST_HOST"), "selected recovery requires its configured harness")
 	host, token := recoveryAlias(t, getTestSSHHost(t))
 	owner := admitPublisher(t, host)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

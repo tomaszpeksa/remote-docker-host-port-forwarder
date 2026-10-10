@@ -31,6 +31,10 @@ const (
 	masterRetireTimeout  = time.Second
 )
 
+// ErrRetirementUncertain means the owner must retain cleanup and admission
+// responsibility: completion of the retained child has not been established.
+var ErrRetirementUncertain = errors.New("owned SSH retirement uncertain; replacement prohibited")
+
 type masterLifetime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -363,12 +367,12 @@ func (m *Master) retireConnection() error {
 					<-timer.C
 				}
 			case <-timer.C:
-				return fmt.Errorf("owned SSH retirement uncertain; replacement prohibited")
+				return ErrRetirementUncertain
 			}
 		}
 	}
 	if c.cmd.ProcessState == nil {
-		return fmt.Errorf("owned SSH Wait did not establish retirement: %v", c.waitErr)
+		return errors.Join(ErrRetirementUncertain, fmt.Errorf("owned SSH Wait did not establish retirement: %v", c.waitErr))
 	}
 	if !c.retired {
 		m.generation++
@@ -407,6 +411,11 @@ func (m *Master) ensureAlive(ctx context.Context, life *masterLifetime) error {
 	}
 	if m.ready && m.checkConnection(ctx) == nil {
 		return nil
+	}
+	// Incidental cancellation is not evidence that a successful connection
+	// failed. Only the check's own deadline may initiate retirement here.
+	if err := m.operationAllowed(ctx, life); err != nil {
+		return err
 	}
 	if err := m.retireConnection(); err != nil {
 		return err

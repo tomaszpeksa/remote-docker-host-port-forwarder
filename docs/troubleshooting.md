@@ -511,3 +511,11 @@ If you encounter an issue not covered here:
 
 **Last Updated**: 2024-01-15
 **Version**: 1.0.0
+### Shutdown awaiting owned-child retirement
+
+If shutdown reports `waiting for owned SSH retirement; retaining publisher ownership`,
+the CLI has not yet established completion of its retained SSH child. It keeps the
+publisher admission lock and retries that cleanup rather than admitting a successor
+or abandoning the child. Incidental cancellation is not permission to release this
+responsibility. There is no new global shutdown deadline; forced parent termination
+still has the documented orphan-child limitation.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -168,6 +169,28 @@ func runMain(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// Keep the owning run frame (and its admission defer) alive until the retained
+// child's completion is proved. This is not a background supervisor or deadline.
+func closeSSHMaster(closeMaster func() error, logger *slog.Logger) {
+	warned := false
+	for {
+		err := closeMaster()
+		if !errors.Is(err, ssh.ErrRetirementUncertain) {
+			if err != nil {
+				logger.Warn("failed to close SSH master", "error", err)
+			}
+			return
+		}
+		if !warned {
+			logger.Warn("waiting for owned SSH retirement; retaining publisher ownership", "error", err)
+			warned = true
+		}
+		// Close already uses bounded retirement waits. Avoid spinning if Wait
+		// returned without proof; cancellation must not abandon this obligation.
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	owner, err := instancepath.Acquire(cfg.Host)
 	if err != nil {
@@ -188,9 +211,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	// Own cleanup before startup can create a child, including failed Open.
 	defer func() {
 		logger.Info("closing SSH ControlMaster connection")
-		if err := sshMaster.Close(); err != nil {
-			logger.Warn("failed to close SSH master", "error", err.Error())
-		}
+		closeSSHMaster(sshMaster.Close, logger)
 	}()
 	if err := sshMaster.Open(ctx); err != nil {
 		return fmt.Errorf("failed to open SSH master: %w", err)

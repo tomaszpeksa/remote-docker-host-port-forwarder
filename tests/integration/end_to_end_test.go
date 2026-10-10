@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -161,6 +162,9 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 		args = append(args, "-p", port)
 	}
 	args = append(args, sshHostClean, "docker", "run", "-d", "--rm")
+	if owner := os.Getenv("TRAFFIC_DIAGNOSTIC_OWNER"); owner != "" {
+		args = append(args, "--label", "rdhpf.traffic-diagnostic="+owner)
+	}
 
 	// Publish ports to Docker bridge IP (172.17.0.1) to avoid conflicts with SSH forwards on 127.0.0.1
 	// This makes ports accessible via Docker gateway from SSH container, while leaving localhost free
@@ -184,7 +188,13 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 
 	t.Logf("Started container: %s (image: %s)", containerID[:12], image)
 
+	var capture sync.Once
 	cleanup := func() {
+		capture.Do(func() {
+			if t.Name() == "TestManager_ContainerWithOnePort" {
+				captureTrafficDiagnostic(t, containerID, sshHost)
+			}
+		})
 		t.Logf("Stopping container: %s", containerID[:12])
 		stopArgs := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
 		if keyPath != "" {

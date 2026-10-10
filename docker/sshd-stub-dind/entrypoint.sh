@@ -25,4 +25,4 @@ rm /tmp/hosts.new /etc/hosts.tmp
 echo "Configured localhost -> $GATEWAY for SSH port forwarding (removed IPv6 entry)"
 
 # Start sshd
-exec /usr/sbin/sshd -D -e
+exec /usr/sbin/sshd -D -e -o LogLevel=DEBUG3

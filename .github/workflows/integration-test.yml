@@ -15,102 +15,75 @@ on:
         required: false
         default: 'localhost'
   schedule:
-    # Run nightly at 2 AM UTC
     - cron: '0 2 * * *'
 
 jobs:
   integration-test:
-    name: Run Integration Tests
+    name: Bounded traffic diagnostic (not for merge)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      SSH_TEST_HOST: ssh://testuser@localhost:2222
+      TRAFFIC_DIAGNOSTIC_OWNER: traffic-${{ github.run_id }}-${{ github.run_attempt }}
+      TRAFFIC_DIAGNOSTIC_FIXTURE: rdhpf-sshd-stub
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.24.13'
           cache: true
 
-      - name: Install Docker
-        run: |
-          # Docker should already be available on ubuntu-latest
-          docker --version
+      - name: Record source and environment
+        run: bash scripts/traffic-diagnostic.sh prepare
 
-      - name: Build SSH test container with Docker-in-Docker
+      - name: Build SSH test container
         run: |
-          echo "Building sshd-stub-dind (Docker-in-Docker) image..."
-          docker build --no-cache -t rdhpf-sshd-stub \
-            -f docker/sshd-stub-dind/Dockerfile \
-            docker/sshd-stub-dind/
-      
+          set -o pipefail
+          timeout -k 1s 120s docker build --no-cache -t rdhpf-sshd-stub \
+            -f docker/sshd-stub-dind/Dockerfile docker/sshd-stub-dind/ \
+            2>&1 | tee "$RUNNER_TEMP/traffic-diagnostic-evidence/image-build.log"
+
       - name: Generate SSH test key
         run: |
-          echo "Generating SSH key for tests..."
-          mkdir -p $HOME/.ssh
-          ssh-keygen -t ed25519 -f $HOME/.ssh/id_rdhpf_test -N "" -C "rdhpf-ci-test"
-          chmod 600 $HOME/.ssh/id_rdhpf_test
-          chmod 644 $HOME/.ssh/id_rdhpf_test.pub
-      
+          mkdir -p "$HOME/.ssh"
+          timeout -k 1s 3s ssh-keygen -t ed25519 -f "$HOME/.ssh/id_rdhpf_test" -N "" -C "rdhpf-ci-test"
+          chmod 600 "$HOME/.ssh/id_rdhpf_test"
+          chmod 644 "$HOME/.ssh/id_rdhpf_test.pub"
+
       - name: Start SSH test container with Docker socket mount
         run: |
-          echo "Starting SSH container with Docker socket mount..."
-          docker run -d --name rdhpf-sshd-stub \
-            -p 2222:22 \
-            -v /var/run/docker.sock:/var/run/docker.sock \
+          timeout -k 1s 3s docker run -d --name "$TRAFFIC_DIAGNOSTIC_FIXTURE" \
+            -p 2222:22 -v /var/run/docker.sock:/var/run/docker.sock \
             --label rdhpf.test-infrastructure=true \
+            --label "rdhpf.traffic-diagnostic=$TRAFFIC_DIAGNOSTIC_OWNER" \
             rdhpf-sshd-stub
-          
-          echo "Waiting for Docker CLI access via socket..."
-          sleep 2
-          
-          echo "Verifying Docker access..."
-          if ! docker exec rdhpf-sshd-stub docker info >/dev/null 2>&1; then
-            echo "ERROR: Docker socket access failed"
-            docker logs rdhpf-sshd-stub
-            exit 1
-          fi
-          
-          echo "✓ Docker CLI ready (using host daemon via socket mount)"
-          
-          echo "Waiting for SSH server to be ready..."
-          sleep 2
-          
-          echo "Configuring SSH key authentication in container..."
-          docker cp $HOME/.ssh/id_rdhpf_test.pub rdhpf-sshd-stub:/tmp/pubkey
-          docker exec rdhpf-sshd-stub sh -c "
-            mv /tmp/pubkey /home/testuser/.ssh/authorized_keys && \
-            chmod 600 /home/testuser/.ssh/authorized_keys && \
-            chown testuser:testuser /home/testuser/.ssh/authorized_keys
-          "
-          
-          echo "Testing SSH connection..."
-          ssh -i $HOME/.ssh/id_rdhpf_test \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o LogLevel=ERROR \
-            -p 2222 testuser@localhost echo "✓ SSH connection successful"
-          
-          echo "Testing Docker access over SSH..."
-          ssh -i $HOME/.ssh/id_rdhpf_test \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o LogLevel=ERROR \
-            -p 2222 testuser@localhost docker info
-          
-          echo "✓ SSH and Docker both working"
 
-      - name: Phase 1 - Run SSH Master integration tests
-        env:
-          SSH_TEST_HOST: ssh://testuser@localhost:2222
+          # Preserve the existing two infrastructure waits; no app exists yet.
+          sleep 2
+          timeout -k 1s 3s docker exec "$TRAFFIC_DIAGNOSTIC_FIXTURE" docker info
+          sleep 2
+          timeout -k 1s 3s docker cp "$HOME/.ssh/id_rdhpf_test.pub" "$TRAFFIC_DIAGNOSTIC_FIXTURE:/tmp/pubkey"
+          timeout -k 1s 3s docker exec "$TRAFFIC_DIAGNOSTIC_FIXTURE" sh -c '
+            mv /tmp/pubkey /home/testuser/.ssh/authorized_keys &&
+            chmod 600 /home/testuser/.ssh/authorized_keys &&
+            chown testuser:testuser /home/testuser/.ssh/authorized_keys'
+
+          timeout -k 1s 3s ssh -i "$HOME/.ssh/id_rdhpf_test" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -p 2222 testuser@localhost echo 'SSH connection successful'
+          timeout -k 1s 3s ssh -i "$HOME/.ssh/id_rdhpf_test" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -p 2222 testuser@localhost docker info
+
+      - name: Phase 1 - Run SSH Master integration tests once
         run: |
-          echo "=== Phase 1: SSH Master Tests ==="
-          echo "Running SSH ControlMaster tests (8 tests, ~30s)"
-          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
-          # Configure SSH for tests
-          mkdir -p $HOME/.ssh
-          cat > $HOME/.ssh/config <<EOF
+          cat > "$HOME/.ssh/config" <<EOF
           Host localhost
             Port 2222
             IdentityFile $HOME/.ssh/id_rdhpf_test
@@ -118,67 +91,23 @@ jobs:
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          chmod 600 $HOME/.ssh/config
-          
-          go test -v -timeout=3m -run 'TestSSHMaster' ./tests/integration/
-          
-          echo "✓ Phase 1 complete: SSH Master tests passed"
-      
-      - name: Phase 2 - Run stream persistence tests
-        env:
-          SSH_TEST_HOST: ssh://testuser@localhost:2222
-        run: |
-          echo "=== Phase 2: Stream Persistence Tests ==="
-          echo "Testing docker events stream stays open (critical bug detection)"
-          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
-          go test -v -timeout=5m -run 'TestDockerEventsStream' ./tests/integration/
-          
-          echo "✓ Phase 2 complete: Stream persistence tests passed"
-      
-      - name: Phase 2b - Run E2E container lifecycle test
-        env:
-          SSH_TEST_HOST: ssh://testuser@localhost:2222
-        run: |
-          echo "=== Phase 2b: E2E Container Test ==="
-          echo "Running single-container port forwarding test (~45s)"
-          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
-          go test -v -timeout=3m -run 'TestManager_ContainerWithOnePort' ./tests/integration/
-          
-          echo "✓ Phase 2b complete: E2E container test passed"
-      
-      - name: Phase 3 - Run all integration tests
-        env:
-          SSH_TEST_HOST: ssh://testuser@localhost:2222
-        run: |
-          echo "=== Phase 3: All Integration Tests ==="
-          echo "Running complete integration test suite (~3-5m)"
-          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
+          chmod 600 "$HOME/.ssh/config"
+          bash scripts/traffic-diagnostic.sh phase ssh 3m 185s 'TestSSHMaster' 8
 
-          go test -v -timeout=10m -p 1 ./tests/integration/...
-          
-          echo "✓ Phase 3 complete: All integration tests passed"
+      - name: Phase 2 - Run stream persistence tests once
+        run: bash scripts/traffic-diagnostic.sh phase stream 5m 305s 'TestDockerEventsStream' 2
 
-      - name: Collect logs on failure
-        if: failure()
-        run: |
-          echo "=== Docker containers ==="
-          docker ps -a
-          
-          echo "=== SSH Container Logs ==="
-          docker logs rdhpf-sshd-stub || true
-          
-          echo "=== Network connections ==="
-          sudo netstat -tlnp || ss -tlnp || true
+      - name: Phase 2b - Run one-port scenario once
+        run: bash scripts/traffic-diagnostic.sh phase one-port 3m 185s '^TestManager_ContainerWithOnePort$' 1
 
-      - name: Cleanup test environment
+      - name: Collect evidence and clean owned resources
         if: always()
-        run: |
-          # Stop and remove SSH test container
-          docker stop rdhpf-sshd-stub || true
-          docker rm rdhpf-sshd-stub || true
-          
-          # Clean up SSH keys
-          rm -f $HOME/.ssh/id_rdhpf_test $HOME/.ssh/id_rdhpf_test.pub
-          rm -f $HOME/.ssh/config
+        run: bash scripts/traffic-diagnostic.sh collect-cleanup
+
+      - name: Preserve diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/traffic-diagnostic-evidence/
+          if-no-files-found: error

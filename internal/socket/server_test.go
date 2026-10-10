@@ -27,9 +27,9 @@ func TestServerSnapshotEncoding(t *testing.T) {
 			}
 			for i, id := range []string{"z", "a"}[:count] {
 				st.SetActual(id, 8080+i, "conflict", "occupied")
-				f := st.GetByContainer(id)[0] // State owns these two clock reads.
+				f := st.GetByContainer(id)[0] // State supplies both timestamps.
 				want.Forwards = append(want.Forwards, statefile.ForwardSnapshot{
-					ContainerID: id, Port: 8080 + i, Status: "conflict", Reason: "occupied", CreatedAt: f.CreatedAt.Round(0), UpdatedAt: f.UpdatedAt.Round(0),
+					ContainerID: id, Port: 8080 + i, Status: "conflict", Reason: "occupied", CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt,
 				})
 				hist.Add(state.HistoryEntry{ContainerID: id, Port: 9000 + i, StartedAt: start, EndedAt: end, EndReason: "stopped", FinalStatus: "active"})
 				want.History = append(want.History, statefile.HistorySnapshot{
@@ -57,7 +57,18 @@ func TestServerSnapshotEncoding(t *testing.T) {
 			want.UpdatedAt = got.UpdatedAt
 			// GetActual traverses maps: only the supplied slice's order is a contract,
 			// not order across separate acquisitions. History order is deterministic.
-			require.ElementsMatch(t, want.Forwards, got.Forwards)
+			// Compare wire values (including offsets), not time.Time's Location representation.
+			wantForwards := make([]json.RawMessage, len(want.Forwards))
+			gotForwards := make([]json.RawMessage, len(got.Forwards))
+			for i, forward := range want.Forwards {
+				wantForwards[i], err = json.Marshal(forward)
+				require.NoError(t, err)
+			}
+			for i, forward := range got.Forwards {
+				gotForwards[i], err = json.Marshal(forward)
+				require.NoError(t, err)
+			}
+			require.ElementsMatch(t, wantForwards, gotForwards)
 			want.Forwards = got.Forwards
 			require.NotNil(t, got.Forwards)
 			require.Equal(t, want, got)

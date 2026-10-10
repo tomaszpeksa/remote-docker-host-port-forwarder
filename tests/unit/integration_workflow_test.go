@@ -3,6 +3,7 @@ package unit
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,9 @@ func TestIntegrationWorkflowMandatoryRecoveryPasses(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	require.NoError(t, err)
 	jq, err := exec.LookPath("jq")
+	if errors.Is(err, exec.ErrNotFound) {
+		t.Skip("workflow-shell regression requires jq (not found)")
+	}
 	require.NoError(t, err)
 	tee, err := exec.LookPath("tee")
 	require.NoError(t, err)
@@ -116,4 +120,27 @@ func TestIntegrationWorkflowMandatoryRecoveryPasses(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestIntegrationWorkflowMissingJQSkips(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"bash", "tee"} {
+		path, err := exec.LookPath(name)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(path, filepath.Join(root, name)))
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestIntegrationWorkflowMandatoryRecoveryPasses$", "-test.v")
+	cmd.Dir = root
+	cmd.Env = []string{"PATH=" + root, "HOME=" + root, "GORACE=atexit_sleep_ms=0"}
+	output, err := cmd.CombinedOutput()
+	t.Logf("missing jq selection outcome:\n%s", output)
+	require.NoError(t, ctx.Err())
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "--- SKIP: TestIntegrationWorkflowMandatoryRecoveryPasses")
+	require.Contains(t, string(output), "workflow-shell regression requires jq (not found)")
+	require.NotContains(t, string(output), "actual phase SHA256=", "missing jq must not be reported as guard execution")
 }

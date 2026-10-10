@@ -55,14 +55,45 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run unit tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: List unit-check tests and record source
+        env:
+          SSH_TEST_HOST: ''
+          SSH_TEST_KEY_PATH: ''
+        run: |
+          command -v jq
+          mkdir -p test-evidence
+          { git rev-parse HEAD HEAD^{tree}; go version; } > test-evidence/source.txt
+          go test -json -list . ./... > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
-      - name: Upload coverage to artifacts
+      - name: Run unit tests
+        env:
+          SSH_TEST_HOST: ''
+          SSH_TEST_KEY_PATH: ''
+        run: |
+          set +e
+          go test -json -count=1 -race -timeout=5m -coverpkg=./cmd/...,./internal/... -coverprofile=coverage.txt -covermode=atomic ./... 2> test-evidence/tests.stderr | tee test-evidence/tests.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/tests.exit
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          exit "${status[1]}"
+
+      - name: Inventory actual test outcomes
+        if: always()
+        run: |
+          mkdir -p test-evidence
+          touch test-evidence/list.jsonl test-evidence/tests.jsonl
+          jq -s --slurpfile listed test-evidence/list.jsonl --arg selector '.' \
+            --arg exit "$(cat test-evidence/tests.exit 2>/dev/null || echo unrun)" \
+            -f .github/test-inventory.jq test-evidence/tests.jsonl > test-evidence/inventory.json
+
+      - name: Upload coverage and test evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.go-version }}
-          path: coverage.txt
+          path: |
+            coverage.txt
+            test-evidence/
 
   build:
     name: Build
@@ -84,7 +115,7 @@ jobs:
       - name: Verify binary
         run: |
           file rdhpf-linux-amd64
-          ./rdhpf-linux-amd64 --version || true
+          ./rdhpf-linux-amd64 version
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

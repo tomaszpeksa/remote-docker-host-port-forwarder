@@ -58,7 +58,8 @@ jobs:
           command -v jq
           mkdir -p test-evidence
           { git rev-parse HEAD HEAD^{tree}; go version; } > test-evidence/source.txt
-          go test -json -list . ./... > test-evidence/list.jsonl 2> test-evidence/list.stderr
+          printf '%s\n' 'DIAGNOSTIC ONLY: three socket ownership experiments; not full CI or mergeable recovery validation.' >> test-evidence/source.txt
+          go test -json -list '^Test(MasterFailedReopenPublishesRetirement|SocketDiagnostic.*)$' ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Run tests with coverage
         env:
@@ -66,7 +67,7 @@ jobs:
           SSH_TEST_KEY_PATH: ''
         run: |
           set +e
-          go test -json -count=1 -race -timeout=5m -coverpkg=./cmd/...,./internal/... -coverprofile=coverage.out -covermode=atomic ./... 2> test-evidence/tests.stderr | tee test-evidence/tests.jsonl
+          go test -json -count=1 -race -timeout=45s -run '^Test(MasterFailedReopenPublishesRetirement|SocketDiagnostic.*)$' -coverpkg=./internal/ssh -coverprofile=coverage.out -covermode=atomic ./internal/ssh 2> test-evidence/tests.stderr | tee test-evidence/tests.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/tests.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi

@@ -334,11 +334,21 @@ func TestMasterCancellationAfterStartReapsChild(t *testing.T) {
 func TestMasterFailedReopenPublishesRetirement(t *testing.T) {
 	m, _ := masterFixture(t)
 	require.NoError(t, m.Open(context.Background()))
+	old := m.connection
+	m.retirementTrace = diagnosticTrace(t, m)
+	diagnosticRecord(t, "owned-before-loss", old.socket, old.socket, old.cmd.Process.Pid, 0, nil)
 	crashFixtureMaster(t, m)
 	foreign, err := net.Listen("unix", m.ControlPath())
 	require.NoError(t, err)
 	defer foreign.Close()
-	require.Error(t, m.EnsureAlive(context.Background()))
+	foreignInfo, statErr := os.Lstat(m.ControlPath())
+	peerPID := diagnosticPeer(t, m.ControlPath())
+	diagnosticRecord(t, "foreign-bound-before-EnsureAlive", old.socket, foreignInfo, old.cmd.Process.Pid, peerPID, statErr)
+	ensureErr := m.EnsureAlive(context.Background())
+	after, statErr := os.Lstat(m.ControlPath())
+	diagnosticRecord(t, "after-EnsureAlive", old.socket, after, old.cmd.Process.Pid, 0, statErr)
+	t.Logf("DIAGNOSTIC EnsureAlive error=%v new_owned_pid=%d", ensureErr, m.cmd.Process.Pid)
+	require.Error(t, ensureErr)
 	require.NoError(t, m.WithConnection(context.Background(), func(generation uint64, ready bool) error {
 		require.Equal(t, uint64(1), generation)
 		require.False(t, ready)

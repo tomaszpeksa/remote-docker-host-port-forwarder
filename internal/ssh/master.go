@@ -76,6 +76,9 @@ type Master struct {
 	lastFailureTime     time.Time
 	healthMonitorMu     sync.Mutex
 	monitor             *healthMonitor
+
+	// DIAGNOSTIC OVERLAY ONLY: observe and barrier the existing removal path.
+	retirementTrace func(string, *masterConnection, os.FileInfo, error)
 }
 
 // NewMaster creates a connection owner without starting SSH.
@@ -365,10 +368,22 @@ func (m *Master) retireConnection() error {
 	}
 	if c.socket != nil {
 		info, err := os.Lstat(m.controlPath)
+		if m.retirementTrace != nil {
+			m.retirementTrace("after-stat", c, info, err)
+		}
 		if err == nil && os.SameFile(c.socket, info) {
-			if err = os.Remove(m.controlPath); err != nil && !os.IsNotExist(err) {
+			if m.retirementTrace != nil {
+				m.retirementTrace("before-remove", c, info, nil)
+			}
+			err = os.Remove(m.controlPath)
+			if m.retirementTrace != nil {
+				m.retirementTrace("after-remove", c, info, err)
+			}
+			if err != nil && !os.IsNotExist(err) {
 				return err
 			}
+		} else if m.retirementTrace != nil {
+			m.retirementTrace("refused-remove", c, info, err)
 		}
 		if err != nil && !os.IsNotExist(err) {
 			return err

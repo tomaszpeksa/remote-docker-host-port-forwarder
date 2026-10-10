@@ -69,7 +69,7 @@ func TestMasterProcess(t *testing.T) {
 		}
 	}
 	if marker := os.Getenv("S06_START_MARKER"); marker != "" {
-		os.WriteFile(marker, []byte(strings.Join(args, "\n")), 0600)
+		require.NoError(t, os.WriteFile(marker, []byte(strings.Join(args, "\n")), 0600), "record owned helper arguments")
 	}
 	if os.Getenv("S06_EARLY_SOCKET") == "1" {
 		temporary := path + ".0123456789abcdef"
@@ -316,7 +316,7 @@ func TestMasterRacingEndpointIsNotAdoptedOrRemoved(t *testing.T) {
 	t.Setenv("S06_START_GATE", gate.Addr().String())
 	result := make(chan error, 1)
 	go func() { result <- m.Open(context.Background()) }()
-	gate.(*net.UnixListener).SetDeadline(time.Now().Add(3 * time.Second))
+	require.NoError(t, gate.(*net.UnixListener).SetDeadline(time.Now().Add(3*time.Second)))
 	child, err := gate.Accept()
 	require.NoError(t, err)
 	defer child.Close()
@@ -344,7 +344,7 @@ func TestMasterCancellationAfterStartReapsChild(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- m.Open(ctx) }()
-	gate.(*net.UnixListener).SetDeadline(time.Now().Add(3 * time.Second))
+	require.NoError(t, gate.(*net.UnixListener).SetDeadline(time.Now().Add(3*time.Second)))
 	child, err := gate.Accept()
 	require.NoError(t, err)
 	defer child.Close()
@@ -420,7 +420,7 @@ func TestMasterShutdownDuringRecoveryStartup(t *testing.T) {
 	t.Setenv("S06_START_GATE", gate.Addr().String())
 	recovering := make(chan error, 1)
 	go func() { recovering <- m.EnsureAlive(context.Background()) }()
-	gate.(*net.UnixListener).SetDeadline(time.Now().Add(3 * time.Second))
+	require.NoError(t, gate.(*net.UnixListener).SetDeadline(time.Now().Add(3*time.Second)))
 	child, err := gate.Accept()
 	require.NoError(t, err)
 	defer child.Close()

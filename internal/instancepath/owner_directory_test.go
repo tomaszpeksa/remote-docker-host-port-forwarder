@@ -120,7 +120,7 @@ func TestOwnerDirectoryPermissionBehavior(t *testing.T) {
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".rdhpf")
 	require.NoError(t, os.Mkdir(dir, 0700))
-	defer os.Chmod(dir, 0700)
+	defer func() { require.NoError(t, os.Chmod(dir, 0700), "restore fixture directory permissions") }()
 	require.NoError(t, os.Chmod(dir, 0500))
 	owner, err := Acquire("ssh://test")
 	require.ErrorIs(t, err, os.ErrPermission)

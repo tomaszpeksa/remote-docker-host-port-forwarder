@@ -3,6 +3,7 @@ package instancepath
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,10 @@ import (
 func TestAdmissionProcess(t *testing.T) {
 	if os.Getenv("RDHPF_ADMISSION_HELPER") == "idle" {
 		fmt.Println("ready")
-		bufio.NewReader(os.Stdin).ReadByte()
+		_, err := bufio.NewReader(os.Stdin).ReadByte()
+		if err != nil {
+			require.ErrorIs(t, err, io.EOF, "release must be a byte or closed input")
+		}
 		return
 	}
 	if os.Getenv("RDHPF_ADMISSION_HELPER") != "1" {
@@ -27,7 +31,10 @@ func TestAdmissionProcess(t *testing.T) {
 	}
 	defer owner.Close()
 	fmt.Println("admitted")
-	bufio.NewReader(os.Stdin).ReadByte()
+	_, err = bufio.NewReader(os.Stdin).ReadByte()
+	if err != nil {
+		require.ErrorIs(t, err, io.EOF, "release must be a byte or closed input")
+	}
 }
 
 func TestOwnerExcludesAllTargetsAndAliases(t *testing.T) {

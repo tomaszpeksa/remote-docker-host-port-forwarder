@@ -26,12 +26,12 @@ func Acquire(host string) (*Owner, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(filepath.Dir(socketPath))
+	directory, err := openOwnerDirectory(filepath.Dir(socketPath))
 	if err != nil {
 		return nil, fmt.Errorf("cannot open publisher directory: %w", err)
 	}
-	defer root.Close()
-	file, err := openOwnerFile(root)
+	defer directory.Close()
+	file, err := openOwnerFile(directory)
 	if err != nil {
 		return nil, fmt.Errorf("cannot acquire publisher ownership: %w", err)
 	}

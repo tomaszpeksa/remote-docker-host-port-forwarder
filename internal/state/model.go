@@ -258,3 +258,33 @@ func (s *State) GetAllContainers() []string {
 
 	return result
 }
+
+// InvalidateConnection invalidates records only after their SSH child has been
+// reaped. Desired logical forwards retain their creation time and diagnostics.
+// Returned undesired records are removed atomically for one stop-history entry.
+func (s *State) InvalidateConnection(at time.Time) []ForwardState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var retired []ForwardState
+	for containerID, ports := range s.actual {
+		desired := make(map[int]bool, len(s.desired[containerID]))
+		for _, port := range s.desired[containerID] {
+			desired[port] = true
+		}
+		for port, forward := range ports {
+			if !desired[port] {
+				retired = append(retired, forward)
+				delete(ports, port)
+			} else if forward.Status == "active" {
+				forward.Status = "pending"
+				forward.Reason = "SSH connection lost"
+				forward.UpdatedAt = at
+				ports[port] = forward
+			}
+		}
+		if len(ports) == 0 {
+			delete(s.actual, containerID)
+		}
+	}
+	return retired
+}

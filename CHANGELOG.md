@@ -14,7 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Logs last 50 lines of stdout on failures
   - Logs exit codes and signal information for better debugging
 
+### Changed
+- SSH masters run as directly owned foreground children; occupied or ambiguous
+  control endpoints are refused rather than adopted or removed. Forced rdhpf
+  termination (for example, SIGKILL) may leave an idle SSH child alive. Normal
+  shutdown and failed startup still terminate and reap the owned child; no
+  parent-death supervisor or global shutdown deadline is provided.
+
 ### Fixed
+- Separate SSH connection replacement from monitor shutdown, serialize it with
+  forwarding transactions, and invalidate retired connection state while
+  preserving desired ports and logical-forward creation times.
 - **CRITICAL**: Fix shell expansion bug in docker commands executed over SSH
   - Docker template syntax `{{json .}}` was being expanded by remote shell, causing "accepts no arguments" errors
   - Now wrap all docker commands in `sh -c 'command'` with proper quoting

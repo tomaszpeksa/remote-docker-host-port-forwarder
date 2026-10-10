@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
@@ -132,6 +133,10 @@ type Manager struct {
 	stateWriter  *statefile.Writer
 	socketServer *socket.Server
 	startedAt    time.Time
+
+	retiredGeneration uint64 // guarded by the SSH lifecycle gate
+	stopping          atomic.Bool
+	stopRecovery      func() // Run-owned cancellation/join, never called under the gate
 }
 
 // performanceMetrics tracks performance data
@@ -271,6 +276,8 @@ func NewManager(
 //	    log.Fatal(err)
 //	}
 func (m *Manager) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	m.logger.Info("manager starting")
 
 	// Initialize state writer
@@ -302,14 +309,29 @@ func (m *Manager) Run(ctx context.Context) error {
 	// Start background state writer
 	go m.startStateWriter(ctx)
 
-	// Set up SSH master recovery callback to trigger reconciliation
-	m.sshMaster.SetRecoveryCallback(func() {
-		m.logger.Info("SSH connection recovered, reconciling state")
-		if err := m.triggerReconcile(ctx); err != nil {
-			m.logger.Warn("reconciliation after SSH recovery failed",
-				"error", err.Error())
+	// Changes are nonblocking wakeups, not state-bearing callbacks. Every
+	// reconciliation, including this worker, uses the Master's lifecycle gate.
+	recoveryDone := make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.sshMaster.Changes():
+				if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
+					m.logger.Warn("reconciliation after SSH change failed", "error", err)
+				}
+			}
 		}
-	})
+	}()
+	m.stopRecovery = func() {
+		m.stopping.Store(true)
+		cancel()
+		m.sshMaster.StopHealthMonitor()
+		<-recoveryDone
+	}
+	defer m.stopRecovery()
 
 	// Start SSH health monitor (check every 15 seconds for faster failure detection)
 	m.sshMaster.StartHealthMonitor(ctx, 15*time.Second)
@@ -716,6 +738,45 @@ func (m *Manager) handleStopEvent(ctx context.Context, event docker.Event) error
 //  1. Compute diff between desired and actual state
 //  2. Apply the computed actions
 func (m *Manager) triggerReconcile(ctx context.Context) error {
+	if m.stopping.Load() {
+		return context.Canceled
+	}
+	return m.sshMaster.WithConnection(ctx, func(generation uint64, ready bool) error {
+		return m.reconcileConnection(ctx, generation, ready)
+	})
+}
+
+// reconcileConnection runs within WithConnection's gate. Keeping this operation
+// separate makes unavailable-connection and stale-wakeup handling explicit.
+func (m *Manager) reconcileConnection(ctx context.Context, generation uint64, ready bool) error {
+	if m.stopping.Load() {
+		return context.Canceled
+	}
+	m.invalidateRetired(generation)
+	if !ready {
+		return fmt.Errorf("SSH connection unavailable")
+	}
+	return m.reconcileLocked(ctx)
+}
+
+// invalidateRetired is called only inside the SSH lifecycle gate, before Diff.
+// Coalesced or stale wakeups cannot invalidate a newer connection's forwards.
+func (m *Manager) invalidateRetired(generation uint64) {
+	if generation == m.retiredGeneration {
+		return
+	}
+	at := time.Now()
+	for _, forward := range m.state.InvalidateConnection(at) {
+		m.history.Add(state.HistoryEntry{
+			ContainerID: forward.ContainerID, Port: forward.Port,
+			StartedAt: forward.CreatedAt, EndedAt: at,
+			EndReason: "container stopped", FinalStatus: forward.Status,
+		})
+	}
+	m.retiredGeneration = generation
+}
+
+func (m *Manager) reconcileLocked(ctx context.Context) error {
 	startTime := time.Now()
 	defer func() {
 		duration := time.Since(startTime)
@@ -979,6 +1040,19 @@ func (m *Manager) startStateWriter(ctx context.Context) {
 // cleanupAllForwards removes all active port forwards on shutdown.
 // Uses a background context to ensure cleanup completes even if original context is canceled.
 func (m *Manager) cleanupAllForwards(ctx context.Context) {
+	if m.stopRecovery != nil {
+		m.stopRecovery()
+	}
+	err := m.sshMaster.WithConnection(ctx, func(generation uint64, ready bool) error {
+		m.invalidateRetired(generation)
+		return m.cleanupForwardsLocked(ctx, ready)
+	})
+	if err != nil {
+		m.logger.Warn("cleanup reconciliation encountered errors", "error", err)
+	}
+}
+
+func (m *Manager) cleanupForwardsLocked(ctx context.Context, ready bool) error {
 	m.logger.Info("cleaning up all port forwards on shutdown")
 
 	// Add all current forwards to history before removing them
@@ -1001,11 +1075,9 @@ func (m *Manager) cleanupAllForwards(ctx context.Context) {
 		m.state.SetDesired(containerID, []int{})
 	}
 
-	// Run final reconciliation to remove all forwards
-	if err := m.triggerReconcile(ctx); err != nil {
-		m.logger.Warn("cleanup reconciliation encountered errors",
-			"error", err.Error())
-	} else {
-		m.logger.Info("all port forwards removed successfully")
+	// The existing cleanup policy remains; this path cannot start a connection.
+	if !ready {
+		return fmt.Errorf("SSH connection unavailable during cleanup")
 	}
+	return m.reconcileLocked(ctx)
 }

@@ -192,7 +192,7 @@ jobs:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           echo "=== Phase 3: All Integration Tests ==="
-          echo "Running complete integration test suite (~3-5m)"
+          echo "Running complete integration test suite (15m test budget)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
 
           set +e
@@ -203,7 +203,7 @@ jobs:
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
           
           # A missing selector must not silently turn mandatory hosted proof into skips.
-          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
           echo "✓ Phase 3 complete: All integration tests passed"
 
       - name: Inventory executed, excluded and unrun tests

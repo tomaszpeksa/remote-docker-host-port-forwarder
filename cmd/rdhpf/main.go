@@ -175,15 +175,16 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("failed to create SSH master: %w", err)
 	}
 
-	if err := sshMaster.Open(ctx); err != nil {
-		return fmt.Errorf("failed to open SSH master: %w", err)
-	}
+	// Own cleanup before startup can create a child, including failed Open.
 	defer func() {
 		logger.Info("closing SSH ControlMaster connection")
 		if err := sshMaster.Close(); err != nil {
 			logger.Warn("failed to close SSH master", "error", err.Error())
 		}
 	}()
+	if err := sshMaster.Open(ctx); err != nil {
+		return fmt.Errorf("failed to open SSH master: %w", err)
+	}
 
 	logger.Info("SSH ControlMaster established")
 
@@ -377,6 +378,15 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	return sshMaster.WithConnection(cleanupCtx, func(_ uint64, ready bool) error {
+		if !ready {
+			return fmt.Errorf("SSH connection unavailable during cleanup")
+		}
+		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, host, logger)
+	})
+}
+
+func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, host string, logger *slog.Logger) error {
 	logger.Info("removing all active forwards")
 
 	// Clear all desired state (this will make reconciler want to remove everything)

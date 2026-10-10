@@ -12,6 +12,7 @@ import (
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/instancepath"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/socket"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
@@ -130,7 +131,7 @@ type Manager struct {
 
 	// State persistence and IPC
 	history      *state.History
-	stateWriter  *statefile.Writer
+	stateWriter  snapshotWriter
 	socketServer *socket.Server
 	startedAt    time.Time
 
@@ -225,7 +226,7 @@ func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHT
 // Example usage:
 //
 //	manager := NewManager(cfg, eventReader, reconciler, sshMaster, state, history, logger)
-//	if err := manager.Run(ctx); err != nil {
+//	if err := manager.Run(ctx, owner); err != nil {
 //	    log.Fatal(err)
 //	}
 func NewManager(
@@ -272,42 +273,28 @@ func NewManager(
 //	ctx, cancel := context.WithCancel(context.Background())
 //	defer cancel()
 //
-//	if err := manager.Run(ctx); err != nil {
+//	if err := manager.Run(ctx, owner); err != nil {
 //	    log.Fatal(err)
 //	}
-func (m *Manager) Run(ctx context.Context) error {
+func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
+	socketPath, statePath, err := owner.Paths(m.cfg.Host)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m.logger.Info("manager starting")
 
-	// Initialize state writer
-	var err error
-	m.stateWriter, err = statefile.NewWriter(m.cfg.Host, m.startedAt)
-	if err != nil {
-		return fmt.Errorf("failed to create state writer: %w", err)
-	}
-	defer m.stateWriter.Close()
-
-	// Initialize socket server
-	m.socketServer, err = socket.NewServer(m.cfg.Host, m.state, m.history, m.startedAt, m.logger)
+	// Admission covers initialization, joined publication and cleanup. Pass
+	// frozen paths, not lease capabilities, to the concrete publishers.
+	m.stateWriter = statefile.NewWriterAtPath(m.cfg.Host, statePath, m.startedAt)
+	m.socketServer, err = socket.NewServerAtPath(m.cfg.Host, socketPath, m.state, m.history, m.startedAt, m.logger)
 	if err != nil {
 		m.logger.Warn("failed to create socket server, status will use file only", "error", err)
 	} else {
-		go func() {
-			if err := m.socketServer.Start(ctx); err != nil && ctx.Err() == nil {
-				m.logger.Warn("socket server error", "error", err)
-			}
-		}()
-		defer func() {
-			if err := m.socketServer.Close(); err != nil {
-				m.logger.Warn("failed to close socket server", "error", err)
-			}
-		}()
 		m.logger.Info("socket server started")
 	}
-
-	// Start background state writer
-	go m.startStateWriter(ctx)
+	defer m.startPublishers(ctx)()
 
 	// Changes are nonblocking wakeups, not state-bearing callbacks. Every
 	// reconciliation, including this worker, uses the Master's lifecycle gate.
@@ -427,19 +414,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 
 		// DIAGNOSTIC: Pre-flight checks before starting stream
-		controlPath, err := ssh.DeriveControlPath(m.cfg.Host)
-		if err == nil {
-			m.logger.Info("DIAGNOSTIC: SSH ControlMaster verified healthy before stream start",
-				"control_path", controlPath,
-				"consecutive_failures", consecutiveFailures)
+		controlPath := m.sshMaster.ControlPath()
+		m.logger.Info("DIAGNOSTIC: SSH ControlMaster verified healthy before stream start",
+			"control_path", controlPath,
+			"consecutive_failures", consecutiveFailures)
 
-			// Test Docker daemon connectivity with a simple command
-			if err := m.validateDockerConnectivity(ctx, controlPath); err != nil {
-				m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed",
-					"error", err.Error())
-			} else {
-				m.logger.Info("DIAGNOSTIC: Docker daemon connectivity validated")
-			}
+		// Test Docker daemon connectivity with a simple command
+		if err := m.validateDockerConnectivity(ctx, controlPath); err != nil {
+			m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed",
+				"error", err.Error())
+		} else {
+			m.logger.Info("DIAGNOSTIC: Docker daemon connectivity validated")
 		}
 
 		// Start event stream with healthy ControlMaster
@@ -687,10 +672,7 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event) erro
 		"containerID", event.ContainerID[:12])
 
 	// Get control path for docker inspect
-	controlPath, err := ssh.DeriveControlPath(m.cfg.Host)
-	if err != nil {
-		return fmt.Errorf("failed to derive control path: %w", err)
-	}
+	controlPath := m.sshMaster.ControlPath()
 
 	// Inspect container to get published ports
 	cmdStart := time.Now()
@@ -798,7 +780,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	m.logger.Info("reconciliation starting",
 		"actions", len(actions))
 
-	if err := m.reconciler.Apply(ctx, m.cfg.Host, actions); err != nil {
+	if err := m.reconciler.Apply(ctx, m.cfg.Host, m.sshMaster.ControlPath(), actions); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 
@@ -858,10 +840,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	m.logger.Info("performing startup reconciliation")
 
 	// Get control path for SSH commands
-	controlPath, err := ssh.DeriveControlPath(m.cfg.Host)
-	if err != nil {
-		return fmt.Errorf("failed to derive control path: %w", err)
-	}
+	controlPath := m.sshMaster.ControlPath()
 
 	// Parse host and port from SSH URL
 	sshHost, port, err := ssh.ParseHost(m.cfg.Host)

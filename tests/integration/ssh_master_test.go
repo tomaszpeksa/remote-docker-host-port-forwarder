@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
-	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 )
 
 // getTestSSHHost returns the SSH host to use for testing, or skips the test
@@ -28,7 +27,7 @@ func TestSSHMaster_OpenAndClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err, "Should create master successfully")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -38,9 +37,8 @@ func TestSSHMaster_OpenAndClose(t *testing.T) {
 	err = master.Open(ctx)
 	require.NoError(t, err, "Should open SSH ControlMaster successfully")
 
-	// Verify control socket file exists
-	controlPath, err := ssh.DeriveControlPath(host)
-	require.NoError(t, err)
+	// Verify this Master's actual control socket exists.
+	controlPath := master.ControlPath()
 
 	_, err = os.Stat(controlPath)
 	require.NoError(t, err, "Control socket file should exist after Open")
@@ -59,7 +57,7 @@ func TestSSHMaster_Check(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -80,7 +78,7 @@ func TestSSHMaster_CheckAfterClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -103,7 +101,7 @@ func TestSSHMaster_MultipleOpenClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -135,7 +133,7 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 	logger := logging.NewLogger("debug")
 
 	// First master
-	master1, err := ssh.NewMaster(host, logger)
+	master1, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -144,8 +142,7 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 	err = master1.Open(ctx)
 	require.NoError(t, err)
 
-	controlPath, err := ssh.DeriveControlPath(host)
-	require.NoError(t, err)
+	controlPath := master1.ControlPath()
 
 	// Verify socket exists
 	_, err = os.Stat(controlPath)
@@ -158,8 +155,8 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 	_, err = os.Stat(controlPath)
 	require.True(t, os.IsNotExist(err), "Socket should be removed after Close")
 
-	// Second master should be able to use same path
-	master2, err := ssh.NewMaster(host, logger)
+	// A different Master must own a distinct namespace.
+	master2, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
@@ -171,8 +168,9 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 		_ = master2.Close()
 	}()
 
-	// Verify socket exists again
-	_, err = os.Stat(controlPath)
+	// Verify the second socket exists without reusing the first namespace.
+	require.NotEqual(t, controlPath, master2.ControlPath())
+	_, err = os.Stat(master2.ControlPath())
 	require.NoError(t, err, "Socket should exist for second master")
 }
 
@@ -181,7 +179,7 @@ func TestSSHMaster_ConcurrentCheck(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -203,7 +201,7 @@ func TestSSHMaster_ContextCancellation(t *testing.T) {
 	host := getTestSSHHost(t)
 
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
 	// Create a context that's already canceled
@@ -227,7 +225,7 @@ func TestSSHMaster_InvalidHost(t *testing.T) {
 
 	for _, host := range invalidHosts {
 		t.Run(host, func(t *testing.T) {
-			_, err := ssh.NewMaster(host, logger)
+			_, err := newOwnedMaster(t, host, logger)
 			assert.Error(t, err, "Should reject invalid host format: %s", host)
 		})
 	}

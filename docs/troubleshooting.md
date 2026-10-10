@@ -80,7 +80,8 @@ ps aux | grep "ssh.*ControlMaster"
 # Should show nothing
 
 # Check no orphaned control sockets
-ls /tmp/rdhpf-*.sock 2>/dev/null
+
+# Inspect only the exact control_path recorded in this instance's logs.
 # Should show nothing
 
 # Verify exit code was 0
@@ -222,11 +223,9 @@ netstat -an | grep LISTEN | grep :8080
    ```
 
 3. **Check for Previous rdhpf Instance**:
-   ```bash
-   ps aux | grep rdhpf
-   # Kill any orphaned instances
-   pkill rdhpf
-   ```
+   Identify the owner from your process/service records and stop that instance
+   gracefully. Do not kill every process matching the program name; other status
+   directories/users can have independent owners.
 
 ### Automatic Recovery
 
@@ -268,11 +267,9 @@ rdhpf includes automatic recovery:
    ssh-keyscan remotehost >> ~/.ssh/known_hosts
    ```
 
-4. **Clean Up Stale Control Sockets**:
-   ```bash
-   rm -f /tmp/rdhpf-*.sock
-   pkill -f "ssh.*ControlMaster"
-   ```
+4. **Inspect Owned Control Sockets**: use the exact private `control_path` in
+   this instance's logs. Do not use wildcard removal or broad process matching.
+   A live parent automatically recovers its own crashed SSH child.
 
 ### Circuit Breaker Behavior
 
@@ -343,31 +340,26 @@ docker inspect <container_id> --format '{{json .HostConfig.PortBindings}}'
 SSH processes remain after stopping rdhpf:
 ```bash
 $ ps aux | grep ssh | grep ControlMaster
-user  12345  ssh -MNf -o ControlMaster=auto ...
+user  12345  ssh -MN -o ControlMaster=yes -o ControlPersist=no ...
 ```
 
 ### Prevention
 
 rdhpf automatically cleans up SSH processes on shutdown:
-1. Sends `ssh -O exit` to ControlMaster
-2. Waits 1 second for graceful termination
-3. Sends SIGTERM if process still exists
-4. Removes control socket file
+1. Fences recovery and signals its retained foreground SSH child
+2. Waits for retirement, escalating to Kill if needed
+3. Reaps that child before reclaiming its private socket artifacts
+4. Removes the empty owned directory; uncertainty is reported, not adopted
 
 ### Manual Cleanup
 
 If cleanup fails (e.g., after `kill -9` on rdhpf):
 
-```bash
-# Find SSH master processes
-ps aux | grep ssh | grep ControlMaster
-
-# Kill them
-pkill -f "ssh.*ControlMaster"
-
-# Clean up control sockets
-rm -f /tmp/rdhpf-*.sock
-```
+Use retained operational records to identify only your former instance and its
+exact private path. Quiesce competing tools before verified manual recovery;
+never use a wildcard `rm` or `pkill` recipe. Do not delete `~/.rdhpf/owner.lock`.
+Forced parent death may leave an idle SSH child and private directory; a new
+instance does not adopt or sweep them.
 
 ### Preventing Orphans
 
@@ -400,19 +392,10 @@ On unclean shutdown (crash, `kill -9`):
 
 ### Manual Recovery
 
-```bash
-# 1. Kill any orphaned SSH processes
-pkill -f "ssh.*ControlMaster.*rdhpf"
-
-# 2. Remove control sockets
-rm -f /tmp/rdhpf-*.sock
-
-# 3. Check for orphaned port forwards (rare, but possible)
-netstat -tlnp | grep ssh  # Look for SSH forwarding processes
-
-# 4. Restart rdhpf
-rdhpf run --host ssh://user@remotehost
-```
+Follow the ownership-verification guidance above before restarting. A new run
+uses a fresh SSH directory; an old orphan can still hold a local forwarding port.
+Duplicate admission protects cooperating publishers in the same status directory,
+not arbitrary external or same-UID namespace replacement.
 
 ### Production Deployment
 

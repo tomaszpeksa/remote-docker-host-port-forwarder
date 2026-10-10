@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- S06 correction: isolate each SSH Master in a short private namespace and reclaim
+  owned stale sockets only after child retirement. Paths remain stable within a
+  Master, not across independent instances; external namespace mutation is outside
+  the cooperative ownership contract.
+- Admit only one publisher per actual HOME/.rdhpf directory, regardless of target,
+  with a persistent owner.lock held through joined status publication/cleanup.
+  Requires local Linux/macOS storage and quiesced old-version publishers.
+  Forced parent death can leave a child/private directory; no orphan sweep.
+
+
 ### Added
 - Comprehensive debug logging for docker events SSH command execution
   - Logs full SSH command with arguments before execution

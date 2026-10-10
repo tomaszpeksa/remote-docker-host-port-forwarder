@@ -63,6 +63,7 @@ type healthMonitor struct {
 type Master struct {
 	host                string
 	controlPath         string
+	namespace           *masterNamespace
 	logger              *slog.Logger
 	mu                  sync.Mutex
 	cmd                 *exec.Cmd // last started command, retained after its Wait for diagnostics
@@ -78,16 +79,20 @@ type Master struct {
 	monitor             *healthMonitor
 }
 
-// NewMaster creates a connection owner without starting SSH.
+// NewMaster allocates a private namespace without starting SSH. Callers must
+// register Close immediately, including when Open is never called or fails.
 func NewMaster(host string, logger *slog.Logger) (*Master, error) {
 	if !strings.HasPrefix(host, "ssh://") {
 		return nil, fmt.Errorf("host must be in ssh://user@host format, got: %s", host)
 	}
-	path, err := DeriveControlPath(host)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive control path: %w", err)
+	if strings.TrimPrefix(host, "ssh://") == "" {
+		return nil, fmt.Errorf("host cannot be empty after ssh:// prefix")
 	}
-	m := &Master{host: host, controlPath: path, logger: logger, changes: make(chan struct{}, 1)}
+	namespace, err := newMasterNamespace()
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate SSH namespace: %w", err)
+	}
+	m := &Master{host: host, controlPath: namespace.path, namespace: namespace, logger: logger, changes: make(chan struct{}, 1)}
 	m.lifetime.Store(newMasterLifetime())
 	return m, nil
 }
@@ -164,6 +169,9 @@ func (m *Master) Open(ctx context.Context) error {
 }
 
 func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error {
+	if err := m.namespace.open(); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(m.controlPath); err == nil {
 		return fmt.Errorf("refusing occupied SSH control path %s", m.controlPath)
 	} else if !os.IsNotExist(err) {
@@ -237,6 +245,9 @@ var masterPIDPattern = regexp.MustCompile(`(?m)^Master running \(pid=([0-9]+)\)\
 // child, and checks that the pathname did not change during connection. Never
 // trust a mux-reported PID as authority to signal or unlink anything.
 func (m *Master) associate(ctx context.Context) error {
+	if err := m.namespace.verify(); err != nil {
+		return err
+	}
 	c := m.connection
 	if c == nil {
 		return fmt.Errorf("no owned SSH child")
@@ -363,16 +374,8 @@ func (m *Master) retireConnection() error {
 		m.generation++
 		c.retired = true
 	}
-	if c.socket != nil {
-		info, err := os.Lstat(m.controlPath)
-		if err == nil && os.SameFile(c.socket, info) {
-			if err = os.Remove(m.controlPath); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	if err := m.namespace.reclaim(); err != nil {
+		return err
 	}
 	m.connection = nil
 	return nil
@@ -439,6 +442,9 @@ func (m *Master) Close() error {
 		return nil // a concurrent explicit Open already began a newer lifecycle
 	}
 	err := m.retireConnection()
+	if err == nil {
+		err = m.namespace.close()
+	}
 	if err == nil {
 		life.finished.Do(func() { close(life.closed) })
 	}

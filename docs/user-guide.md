@@ -102,7 +102,7 @@ Shutdown completes within 2 seconds, releasing all ports and cleaning up SSH con
 
 ### SSH ControlMaster multiplexing
 
-- A single persistent SSH master session is created (`ControlMaster=auto`, `ControlPersist`)
+- A foreground SSH child is directly owned (`ControlMaster=yes`, `ForkAfterAuthentication=no`, `ControlPersist=no`)
 - Keep-alives maintain connectivity; health monitor recreates session on failure
 
 ### State and reconciliation
@@ -146,15 +146,26 @@ rdhpf run --host ssh://db.example.com
 psql -h 127.0.0.1 -p 5432 -U myuser mydb
 ```
 
-### Multiple simultaneous projects
+### One active publisher per status directory
 
-Run separate rdhpf instances for different hosts. Avoid port conflicts by ensuring containers on different hosts use different ports:
-```bash
-# Terminal A
-rdhpf run --host ssh://user@host1
-# Terminal B
-rdhpf run --host ssh://user@host2
-```
+Only one `rdhpf run` may use the same actual `HOME/.rdhpf` directory at a time,
+even for different SSH targets. A duplicate fails before SSH startup or status
+changes. Directory aliases share admission. This is normally one instance per
+local user, not machine-wide cross-user exclusion. Distinct directories do not
+share admission, but their local forwarding ports can still conflict.
+
+The persistent `HOME/.rdhpf/owner.lock` must not be deleted or replaced. Ownership
+requires local Linux/macOS storage; network/shared/FUSE filesystems are outside
+this contract. Stop old-version publishers before upgrading: they do not honor
+the lock. Status filenames, target selection and output schemas are unchanged.
+
+SSH uses a short private directory per Master, with one stable socket path across
+connection recovery. Other instances and cleanup tools must leave active
+namespaces (including ancestor paths and lock files) alone. Permissions and
+random names do not protect against malicious same-UID namespace replacement.
+Normal cleanup removes the owned SSH directory; forced parent termination may
+leave it and an SSH child behind. Recovery from an SSH-child crash while the
+parent remains alive is separate and automatic.
 
 ## Configuration Reference
 

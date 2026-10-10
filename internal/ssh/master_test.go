@@ -71,6 +71,21 @@ func TestMasterProcess(t *testing.T) {
 	if marker := os.Getenv("S06_START_MARKER"); marker != "" {
 		os.WriteFile(marker, []byte(strings.Join(args, "\n")), 0600)
 	}
+	if os.Getenv("S06_EARLY_SOCKET") == "1" {
+		temporary := path + ".0123456789abcdef"
+		listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: temporary, Net: "unix"})
+		if err != nil {
+			os.Exit(2)
+		}
+		listener.SetUnlinkOnClose(false)
+		if os.Getenv("S06_EARLY_LINK") == "1" {
+			if err := os.Link(temporary, path); err != nil {
+				os.Exit(2)
+			}
+		}
+		listener.Close()
+		os.Exit(9)
+	}
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		os.Exit(2)
@@ -126,7 +141,6 @@ func masterFixture(t *testing.T) (*Master, string) {
 	t.Setenv("S06_START_MARKER", filepath.Join(dir, "args"))
 	m, err := NewMaster("ssh://owned-fixture.invalid", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	m.controlPath = filepath.Join(dir, "master.sock")
 	t.Cleanup(func() { require.NoError(t, m.Close()) })
 	return m, dir
 }
@@ -154,7 +168,7 @@ func TestMasterRefusesOccupiedEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	defer other.Close()
 	require.Error(t, m.Open(context.Background()))
-	require.NoError(t, m.Close())
+	require.Error(t, m.Close(), "occupied namespace is retained, not falsely cleaned")
 	_, err = os.Lstat(m.controlPath)
 	require.NoError(t, err, "foreign endpoint must not be removed")
 }
@@ -303,7 +317,7 @@ func TestMasterRacingEndpointIsNotAdoptedOrRemoved(t *testing.T) {
 	// Keep our child alive at its startup gate: endpoint exists but belongs
 	// to this test process, not that directly owned child.
 	require.ErrorContains(t, <-result, "does not belong to the owned child")
-	require.NoError(t, m.Close())
+	require.Error(t, m.Close(), "observed foreign endpoint must prevent cleanup")
 	require.NotNil(t, m.cmd.ProcessState)
 	_, err = os.Lstat(m.ControlPath())
 	require.NoError(t, err)
@@ -345,7 +359,7 @@ func TestMasterFailedReopenPublishesRetirement(t *testing.T) {
 		return nil
 	}))
 	require.NotNil(t, m.cmd.ProcessState)
-	require.NoError(t, m.Close())
+	require.Error(t, m.Close(), "foreign endpoint remains an explicit cleanup refusal")
 	_, err = os.Lstat(m.ControlPath())
 	require.NoError(t, err)
 }

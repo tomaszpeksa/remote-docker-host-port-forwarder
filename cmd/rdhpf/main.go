@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/instancepath"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
@@ -168,6 +169,15 @@ func runMain(cmd *cobra.Command, args []string) error {
 }
 
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	owner, err := instancepath.Acquire(cfg.Host)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := owner.Close(); err != nil {
+			logger.Warn("publisher ownership close failed", "error", err)
+		}
+	}()
 	// 1. Create SSH Master
 	logger.Info("establishing SSH ControlMaster connection")
 	sshMaster, err := ssh.NewMaster(cfg.Host, logger)
@@ -188,11 +198,8 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	logger.Info("SSH ControlMaster established")
 
-	// 2. Derive control path for other operations
-	controlPath, err := ssh.DeriveControlPath(cfg.Host)
-	if err != nil {
-		return fmt.Errorf("failed to derive control path: %w", err)
-	}
+	// 2. Every operation uses this Master's stable private endpoint.
+	controlPath := sshMaster.ControlPath()
 
 	// 3. Create Docker event reader
 	eventReader := docker.NewEventReader(cfg.Host, controlPath, logger)
@@ -217,7 +224,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	// 7. Run manager (blocks until context canceled)
 	logger.Info("starting manager")
-	if err := mgr.Run(ctx); err != nil {
+	if err := mgr.Run(ctx, owner); err != nil {
 		// context.Canceled is expected during graceful shutdown
 		if err != context.Canceled {
 			return fmt.Errorf("manager error: %w", err)
@@ -382,11 +389,11 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 		if !ready {
 			return fmt.Errorf("SSH connection unavailable during cleanup")
 		}
-		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, host, logger)
+		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, host, sshMaster.ControlPath(), logger)
 	})
 }
 
-func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, host string, logger *slog.Logger) error {
+func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, host, controlPath string, logger *slog.Logger) error {
 	logger.Info("removing all active forwards")
 
 	// Clear all desired state (this will make reconciler want to remove everything)
@@ -407,7 +414,7 @@ func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State
 		"count", len(toRemove))
 
 	// Apply removal actions
-	if err := reconciler.Apply(cleanupCtx, host, toRemove); err != nil {
+	if err := reconciler.Apply(cleanupCtx, host, controlPath, toRemove); err != nil {
 		return fmt.Errorf("failed to remove forwards: %w", err)
 	}
 

@@ -200,17 +200,11 @@ func (r *Reconciler) Diff() (toAdd, toRemove []Action) {
 // Example usage:
 //
 //	actions := append(toRemove, toAdd...)
-//	err := reconciler.Apply(ctx, "ssh://user@host", actions)
-func (r *Reconciler) Apply(ctx context.Context, host string, actions []Action) error {
+//	err := reconciler.Apply(ctx, "ssh://user@host", master.ControlPath(), actions)
+func (r *Reconciler) Apply(ctx context.Context, host, controlPath string, actions []Action) error {
 	if len(actions) == 0 {
 		r.logger.Debug("no actions to apply")
 		return nil
-	}
-
-	// Get control path from master
-	controlPath, err := ssh.DeriveControlPath(host)
-	if err != nil {
-		return fmt.Errorf("failed to derive control path: %w", err)
 	}
 
 	var firstError error

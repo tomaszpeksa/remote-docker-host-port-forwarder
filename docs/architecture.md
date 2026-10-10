@@ -56,7 +56,8 @@ This section maps responsibilities to packages and files in the repository. Link
   - Files:
     - internal/ssh/master.go — ControlMaster, health monitor, circuit breaker (open/half-open/closed)
     - internal/ssh/forward.go — AddForward, CancelForward, AddForwardWithRetry (exponential backoff)
-    - internal/ssh/controlpath.go — stable, collision-free ControlPath derivation
+    - internal/ssh/namespace.go — exclusively created private namespace, stable per-Master ControlPath and owned stale-socket cleanup
+    - internal/instancepath/owner.go — nonblocking single-publisher admission per actual status directory, held through joined publication cleanup
 
 - Docker Module
   - Event streaming over SSH: `docker events --format '{{json .}}'`

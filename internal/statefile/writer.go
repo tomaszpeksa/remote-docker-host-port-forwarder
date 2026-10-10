@@ -19,27 +19,38 @@ type Writer struct {
 	pid       int
 	startedAt time.Time
 	mu        sync.Mutex
+	closed    bool
 }
 
-// NewWriter creates a new state file writer for the given host
+// NewWriter resolves the legacy address wrapper. The caller must own publisher
+// admission (or an isolated test namespace) through final publication and Close.
 func NewWriter(host string, startedAt time.Time) (*Writer, error) {
 	path, err := GetStateFilePath(host)
 	if err != nil {
 		return nil, err
 	}
 
+	return NewWriterAtPath(host, path, startedAt), nil
+}
+
+// NewWriterAtPath uses a frozen address. The caller must hold publisher admission
+// through the writer's final publication and Close; readers need no admission.
+func NewWriterAtPath(host, path string, startedAt time.Time) *Writer {
 	return &Writer{
 		path:      path,
 		host:      host,
 		pid:       os.Getpid(),
 		startedAt: startedAt,
-	}, nil
+	}
 }
 
 // Write writes the current state snapshot to disk with file locking
 func (w *Writer) Write(forwards []state.ForwardState, history []state.HistoryEntry) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return fmt.Errorf("state writer closed")
+	}
 
 	snapshot := NewSnapshot(w.host, w.pid, w.startedAt, time.Time{}, forwards, history)
 	// Observe the update time after conversion, before publishing the snapshot.
@@ -100,7 +111,13 @@ func (w *Writer) writeAtomic(snapshot StateFile) error {
 func (w *Writer) Delete() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	return w.deleteLocked()
+}
 
+func (w *Writer) deleteLocked() error {
 	if err := os.Remove(w.path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete state file: %w", err)
 	}
@@ -108,7 +125,13 @@ func (w *Writer) Delete() error {
 	return nil
 }
 
-// Close is an alias for Delete for interface compatibility
+// Close fences late publication/deletion before releasing the caller's admission.
 func (w *Writer) Close() error {
-	return w.Delete()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	return w.deleteLocked()
 }

@@ -9,12 +9,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
-	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 )
 
 // The only executable on the test PATH is this owned foreground helper. It
@@ -27,7 +27,13 @@ func TestCLIStartupProcess(t *testing.T) {
 	if err != nil {
 		os.Exit(2)
 	}
-	_, _ = fmt.Fprintln(conn, "started")
+	var controlPath string
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "ControlPath=") {
+			controlPath = strings.TrimPrefix(arg, "ControlPath=")
+		}
+	}
+	_, _ = fmt.Fprintln(conn, controlPath)
 	_, _ = bufio.NewReader(conn).ReadByte()
 	os.Exit(3)
 }
@@ -51,10 +57,6 @@ func TestRunFailedStartupOwnsCleanup(t *testing.T) {
 	defer cancel()
 	var logs bytes.Buffer
 	host := "ssh://" + filepath.Base(dir) + ".invalid"
-	path, err := ssh.DeriveControlPath(host)
-	require.NoError(t, err)
-	_, err = os.Lstat(path)
-	require.True(t, os.IsNotExist(err))
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, &config.Config{Host: host}, slog.New(slog.NewTextHandler(&logs, nil))) }()
 	require.NoError(t, gate.(*net.UnixListener).SetDeadline(time.Now().Add(5*time.Second)))
@@ -64,7 +66,10 @@ func TestRunFailedStartupOwnsCleanup(t *testing.T) {
 	require.NoError(t, child.SetDeadline(time.Now().Add(5*time.Second)))
 	line, err := bufio.NewReader(child).ReadString('\n')
 	require.NoError(t, err)
-	require.Equal(t, "started\n", line)
+	path := strings.TrimSpace(line)
+	require.NotEmpty(t, path)
+	_, err = os.Lstat(filepath.Dir(path))
+	require.NoError(t, err, "constructor owns its actual private directory")
 	cancel()
 	select {
 	case err = <-result:
@@ -75,6 +80,6 @@ func TestRunFailedStartupOwnsCleanup(t *testing.T) {
 	_, err = bufio.NewReader(child).ReadByte()
 	require.Error(t, err, "child must release owned pipe before Run returns")
 	require.Contains(t, logs.String(), "closing SSH ControlMaster connection", "CLI cleanup owner must exist even when Open fails")
-	_, err = os.Lstat(path)
-	require.True(t, os.IsNotExist(err))
+	_, err = os.Lstat(filepath.Dir(path))
+	require.True(t, os.IsNotExist(err), "failed startup must release the allocated directory")
 }

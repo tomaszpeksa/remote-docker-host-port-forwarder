@@ -24,10 +24,18 @@ import (
 // TestConnectionLossRecovery restores actual application traffic after two
 // distinct owned mux losses. It never requests recovery or edits actual state.
 func TestConnectionLossRecovery(t *testing.T) {
+	runTwoLossRecovery(t, func(ctx context.Context, m *ssh.Master, host string) (uint64, int, error) {
+		return recoveryMux(ctx, m, host, true)
+	})
+}
+
+func runTwoLossRecovery(t *testing.T, forceLoss func(context.Context, *ssh.Master, string) (uint64, int, error)) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("disruptive recovery integration")
 	}
 	host, token := recoveryAlias(t, getTestSSHHost(t))
+	owner := admitPublisher(t, host)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	ports := []int{18181, 18182}
@@ -41,7 +49,7 @@ func TestConnectionLossRecovery(t *testing.T) {
 	var checks atomic.Uint64
 	observer := recoveryObserver{Handler: slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}), checks: &checks, stream: make(chan struct{}), once: &sync.Once{}}
 	logger := slog.New(observer)
-	master, err := ssh.NewMaster(host, logger)
+	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 	_, err = os.Lstat(master.ControlPath())
 	require.True(t, os.IsNotExist(err), "test mux endpoint must be unused")
@@ -52,7 +60,7 @@ func TestConnectionLossRecovery(t *testing.T) {
 	managerCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	var runErr error
-	go func() { runErr = mgr.Run(managerCtx); close(done) }()
+	go func() { runErr = mgr.Run(managerCtx, owner); close(done) }()
 	t.Cleanup(func() {
 		stop()
 		select {
@@ -123,7 +131,7 @@ func TestConnectionLossRecovery(t *testing.T) {
 		t.Logf("automatic monitor continued checks=%d", checks.Load())
 	}
 	for loss := 1; loss <= 2; loss++ {
-		lostGeneration, lostPID, err := recoveryMux(ctx, master, host, true)
+		lostGeneration, lostPID, err := forceLoss(ctx, master, host)
 		require.NoError(t, err)
 		require.Equal(t, generation, lostGeneration)
 		require.Equal(t, pid, lostPID)

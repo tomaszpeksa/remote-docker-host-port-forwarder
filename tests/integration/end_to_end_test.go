@@ -83,22 +83,19 @@ func setupManager(t *testing.T, ctx context.Context, sshHost string) *manager.Ma
 	// Create logger
 	logger := logging.NewLogger("debug")
 
+	// Admit before any SSH/publication. Cleanup registration order keeps this last.
+	owner := admitPublisher(t, sshHost)
+
 	// Create SSH master
-	master, err := ssh.NewMaster(sshHost, logger)
+	master, err := newOwnedMaster(t, sshHost, logger)
 	require.NoError(t, err, "Should create SSH master")
 
 	// Open SSH connection
 	err = master.Open(ctx)
 	require.NoError(t, err, "Should open SSH ControlMaster")
 
-	// Clean up SSH master when test completes
-	t.Cleanup(func() {
-		master.Close()
-	})
-
 	// Get control path
-	controlPath, err := ssh.DeriveControlPath(sshHost)
-	require.NoError(t, err, "Should derive control path")
+	controlPath := master.ControlPath()
 
 	// Create state
 	st := state.NewState()
@@ -120,12 +117,7 @@ func setupManager(t *testing.T, ctx context.Context, sshHost string) *manager.Ma
 	// Create manager
 	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, history, logger)
 
-	// Start manager in background goroutine
-	go func() {
-		if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
-			t.Logf("Manager stopped with error: %v", err)
-		}
-	}()
+	runOwnedManager(t, ctx, mgr, owner)
 
 	return mgr
 }

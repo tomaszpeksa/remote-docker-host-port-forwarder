@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
 
@@ -30,7 +31,10 @@ func recoveryManager(t *testing.T) (*Manager, int, string) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, h := state.NewState(), state.NewHistory()
-	m := NewManager(&config.Config{Host: "ssh://owned-fixture.invalid"}, nil, reconcile.NewReconciler(st, h, logger), nil, st, h, logger)
+	master, err := ssh.NewMaster("ssh://owned-fixture.invalid", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, master.Close()) })
+	m := NewManager(&config.Config{Host: "ssh://owned-fixture.invalid"}, nil, reconcile.NewReconciler(st, h, logger), master, st, h, logger)
 	return m, port, calls
 }
 

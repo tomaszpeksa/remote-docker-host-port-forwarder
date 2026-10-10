@@ -113,23 +113,21 @@ func setupManagerWithLogger(
 	ctx context.Context,
 	sshHost string,
 	logger *slog.Logger,
-) *manager.Manager {
+) *managerFixture {
 	t.Helper()
 
+	// Admit before any SSH/publication. Cleanup registration order keeps this last.
+	owner := admitPublisher(t, sshHost)
+
 	// Create SSH master
-	master, err := ssh.NewMaster(sshHost, logger)
+	master, err := newOwnedMaster(t, sshHost, logger)
 	require.NoError(t, err, "Should create SSH master")
 
 	err = master.Open(ctx)
 	require.NoError(t, err, "Should open SSH ControlMaster")
 
-	t.Cleanup(func() {
-		master.Close()
-	})
-
 	// Get control path
-	controlPath, err := ssh.DeriveControlPath(sshHost)
-	require.NoError(t, err, "Should derive control path")
+	controlPath := master.ControlPath()
 
 	// Create state
 	st := state.NewState()
@@ -151,14 +149,14 @@ func setupManagerWithLogger(
 	// Create manager
 	mgr := manager.NewManager(cfg, eventReader, reconciler, master, st, history, logger)
 
-	// Start manager in background
-	go func() {
-		if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
-			t.Logf("Manager stopped with error: %v", err)
-		}
-	}()
+	runOwnedManager(t, ctx, mgr, owner)
 
-	return mgr
+	return &managerFixture{Manager: mgr, master: master}
+}
+
+type managerFixture struct {
+	*manager.Manager
+	master *ssh.Master
 }
 
 // ============================================================================
@@ -167,14 +165,8 @@ func setupManagerWithLogger(
 
 // getSSHMasterPID returns the PID of the SSH ControlMaster process
 // Returns -1 if not found
-func getSSHMasterPID(t *testing.T, sshHost string) int {
+func getSSHMasterPID(t *testing.T, sshHost, controlPath string) int {
 	t.Helper()
-
-	controlPath, err := ssh.DeriveControlPath(sshHost)
-	if err != nil {
-		t.Logf("Failed to derive control path: %v", err)
-		return -1
-	}
 
 	sshHostClean, port, err := ssh.ParseHost(sshHost)
 	if err != nil {
@@ -213,7 +205,7 @@ func getSSHMasterPID(t *testing.T, sshHost string) int {
 // monitorSSHPIDChanges monitors SSH ControlMaster PID during a test
 func monitorSSHPIDChanges(
 	t *testing.T,
-	sshHost string,
+	sshHost, controlPath string,
 	initialPID int,
 	duration time.Duration,
 ) []PIDChange {
@@ -229,7 +221,7 @@ func monitorSSHPIDChanges(
 	for time.Since(startTime) < duration {
 		<-ticker.C
 
-		newPID := getSSHMasterPID(t, sshHost)
+		newPID := getSSHMasterPID(t, sshHost, controlPath)
 		if newPID != -1 && newPID != currentPID {
 			changes = append(changes, PIDChange{
 				Time:   time.Now(),

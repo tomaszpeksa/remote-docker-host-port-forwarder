@@ -60,8 +60,12 @@ test: test-unit ## Run all tests (unit tests)
 
 test-unit: ## Run unit tests
 	@printf "$(GREEN)Running unit tests...$(NC)\n"
-	@go test $(GOTEST_FLAGS) -race -timeout=5m ./...
+	@SSH_TEST_HOST= SSH_TEST_KEY_PATH= go test $(GOTEST_FLAGS) -count=1 -race -timeout=5m ./...
 	@printf "$(GREEN)✓ Unit tests passed$(NC)\n"
+
+test-integration: ## Run integration tests against SSH_TEST_HOST (required)
+	@test -n "$(SSH_TEST_HOST)" || { printf "$(RED)SSH_TEST_HOST is required$(NC)\n"; exit 1; }
+	@go test $(GOTEST_FLAGS) -count=1 -timeout=15m ./tests/integration/...
 
 itest-up: ## Start integration test harness (SSH container with Docker socket mount)
 	@bash scripts/itest-up.sh
@@ -71,7 +75,7 @@ itest: ## Run integration tests (requires itest-up first)
 	@HOME=$(PWD)/.itests/home \
 		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
 		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
-		go test $(GOTEST_FLAGS) -timeout=15m ./tests/integration/...
+		go test $(GOTEST_FLAGS) -count=1 -timeout=15m ./tests/integration/...
 	@printf "$(GREEN)✓ Integration tests passed$(NC)\n"
 
 itest-stability: ## Run only stability tests (requires itest-up first, ~7 min)
@@ -80,7 +84,7 @@ itest-stability: ## Run only stability tests (requires itest-up first, ~7 min)
 	@HOME=$(PWD)/.itests/home \
 		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
 		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
-		go test $(GOTEST_FLAGS) -timeout=10m -run 'TestManager_(LongRunning|TunnelStability)' ./tests/integration/
+		go test $(GOTEST_FLAGS) -count=1 -timeout=10m -run 'TestManager_(LongRunning|TunnelStability)' ./tests/integration/
 	@printf "$(GREEN)✓ Stability tests passed$(NC)\n"
 
 itest-down: ## Stop integration test harness
@@ -129,7 +133,7 @@ security: ## Run security checks
 coverage: ## Generate test coverage report
 	@printf "$(GREEN)Generating coverage report...$(NC)\n"
 	@mkdir -p $(COVERAGE_DIR)
-	@go test -race -coverprofile=$(COVERAGE_DIR)/coverage.out -covermode=atomic ./...
+	@SSH_TEST_HOST= SSH_TEST_KEY_PATH= go test -count=1 -race -timeout=5m -coverpkg=./cmd/...,./internal/... -coverprofile=$(COVERAGE_DIR)/coverage.out -covermode=atomic ./...
 	@go tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
 	@go tool cover -func=$(COVERAGE_DIR)/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
 	@printf "$(GREEN)✓ Coverage report generated: $(COVERAGE_DIR)/coverage.html$(NC)\n"

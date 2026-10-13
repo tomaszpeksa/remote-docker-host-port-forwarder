@@ -20,7 +20,12 @@ func TestWorkflowManagedToolEnvironment(t *testing.T) {
 			require.NoError(t, err)
 			var workflow struct {
 				Jobs map[string]struct {
-					Env      map[string]string `yaml:"env"`
+					Env   map[string]string `yaml:"env"`
+					Steps []struct {
+						Name  string `yaml:"name"`
+						Shell string `yaml:"shell"`
+						Run   string `yaml:"run"`
+					} `yaml:"steps"`
 					Defaults struct {
 						Run struct {
 							Shell string `yaml:"shell"`
@@ -35,9 +40,23 @@ func TestWorkflowManagedToolEnvironment(t *testing.T) {
 				}
 				require.Equal(t, "local", job.Env["GOTOOLCHAIN"], name)
 				require.Equal(t, "0", job.Env["MISE_AUTO_INSTALL"], name)
-				for _, key := range []string{"MISE_DATA_DIR", "MISE_CACHE_DIR", "MISE_STATE_DIR", "MISE_CONFIG_DIR", "MISE_GLOBAL_CONFIG_FILE", "MISE_SYSTEM_CONFIG_FILE", "GOCACHE", "GOMODCACHE"} {
-					require.True(t, strings.HasPrefix(job.Env[key], "${{ runner.temp }}/s07-"), "%s: %s must apply to setup and every managed step", name, key)
+				// runner context is unavailable in jobs.<id>.env. Export paths
+				// from an ordinary shell step before mise bootstrap/installation.
+				setup := ""
+				for _, step := range job.Steps {
+					if step.Name == "Isolate managed tool paths" {
+						require.Equal(t, "bash", step.Shell, name)
+						setup = step.Run
+					}
+					if step.Name == "Set up mise" {
+						require.NotEmpty(t, setup, name)
+					}
 				}
+				for _, key := range []string{"MISE_DATA_DIR", "MISE_CACHE_DIR", "MISE_STATE_DIR", "MISE_CONFIG_DIR", "MISE_GLOBAL_CONFIG_FILE", "MISE_SYSTEM_CONFIG_FILE", "GOCACHE", "GOMODCACHE"} {
+					require.NotContains(t, job.Env, key, name)
+					require.Contains(t, setup, key+"=$RUNNER_TEMP/s07-", name)
+				}
+				require.Contains(t, setup, `>> "$GITHUB_ENV"`, name)
 			}
 		})
 	}

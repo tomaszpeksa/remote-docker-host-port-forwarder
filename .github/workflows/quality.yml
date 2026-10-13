@@ -17,17 +17,23 @@ jobs:
     env:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
-      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
-      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
-      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
-      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
-      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
-      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
-      GOCACHE: ${{ runner.temp }}/s07-go-cache
-      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Isolate managed tool paths
+        shell: bash
+        run: |
+          {
+            echo "MISE_DATA_DIR=$RUNNER_TEMP/s07-mise-data"
+            echo "MISE_CACHE_DIR=$RUNNER_TEMP/s07-mise-cache"
+            echo "MISE_STATE_DIR=$RUNNER_TEMP/s07-mise-state"
+            echo "MISE_CONFIG_DIR=$RUNNER_TEMP/s07-mise-config"
+            echo "MISE_GLOBAL_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/global.toml"
+            echo "MISE_SYSTEM_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/system.toml"
+            echo "GOCACHE=$RUNNER_TEMP/s07-go-cache"
+            echo "GOMODCACHE=$RUNNER_TEMP/s07-go-mod"
+          } >> "$GITHUB_ENV"
 
       - name: Set up mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
@@ -74,17 +80,23 @@ jobs:
     env:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
-      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
-      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
-      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
-      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
-      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
-      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
-      GOCACHE: ${{ runner.temp }}/s07-go-cache
-      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Isolate managed tool paths
+        shell: bash
+        run: |
+          {
+            echo "MISE_DATA_DIR=$RUNNER_TEMP/s07-mise-data"
+            echo "MISE_CACHE_DIR=$RUNNER_TEMP/s07-mise-cache"
+            echo "MISE_STATE_DIR=$RUNNER_TEMP/s07-mise-state"
+            echo "MISE_CONFIG_DIR=$RUNNER_TEMP/s07-mise-config"
+            echo "MISE_GLOBAL_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/global.toml"
+            echo "MISE_SYSTEM_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/system.toml"
+            echo "GOCACHE=$RUNNER_TEMP/s07-go-cache"
+            echo "GOMODCACHE=$RUNNER_TEMP/s07-go-mod"
+          } >> "$GITHUB_ENV"
 
       - name: Set up mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
@@ -199,17 +211,23 @@ jobs:
     env:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
-      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
-      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
-      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
-      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
-      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
-      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
-      GOCACHE: ${{ runner.temp }}/s07-go-cache
-      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Isolate managed tool paths
+        shell: bash
+        run: |
+          {
+            echo "MISE_DATA_DIR=$RUNNER_TEMP/s07-mise-data"
+            echo "MISE_CACHE_DIR=$RUNNER_TEMP/s07-mise-cache"
+            echo "MISE_STATE_DIR=$RUNNER_TEMP/s07-mise-state"
+            echo "MISE_CONFIG_DIR=$RUNNER_TEMP/s07-mise-config"
+            echo "MISE_GLOBAL_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/global.toml"
+            echo "MISE_SYSTEM_CONFIG_FILE=$RUNNER_TEMP/s07-mise-config/system.toml"
+            echo "GOCACHE=$RUNNER_TEMP/s07-go-cache"
+            echo "GOMODCACHE=$RUNNER_TEMP/s07-go-mod"
+          } >> "$GITHUB_ENV"
 
       - name: Set up mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1

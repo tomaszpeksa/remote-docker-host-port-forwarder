@@ -56,7 +56,7 @@ jobs:
           mise exec -- scripts/check-tools.sh go golangci-lint jq
 
       - name: Run gosec security scanner
-        run: scripts/security.sh gosec-report.json ./cmd/... ./internal/...
+        run: scripts/security.sh --hosted gosec-report.json ./cmd/... ./internal/...
 
       - name: Upload security report
         if: always()

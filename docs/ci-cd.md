@@ -65,8 +65,8 @@ Advanced code quality and security checks.
 **Jobs**:
 
 - **security**: Security scanning
-  - All gosec rules/SSA through the pinned official golangci-lint release and dedicated security config
-  - Native golangci JSON, stderr, scanner exit and package scope; incomplete analysis fails
+  - All gosec rules/SSA through the pinned official golangci-lint release; hosted config preserves medium/medium thresholds (local Make uses low/low)
+  - Native golangci JSON, stderr, scanner exit, selected config and package scope; incomplete analysis fails
   - Attempts report upload even if scanning fails; scanner failure remains a failure
 
 - **coverage**: Test coverage analysis

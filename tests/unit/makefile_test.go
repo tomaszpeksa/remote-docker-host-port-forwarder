@@ -37,6 +37,7 @@ func TestMakeTestEntrypoints(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "check-tools.sh"), guard, 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "mise"), []byte("#!/bin/sh\n[ \"$1\" = which ] || exit 2\nprintf '%s/%s\\n' \"$MANAGED_TOOLS\" \"$2\"\n"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "jq"), []byte("#!/bin/sh\nexit 0\n"), 0700))
 			for _, name := range []string{"mkdir", "grep", "awk", "date", "dirname", "basename"} {
 				path, err := exec.LookPath(name)
 				require.NoError(t, err)

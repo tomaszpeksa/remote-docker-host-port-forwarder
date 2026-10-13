@@ -50,10 +50,13 @@ help: ## Show this help message
 	@printf "  make install            # Install binary to GOPATH/bin\n"
 	@printf "  make release            # Build for all platforms\n"
 
-.PHONY: check-go check-lint check-security
+.PHONY: check-go check-test-tools check-lint check-security
 
 check-go:
 	@scripts/check-tools.sh go gofmt
+
+check-test-tools:
+	@scripts/check-tools.sh go gofmt jq
 
 check-lint:
 	@scripts/check-tools.sh go gofmt golangci-lint
@@ -61,7 +64,8 @@ check-lint:
 check-security:
 	@scripts/check-tools.sh go golangci-lint jq
 
-build test-unit test-integration itest itest-stability fmt vet coverage deps release: check-go
+build test-integration itest itest-stability fmt vet deps release: check-go
+test-unit coverage: check-test-tools
 lint: check-lint
 security: check-security
 

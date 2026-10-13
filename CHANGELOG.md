@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- S07A: require Go 1.27.2 for source builds and macOS 13+ for new macOS binaries;
+  pin repository development tools with mise and update application dependencies.
+- Migrate Homebrew publishing to Linux/macOS binary casks. Existing formula users
+  need the separately published tap transition; normal OS security remains enabled,
+  so unsigned macOS downloads may be blocked on first launch. See the Homebrew guide.
+- Prevent SSH destination options from being interpreted as local flags across
+  production launches and the integration PID helper. Inherited SSH trust and
+  BatchMode changes remain deferred to S07B; they are not part of this release.
+
 - S06 correction: isolate each SSH Master in a short private namespace and reclaim
   owned stale sockets only after child retirement. Paths remain stable within a
   Master, not across independent instances; external namespace mutation is outside

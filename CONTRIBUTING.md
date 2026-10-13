@@ -45,6 +45,8 @@ mise exec -- make build
 The following Make/Go examples assume `mise exec --` or an already activated
 mise shell. Make checks the required managed executable paths before running
 commands. Missing tools or ambient copies fail; a missing linter is not success.
+Test/coverage targets also require managed jq. Direct `go test` invocations that
+execute the unit report/workflow fixtures enforce the same jq provider guard.
 The module graph remains owned by `go.mod`/`go.sum`, not mise.
 
 ### Installing Development Tools
@@ -110,8 +112,10 @@ Security uses the release linter's unchanged gosec 2.29.0 engine and x/tools 0.5
 importer. Standalone gosec 2.29.0 cannot load Go 1.27.2 export data; rebuilding its
 unchanged module does not fix it.
 `.golangci-security.yml` enables all gosec rules and SSA analyzers independently
-of ordinary lint exclusions, at medium severity/confidence. `make security`
-retains its `./...` scope; hosted quality scanning retains `./cmd/... ./internal/...`.
+of ordinary lint exclusions. `make security` preserves standalone gosec's low/low
+severity/confidence defaults and its `./...` scope. The explicit hosted config
+`.golangci-security-hosted.yml` retains historical medium/medium thresholds and
+`./cmd/... ./internal/...` scope, selected by `scripts/security.sh --hosted`.
 Reports are **native golangci JSON**, accompanied by stdout, stderr, scanner exit
 and actual package scope. Missing/malformed reports, loading errors and findings
 fail the gate; zero findings from an incomplete scan are not success.

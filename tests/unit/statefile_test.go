@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -113,23 +114,21 @@ func TestStateFile_WriteRead_Roundtrip(t *testing.T) {
 }
 
 func TestStateFile_IsStale(t *testing.T) {
-	// Fresh state
-	fresh := &statefile.StateFile{
-		UpdatedAt: time.Now(),
-	}
-	assert.False(t, fresh.IsStale(), "Recent state should not be stale")
-
-	// Stale state (15 seconds old, threshold is 10s)
-	stale := &statefile.StateFile{
-		UpdatedAt: time.Now().Add(-15 * time.Second),
-	}
-	assert.True(t, stale.IsStale(), "Old state should be stale")
-
-	// Right at threshold
-	threshold := &statefile.StateFile{
-		UpdatedAt: time.Now().Add(-10 * time.Second),
-	}
-	assert.True(t, threshold.IsStale(), "State at threshold should be stale")
+	// Pure clock characterization: do not depend on elapsed wall-clock time
+	// between constructing UpdatedAt and evaluating the strict > boundary.
+	synctest.Test(t, func(t *testing.T) {
+		snapshot := &statefile.StateFile{UpdatedAt: time.Now()}
+		assert.False(t, snapshot.IsStale(), "Fresh state is not stale")
+		time.Sleep(statefile.MaxStateAge - time.Nanosecond)
+		assert.False(t, snapshot.IsStale(), "State just below threshold is not stale")
+		time.Sleep(time.Nanosecond)
+		require.Equal(t, statefile.MaxStateAge, time.Since(snapshot.UpdatedAt))
+		assert.False(t, snapshot.IsStale(), "State exactly at threshold is not stale")
+		time.Sleep(time.Nanosecond)
+		assert.True(t, snapshot.IsStale(), "State just above threshold is stale")
+		time.Sleep(5*time.Second - time.Nanosecond)
+		assert.True(t, snapshot.IsStale(), "Old state is stale")
+	})
 }
 
 func TestWriter_Delete(t *testing.T) {

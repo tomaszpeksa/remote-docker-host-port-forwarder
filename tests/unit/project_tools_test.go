@@ -92,6 +92,8 @@ printf '%s/golangci-lint\n' "$MANAGED_TOOLS"
 func TestSecurityRecipeRejectsIncompleteReports(t *testing.T) {
 	makePath, err := exec.LookPath("make")
 	require.NoError(t, err)
+	guardOutput, guardErr := exec.Command("../../scripts/check-tools.sh", "jq").CombinedOutput()
+	require.NoError(t, guardErr, "managed jq required: %s", guardOutput)
 	jq, err := exec.LookPath("jq")
 	require.NoError(t, err, "install the ordinary project tool set")
 	root, err := filepath.Abs("../..")

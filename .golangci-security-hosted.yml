@@ -1,0 +1,22 @@
+version: "2"
+
+# Preserve the hosted workflow's historical medium/medium gosec thresholds.
+# Local Make security uses .golangci-security.yml (low/low).
+run:
+  tests: false
+linters:
+  default: none
+  enable: [gosec]
+  settings:
+    gosec:
+      severity: medium
+      confidence: medium
+  exclusions:
+    generated: disable
+    presets: []
+    rules: []
+    paths: []
+issues:
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

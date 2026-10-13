@@ -3,14 +3,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 scripts/check-tools.sh go golangci-lint jq
+config=.golangci-security.yml
+if [ "${1:-}" = --hosted ]; then
+    config=.golangci-security-hosted.yml
+    shift
+fi
 report=${1:-security-report.json}
 if [ "$#" -gt 0 ]; then shift; fi
 if [ "$#" -eq 0 ]; then set -- ./...; fi
 mkdir -p "$(dirname "$report")"
 printf '%s\n' "$@" > "$report.scope"
+printf '%s\n' "$config" > "$report.config"
 rm -f "$report"
 status=0
-golangci-lint run -v --config .golangci-security.yml --timeout=5m \
+golangci-lint run -v --config "$config" --timeout=5m \
     --output.json.path "$report" "$@" \
     > "$report.stdout" 2> "$report.stderr" || status=$?
 printf '%s\n' "$status" > "$report.exit"

@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      # v1 enabled staticcheck (SA) and gosimple (S1), not style/quick-fix checks.
+      checks: ["SA*", "S1*"]
+  exclusions:
+    # Preserve v1's EXC0001 default; do not change cleanup error policy in migration.
+    presets: [std-error-handling]

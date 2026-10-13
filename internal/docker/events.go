@@ -122,7 +122,7 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		if port != "" {
 			args = append(args, "-p", port)
 		}
-		args = append(args, sshHost, remoteCmd)
+		args = append(args, "--", sshHost, remoteCmd)
 
 		// Log full SSH command before execution
 		r.logger.Info("executing docker events command via shell",

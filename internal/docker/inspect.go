@@ -64,7 +64,7 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean, remoteCmd)
+	args = append(args, "--", sshHostClean, remoteCmd)
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -148,7 +148,7 @@ func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, container
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean, remoteCmd)
+	args = append(args, "--", sshHostClean, remoteCmd)
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)

@@ -178,7 +178,7 @@ func getSSHMasterPID(t *testing.T, sshHost, controlPath string) int {
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean)
+	args = append(args, "--", sshHostClean)
 
 	keyPath := os.Getenv("SSH_TEST_KEY_PATH")
 	if keyPath != "" {

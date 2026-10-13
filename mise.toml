@@ -1,0 +1,24 @@
+min_version = "2026.10.8"
+
+[tool_config]
+locked = true
+
+[settings]
+# A normal exec/activation must not install optional documentation or hook tools.
+auto_install = false
+
+[env]
+GOTOOLCHAIN = "local"
+
+[tools]
+"core:go" = "1.27.2"
+"aqua:golangci/golangci-lint" = "2.14.0"
+"aqua:jqlang/jq" = "1.8.2"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+"go:github.com/psampaz/go-mod-outdated" = "0.9.0"
+"aqua:goreleaser/goreleaser" = "2.18.3"
+"aqua:cli/cli" = "2.102.0"
+"core:node" = "24.21.0"
+"npm:markdownlint-cli2" = "0.23.2"
+"core:python" = "3.14.8"
+"aqua:pre-commit/pre-commit" = "4.6.2"

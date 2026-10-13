@@ -20,63 +20,106 @@ This project follows the standard open source code of conduct. Be respectful, in
 
 ### Prerequisites
 
-Required tools:
-- **Go 1.23+** - Programming language
-- **Git** - Version control
-- **Make** - Build automation
-- **Docker** - For integration testing
-
-Optional but recommended:
-- **golangci-lint** - Comprehensive Go linter
-- **gosec** - Security scanner
-- **pre-commit** - Git hooks framework
+- **Go 1.27.2 or newer** for source consumers; repository builds pin **1.27.2**.
+- **Linux or macOS 13+**, amd64 or arm64, for the managed development tools.
+  Newly built macOS binaries also require macOS 13; the module directive is not
+  an independent promise of older binary OS compatibility.
+- Git, Make, and OpenSSH. Docker is needed only for the isolated integration harness.
+- **mise 2026.10.8**, obtained from its [official release](https://github.com/jdx/mise/releases/tag/v2026.10.8).
+  Verify the release's signed checksums before executing the bootstrap binary.
+  Add it to the current shell's PATH; no global mise settings or profile edits are required.
 
 ### Initial Setup
 
-1. **Fork and clone the repository**:
-   ```bash
-   git clone https://github.com/your-username/rdhpf.git
-   cd rdhpf
-   ```
+After cloning this repository, inspect `mise.toml`, then explicitly trust it:
 
-2. **Install dependencies**:
-   ```bash
-   make deps
-   ```
+```bash
+mise --version # 2026.10.8
+mise trust
+MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:golangci/golangci-lint aqua:jqlang/jq
+mise exec -- make deps
+mise exec -- make check
+mise exec -- make build
+```
 
-3. **Verify your environment**:
-   ```bash
-   make doctor
-   ```
-
-4. **Build the project**:
-   ```bash
-   make build
-   ```
-
-5. **Run tests**:
-   ```bash
-   make test
-   ```
+The following Make/Go examples assume `mise exec --` or an already activated
+mise shell. Make checks the required managed executable paths before running
+commands. Missing tools or ambient copies fail; a missing linter is not success.
+The module graph remains owned by `go.mod`/`go.sum`, not mise.
 
 ### Installing Development Tools
 
-**golangci-lint**:
+`mise.toml` owns exact tool pins; `mise.lock` covers Linux/macOS x64/arm64 and
+`.mise/locks/` holds the npm dependency graph. The root's lock policy applies to
+this project. The **command-local** `MISE_LOCKED_SCOPES=project` assignment plus
+named `--locked` installation avoids requiring unrelated global/system locks
+and prevents lockfile rewrites. Do not replace these recipes with an argumentless
+`mise install --locked`, or set global locked scopes.
+
+Ordinary `mise exec` and activation do not install absent optional tools:
+`auto_install=false`, no lazy declarations. Keep that setting in effect. Explicit
+user environment/local-config overrides are outside the reproducible recipe.
+Lockfiles verify downloads, not arbitrary later modifications to an installed cache;
+Go-backed tools lock their top-level version, with native module sums still required.
+
+Optional sets (install only what you use):
+
 ```bash
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | \
-  sh -s -- -b $(go env GOPATH)/bin v1.55.2
+# Documentation: Node is tooling-only, not an application runtime dependency.
+MISE_LOCKED_SCOPES=project mise install --locked core:node npm:markdownlint-cli2
+mise exec -- scripts/check-tools.sh node markdownlint-cli2
+mise exec -- markdownlint-cli2 'docs/**/*.md' README.md CONTRIBUTING.md
+
+# Hooks: install the ordinary and documentation sets first.
+MISE_LOCKED_SCOPES=project mise install --locked core:python aqua:pre-commit/pre-commit
+mise exec -- scripts/check-tools.sh python pre-commit
+mise exec -- pre-commit run --all-files
+# Optional, explicit hook registration in your clone:
+mise exec -- pre-commit install
+
+# Security/dependency reports: the base release linter supplies gosec.
+MISE_LOCKED_SCOPES=project mise install --locked go:golang.org/x/vuln/cmd/govulncheck go:github.com/psampaz/go-mod-outdated
+mise exec -- make security
+mise exec -- scripts/check-tools.sh govulncheck go-mod-outdated
+mise exec -- govulncheck ./...
+
+# Nonpublishing release validation:
+MISE_LOCKED_SCOPES=project mise install --locked aqua:goreleaser/goreleaser
+mise exec -- scripts/check-tools.sh goreleaser
+mise exec -- goreleaser check
+
+# Evidence download helper only; not needed to build:
+MISE_LOCKED_SCOPES=project mise install --locked aqua:cli/cli
+mise exec -- scripts/check-tools.sh gh jq
 ```
 
-**gosec**:
+To opt into **all project tools**, explicitly name their union:
+
 ```bash
-go install github.com/securego/gosec/v2/cmd/gosec@latest
+MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:golangci/golangci-lint aqua:jqlang/jq go:golang.org/x/vuln/cmd/govulncheck go:github.com/psampaz/go-mod-outdated aqua:goreleaser/goreleaser aqua:cli/cli core:node npm:markdownlint-cli2 core:python aqua:pre-commit/pre-commit
 ```
 
-**pre-commit**:
-```bash
-pip install pre-commit
-pre-commit install
-```
+golangci-lint, gh and GoReleaser use pinned official release distributions through
+mise's aqua backend. Keep checksum/provenance verification enabled. Their embedded
+Go compiler is determined by upstream, not this project's Go pin. Ordinary Go-backed
+tools such as govulncheck retain their documented installation route. A current
+version or successful installation is not security clearance: known tool reports
+remain unresolved, with no compiler/graph workaround or risk waiver.
+
+Security uses the release linter's unchanged gosec 2.29.0 engine and x/tools 0.50.0
+importer. Standalone gosec 2.29.0 cannot load Go 1.27.2 export data; rebuilding its
+unchanged module does not fix it.
+`.golangci-security.yml` enables all gosec rules and SSA analyzers independently
+of ordinary lint exclusions, at medium severity/confidence. `make security`
+retains its `./...` scope; hosted quality scanning retains `./cmd/... ./internal/...`.
+Reports are **native golangci JSON**, accompanied by stdout, stderr, scanner exit
+and actual package scope. Missing/malformed reports, loading errors and findings
+fail the gate; zero findings from an incomplete scan are not success.
+
+Ordinary lint preserves the previous default checks: staticcheck/gosimple plus
+v1's standard-error-handling exclusions. It does not silently add a style sweep
+or change production cleanup error policy. The first pre-commit hook verifies
+all required providers and stops the hook run on failure.
 
 ## Development Workflow
 

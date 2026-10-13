@@ -43,6 +43,9 @@ func TestMasterProcess(t *testing.T) {
 		}
 	}
 	if operation != "" {
+		if marker := os.Getenv("S07_CHECK_MARKER"); marker != "" {
+			require.NoError(t, os.WriteFile(marker, []byte(strings.Join(args, "\x00")), 0600))
+		}
 		conn, err := net.Dial("unix", path)
 		if err != nil {
 			os.Exit(1)

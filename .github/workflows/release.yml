@@ -12,27 +12,51 @@ jobs:
   goreleaser:
     name: Build and Release
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
+    env:
+      GOTOOLCHAIN: local
+      MISE_AUTO_INSTALL: "0"
+      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
+      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
+      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
+      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
+      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
+      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
+      GOCACHE: ${{ runner.temp }}/s07-go-cache
+      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          go-version: '1.23'
-          cache: true
+          version: '2026.10.8'
+          sha256: 'c72477ae6c3a8e7d817a322f43da70e4643e75ee5c21265f1c19c894273b7428'
+          install: false
+          env: false
+          export_path: false
+          add_shims_to_path: false
+          cache: false
+
+      - name: Install locked project tools
+        shell: bash
+        run: |
+          mkdir -p "$MISE_CONFIG_DIR"
+          : > "$MISE_GLOBAL_CONFIG_FILE"
+          : > "$MISE_SYSTEM_CONFIG_FILE"
+          MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:jqlang/jq aqua:goreleaser/goreleaser
+          mise exec -- scripts/check-tools.sh go gofmt jq goreleaser
 
       - name: Run tests before release
         run: go test -v ./...
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
+        run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -40,6 +64,20 @@ jobs:
   build-manual:
     name: Manual Build (Fallback)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
+    env:
+      GOTOOLCHAIN: local
+      MISE_AUTO_INSTALL: "0"
+      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
+      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
+      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
+      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
+      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
+      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
+      GOCACHE: ${{ runner.temp }}/s07-go-cache
+      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     if: failure()
     strategy:
       matrix:
@@ -56,15 +94,29 @@ jobs:
             arch: amd64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          go-version: '1.23'
-          cache: true
+          version: '2026.10.8'
+          sha256: 'c72477ae6c3a8e7d817a322f43da70e4643e75ee5c21265f1c19c894273b7428'
+          install: false
+          env: false
+          export_path: false
+          add_shims_to_path: false
+          cache: false
+
+      - name: Install locked project tools
+        shell: bash
+        run: |
+          mkdir -p "$MISE_CONFIG_DIR"
+          : > "$MISE_GLOBAL_CONFIG_FILE"
+          : > "$MISE_SYSTEM_CONFIG_FILE"
+          MISE_LOCKED_SCOPES=project mise install --locked core:go
+          mise exec -- scripts/check-tools.sh go gofmt
 
       - name: Get version
         id: version
@@ -102,7 +154,7 @@ jobs:
           echo "CHECKSUM=${ARCHIVE}.sha256" >> $GITHUB_ENV
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -116,12 +168,12 @@ jobs:
     if: failure()
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 
@@ -151,7 +203,7 @@ jobs:
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             artifacts/**/*.tar.gz

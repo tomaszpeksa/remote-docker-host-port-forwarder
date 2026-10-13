@@ -16,6 +16,8 @@ func TestMakeTestEntrypoints(t *testing.T) {
 	require.NoError(t, err)
 	makefile, err := filepath.Abs("../../Makefile")
 	require.NoError(t, err)
+	guard, err := os.ReadFile("../../scripts/check-tools.sh")
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		target, host, wantHost, key, wantArg string
 		fail, called                         bool
@@ -31,7 +33,11 @@ func TestMakeTestEntrypoints(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
 			require.NoError(t, os.Mkdir(bin, 0700))
-			for _, name := range []string{"mkdir", "grep", "awk", "date"} {
+			require.NoError(t, os.Mkdir(filepath.Join(root, "scripts"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "check-tools.sh"), guard, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "mise"), []byte("#!/bin/sh\n[ \"$1\" = which ] || exit 2\nprintf '%s/%s\\n' \"$MANAGED_TOOLS\" \"$2\"\n"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0700))
+			for _, name := range []string{"mkdir", "grep", "awk", "date", "dirname", "basename"} {
 				path, err := exec.LookPath(name)
 				require.NoError(t, err)
 				require.NoError(t, os.Symlink(path, filepath.Join(bin, name)))
@@ -49,11 +55,12 @@ func TestMakeTestEntrypoints(t *testing.T) {
 			cmd := exec.CommandContext(ctx, makePath, "--no-print-directory", "-f", makefile, tc.target,
 				"VERSION=test", "COMMIT=test", "BUILD_DATE=test", "GOOS=linux", "GOARCH=amd64", "SHELL=/bin/sh", "COVERAGE_DIR="+filepath.Join(root, "coverage"))
 			cmd.Dir = root
-			cmd.Env = []string{"PATH=" + bin, "HOME=" + root, "PWD=" + root, "SSH_TEST_HOST=" + tc.host, "SSH_TEST_KEY_PATH=ambient-key"}
+			cmd.Env = []string{"PATH=" + bin, "MANAGED_TOOLS=" + bin, "HOME=" + root, "PWD=" + root, "SSH_TEST_HOST=" + tc.host, "SSH_TEST_KEY_PATH=ambient-key"}
 			output, err := cmd.CombinedOutput()
 			require.Equal(t, tc.fail, err != nil, "output: %s", output)
 			data, readErr := os.ReadFile(log)
 			if !tc.called {
+				require.Contains(t, string(output), "SSH_TEST_HOST is required")
 				require.True(t, os.IsNotExist(readErr), "Go must not run without required host")
 				return
 			}

@@ -132,9 +132,9 @@ func TestEventReaderStreamArgvAndLogging(t *testing.T) {
 		name, host, destination, port string
 		want                          []string
 	}{
-		{"default_port", "ssh://docker@fixture.invalid", "docker@fixture.invalid", "", []string{"-S", "/control socket", "docker@fixture.invalid"}},
-		{"explicit_port", "ssh://user@fixture.invalid:2222", "user@fixture.invalid", "2222", []string{"-S", "/control socket", "-p", "2222", "user@fixture.invalid"}},
-		{"ipv4", "ssh://root@192.0.2.1", "root@192.0.2.1", "", []string{"-S", "/control socket", "root@192.0.2.1"}},
+		{"default_port", "ssh://docker@fixture.invalid", "docker@fixture.invalid", "", []string{"-S", "/control socket", "--", "docker@fixture.invalid"}},
+		{"explicit_port", "ssh://user@fixture.invalid:2222", "user@fixture.invalid", "2222", []string{"-S", "/control socket", "-p", "2222", "--", "user@fixture.invalid"}},
+		{"ipv4", "ssh://root@192.0.2.1", "root@192.0.2.1", "", []string{"-S", "/control socket", "--", "root@192.0.2.1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			argv := installFakeSSH(t, "", "", 0)

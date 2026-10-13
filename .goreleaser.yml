@@ -27,7 +27,7 @@ builds:
 
 archives:
   - id: rdhpf
-    format: tar.gz
+    formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -44,7 +44,7 @@ checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -86,7 +86,8 @@ release:
     sha256sum -c checksums.txt
     ```
 
-brews:
+# Publish binary casks with normal OS security checks; see docs/homebrew.md.
+homebrew_casks:
   - name: rdhpf
     repository:
       owner: tomaszpeksa
@@ -94,14 +95,10 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder"
     description: "Automatically forward published container ports from a remote Docker host to localhost via SSH"
-    license: "MIT"
     skip_upload: false
     commit_author:
       name: goreleaserbot
       email: goreleaser@tomaszpeksa.com
-    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    directory: Formula
-    install: |
-      bin.install "rdhpf"
-    test: |
-      system "#{bin}/rdhpf", "version"
+    commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    directory: Casks
+    binaries: [rdhpf]

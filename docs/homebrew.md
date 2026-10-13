@@ -1,420 +1,156 @@
 # Homebrew Tap Guide
 
-This document explains how the Homebrew tap for rdhpf works, how to maintain it, and how to troubleshoot common issues.
-
 ## Overview
 
-The `tomaszpeksa/tap` Homebrew tap provides automated formula-based installation for rdhpf on macOS and Linux. When a new version is released, GoReleaser automatically:
+The supported publisher is GoReleaser's `homebrew_casks` section. It generates
+`Casks/rdhpf.rb` for `tomaszpeksa/homebrew-tap`, using the existing Linux/macOS
+amd64/arm64 release archives. These are binary casks, not source-built formulae.
+Use a current Homebrew with cross-platform binary-cask support; older clients
+are not covered by this migration.
 
-1. Generates a Homebrew formula (`Formula/rdhpf.rb`)
-2. Commits it to the `tomaszpeksa/homebrew-tap` repository
-3. Makes the new version available via `brew install` or `brew upgrade`
+The project configuration does not itself publish the separate tap transition.
+The cask and migration metadata must be reviewed and published before the cask
+installation commands below become available. Configuration and snapshot checks
+are not proof of installed migration or successful first launch on either OS.
 
 ## User Installation
 
-### First Time Setup
+After the tap transition is published:
 
 ```bash
-# Add the tap
-brew tap tomaszpeksa/tap
-
-# Install rdhpf
-brew install rdhpf
-```
-
-Or in a single command:
-
-```bash
-brew install tomaszpeksa/tap/rdhpf
-```
-
-### Upgrading
-
-```bash
-# Upgrade to the latest version
-brew upgrade rdhpf
-
-# Or upgrade all tapped formulae
-brew upgrade
-```
-
-### Verification
-
-```bash
-# Check installed version
+brew install --cask tomaszpeksa/tap/rdhpf
 rdhpf version
-
-# View formula info
-brew info rdhpf
-
-# View formula definition
-brew cat rdhpf
 ```
 
-### Uninstallation
+Alternatively, add the tap explicitly with `brew tap tomaszpeksa/tap`, then
+`brew install --cask rdhpf`. Respect Homebrew's normal tap-trust prompts.
+
+### Migrating from the Formula
+
+Once the tap contains its migration metadata and cask, upstream's supported route is:
 
 ```bash
-# Uninstall rdhpf
-brew uninstall rdhpf
+brew update
+brew upgrade rdhpf
+rdhpf version
+```
 
-# Remove the tap (optional)
+The migration is expected to replace the formula with the same-named cask.
+This is not an installation success claim: test the transition on the target
+Homebrew/OS before depending on it. If automatic migration is unavailable,
+inspect `brew list --formula` and `brew list --cask` first. With the old formula
+still installed, the explicit fallback is:
+
+```bash
+brew uninstall --formula tomaszpeksa/tap/rdhpf
+brew install --cask tomaszpeksa/tap/rdhpf
+rdhpf version
+```
+
+This fallback removes the old installation before installing the new one; plan
+for that interruption. Do not force-overwrite conflicting binaries or symlinks.
+Update formula-specific Brewfile entries to cask entries. Caskroom/artifact
+symlinks replace the formula's Cellar keg; the command remains `rdhpf` on PATH.
+The former formula `test` block is replaced by an explicit `rdhpf version` smoke
+check. The MIT license remains in the release archive, not cask license metadata.
+
+### Normal OS Security
+
+No signing/notarization or quarantine-removal hooks are configured. Normal OS
+security remains in effect. On macOS, an unsigned binary may be blocked on first
+launch even when its archive checksum is correct. Successful generation or a
+local snapshot smoke test does not establish Gatekeeper acceptance of a downloaded
+release. Stop and report a security block; this guide does not prescribe disabling
+quarantine, bypassing Gatekeeper or changing global security settings.
+
+### Verification and Removal
+
+```bash
+brew info --cask tomaszpeksa/tap/rdhpf
+brew cat --cask tomaszpeksa/tap/rdhpf
+rdhpf version
+brew uninstall --cask tomaszpeksa/tap/rdhpf
+# Optional, once no other packages from this tap are needed:
 brew untap tomaszpeksa/tap
 ```
 
-## How It Works
+## Maintainer Migration
 
-### Automated Release Process
+Coordinate the following as a separately reviewed tap change, not an automatic
+side effect of changing this repository:
 
-When you create a new Git tag (e.g., `v1.0.0`):
-
-1. **GitHub Actions** triggers the release workflow (`.github/workflows/release.yml`)
-2. **GoReleaser** builds binaries for all platforms
-3. **GoReleaser** creates a GitHub Release with artifacts
-4. **GoReleaser** generates the Homebrew formula:
-   - Reads configuration from `.goreleaser.yml` → `brews` section
-   - Downloads the macOS/Linux binaries
-   - Calculates SHA256 checksums
-   - Generates `Formula/rdhpf.rb` with proper metadata
-5. **GoReleaser** commits the formula to `tomaszpeksa/homebrew-tap`
-6. Users can now `brew install rdhpf` to get the latest version
-
-### Formula Structure
-
-The generated formula (`Formula/rdhpf.rb`) includes:
-
-- **Metadata**: Name, description, homepage, license
-- **Download URLs**: Pre-built binaries for macOS (amd64/arm64) and Linux (amd64/arm64)
-- **SHA256 checksums**: Verify download integrity
-- **Installation instructions**: Where to place the binary
-- **Test instructions**: Verify installation with `rdhpf version`
-
-Example formula structure:
-
-```ruby
-class Rdhpf < Formula
-  desc "Automatically forward published container ports from a remote Docker host to localhost via SSH"
-  homepage "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder"
-  version "1.0.0"
-  license "MIT"
-
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/releases/download/v1.0.0/rdhpf_1.0.0_Darwin_arm64.tar.gz"
-      sha256 "..."
-    end
-    if Hardware::CPU.intel?
-      url "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/releases/download/v1.0.0/rdhpf_1.0.0_Darwin_x86_64.tar.gz"
-      sha256 "..."
-    end
-  end
-
-  on_linux do
-    if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/releases/download/v1.0.0/rdhpf_1.0.0_Linux_arm64.tar.gz"
-      sha256 "..."
-    end
-    if Hardware::CPU.intel?
-      url "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/releases/download/v1.0.0/rdhpf_1.0.0_Linux_x86_64.tar.gz"
-      sha256 "..."
-    end
-  end
-
-  def install
-    bin.install "rdhpf"
-  end
-
-  test do
-    system "#{bin}/rdhpf", "version"
-  end
-end
-```
-
-## Manual Formula Updates
-
-While the formula is auto-generated, you may need to manually update it in rare cases.
-
-### When Manual Updates Are Needed
-
-- Emergency hotfix before automated release completes
-- Formula template adjustments (caveats, post-install messages)
-- Dependency changes
-- Testing pre-release versions
-
-### Steps for Manual Update
-
-1. **Clone the tap repository**:
-   ```bash
-   git clone https://github.com/tomaszpeksa/homebrew-tap.git
-   cd homebrew-tap
+1. Validate the project configuration and render a nonpublishing snapshot.
+2. At an authorized release, publish the four archives and generate
+   `Casks/rdhpf.rb` pointing to that real release. Never publish snapshot URLs.
+3. In the tap root, merge the following entry into `tap_migrations.json`, preserving
+   any unrelated existing entries:
+   ```json
+   {"rdhpf": "rdhpf"}
    ```
+4. Remove `Formula/rdhpf.rb` only when the cask and migration entry are available.
+   Review the cask, metadata and formula removal together to avoid an empty tap
+   or ambiguous same-named packages.
+5. Validate fresh installation, formula-to-cask migration, binary PATH and
+   `rdhpf version` on Linux and macOS. Record Homebrew versions and normal
+   first-launch security behavior; generation alone is not this proof.
 
-2. **Edit the formula**:
-   ```bash
-   vim Formula/rdhpf.rb
-   ```
+No tap publication or merge is implied by these instructions.
 
-3. **Test locally**:
-   ```bash
-   brew install --build-from-source ./Formula/rdhpf.rb
-   brew test rdhpf
-   brew audit --strict rdhpf
-   ```
+## Configuration and Validation
 
-4. **Commit and push**:
-   ```bash
-   git add Formula/rdhpf.rb
-   git commit -m "Manual update: <description>"
-   git push origin main
-   ```
+`.goreleaser.yml` remains the native configuration owner. The cask preserves the
+existing repository, `HOMEBREW_TAP_TOKEN`, author and upload policy. Token access
+remains limited to the existing tap-writing purpose; no new credential scopes
+or workflow permissions are needed for this migration.
 
-5. **Verify users can install**:
-   ```bash
-   brew update
-   brew reinstall rdhpf
-   ```
-
-### Formula Best Practices
-
-- Always include SHA256 checksums
-- Keep descriptions concise (< 80 chars)
-- Use semantic versioning
-- Test on both macOS and Linux if possible
-- Follow [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
-
-## Troubleshooting
-
-### Issue: Formula Not Found
-
-**Symptom**:
-```bash
-$ brew install rdhpf
-Error: No available formula with the name "rdhpf"
-```
-
-**Solutions**:
-
-1. **Add the tap first**:
-   ```bash
-   brew tap tomaszpeksa/tap
-   brew install rdhpf
-   ```
-
-2. **Use the full formula name**:
-   ```bash
-   brew install tomaszpeksa/tap/rdhpf
-   ```
-
-3. **Update Homebrew**:
-   ```bash
-   brew update
-   ```
-
-### Issue: Checksum Mismatch
-
-**Symptom**:
-```bash
-Error: SHA256 mismatch
-Expected: abc123...
-  Actual: def456...
-```
-
-**Cause**: Downloaded file doesn't match expected checksum (corrupted download or formula error)
-
-**Solutions**:
-
-1. **Clear cache and retry**:
-   ```bash
-   rm -rf ~/Library/Caches/Homebrew/downloads/*rdhpf*
-   brew install rdhpf
-   ```
-
-2. **If persistent, report the issue**: The formula may have incorrect checksums
-
-### Issue: Old Version Installed
-
-**Symptom**:
-```bash
-$ rdhpf version
-v0.9.0  # Expected v1.0.0
-```
-
-**Solutions**:
-
-1. **Update tap and upgrade**:
-   ```bash
-   brew update
-   brew upgrade rdhpf
-   ```
-
-2. **Force reinstall**:
-   ```bash
-   brew reinstall rdhpf
-   ```
-
-3. **Check formula version**:
-   ```bash
-   brew info rdhpf
-   ```
-
-### Issue: Permission Denied
-
-**Symptom**:
-```bash
-Error: Permission denied @ dir_s_mkdir - /usr/local/Cellar/rdhpf
-```
-
-**Solutions**:
-
-1. **Fix Homebrew permissions**:
-   ```bash
-   sudo chown -R $(whoami) /usr/local/Cellar /usr/local/opt
-   ```
-
-2. **Or use user-local Homebrew** (recommended for non-admin users)
-
-### Issue: Binary Not in PATH
-
-**Symptom**:
-```bash
-$ rdhpf version
-command not found: rdhpf
-```
-
-**Solutions**:
-
-1. **Ensure Homebrew bin is in PATH**:
-   ```bash
-   # Add to ~/.zshrc or ~/.bashrc
-   export PATH="/usr/local/bin:$PATH"
-   # Or for Apple Silicon Macs:
-   export PATH="/opt/homebrew/bin:$PATH"
-   ```
-
-2. **Reload shell**:
-   ```bash
-   source ~/.zshrc  # or ~/.bashrc
-   ```
-
-3. **Verify installation**:
-   ```bash
-   which rdhpf
-   brew list rdhpf
-   ```
-
-### Issue: Release Not Published to Tap
-
-**Symptom**: GitHub Release created, but Homebrew formula not updated
-
-**Debugging Steps**:
-
-1. **Check GitHub Actions logs**:
-   - Go to: https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions
-   - Look for the release workflow run
-   - Review GoReleaser step output
-
-2. **Verify `HOMEBREW_TAP_TOKEN` secret**:
-   - Go to repository Settings → Secrets → Actions
-   - Confirm `HOMEBREW_TAP_TOKEN` exists and is valid
-   - Token needs `repo` + `workflow` scopes
-
-3. **Check tap repository**:
-   - Visit: https://github.com/tomaszpeksa/homebrew-tap
-   - Verify `Formula/rdhpf.rb` was updated
-   - Check commit history for automation failures
-
-4. **Manual formula push** (if automation failed):
-   - Download release artifacts
-   - Calculate checksums: `shasum -a 256 rdhpf_*.tar.gz`
-   - Manually update `Formula/rdhpf.rb` in tap repository
-   - Commit and push
-
-## Configuration
-
-### GoReleaser Configuration
-
-The Homebrew tap is configured in `.goreleaser.yml`:
+The essential configuration is:
 
 ```yaml
-brews:
-  - repository:
+homebrew_casks:
+  - name: rdhpf
+    repository:
       owner: tomaszpeksa
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder"
-    description: "Automatically forward published container ports from a remote Docker host to localhost via SSH"
-    license: "MIT"
-    skip_upload: false
-    install: |
-      bin.install "rdhpf"
-    test: |
-      system "#{bin}/rdhpf", "version"
+    directory: Casks
+    binaries: [rdhpf]
 ```
 
-### GitHub Actions Secret
+With the pinned project tools installed (see [CONTRIBUTING](../CONTRIBUTING.md)):
 
-The `HOMEBREW_TAP_TOKEN` secret must be added to the rdhpf repository:
+```bash
+mise exec -- scripts/check-tools.sh go goreleaser
+mise exec -- goreleaser check
+mise exec -- goreleaser release --snapshot --clean --skip=publish
+```
 
-1. **Generate token**: https://github.com/settings/tokens/new
-   - Scopes: `repo`, `workflow`
-   - Expiration: 1 year (or no expiration)
+Run in an owned checkout/output directory with isolated HOME/cache and no
+publication credentials. The snapshot skips release validation, so its exit
+status cannot replace the separate `goreleaser check` result. Inspect the generated
+cask under `dist/homebrew/`, verify its Linux/macOS and ARM/Intel URLs/checksums
+against the four generated archives, and run the native binary's `version` command.
+No Homebrew installation or tap access is needed for these rendering checks.
 
-2. **Add to repository**:
-   - Go to: https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/settings/secrets/actions
-   - Name: `HOMEBREW_TAP_TOKEN`
-   - Value: `ghp_...` (token from step 1)
+## Troubleshooting
 
-## Best Practices
-
-### For Maintainers
-
-1. **Always test releases locally first**:
-   ```bash
-   goreleaser release --snapshot --clean
-   ```
-
-2. **Verify formula generation** before pushing tags:
-   ```bash
-   ls dist/*.rb
-   cat dist/homebrew/Formula/rdhpf.rb
-   ```
-
-3. **Monitor release workflow** after pushing tags
-
-4. **Test installation** after release:
-   ```bash
-   brew update
-   brew reinstall rdhpf
-   rdhpf version
-   ```
-
-### For Users
-
-1. **Keep tap updated**:
-   ```bash
-   brew update  # Run regularly
-   ```
-
-2. **Use specific versions** when needed:
-   ```bash
-   brew info rdhpf  # See available versions
-   ```
-
-3. **Report issues** with formula to:
-   - Tap issues: https://github.com/tomaszpeksa/homebrew-tap/issues
-   - App issues: https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/issues
+- **Cask not found:** check that the reviewed tap transition was actually published,
+  update Homebrew, and use the fully qualified `--cask` name. Do not assume the
+  project configuration changed the remote tap.
+- **Checksum mismatch:** stop and compare the published archive and cask checksum;
+  report the mismatch rather than disabling verification.
+- **Old formula or conflicting binary:** inspect installed formulae/casks and follow
+  the migration procedure. Do not force-replace unrelated executables.
+- **macOS launch blocked:** normal security is intentional; report the exact error.
+  No automatic security bypass is provided.
+- **Tap not updated after an authorized release:** inspect the release workflow's
+  cask generation/publishing logs and existing tap-token permissions. Do not expose
+  the token in reports or automatically broaden its scopes.
 
 ## Resources
 
-- **Homebrew Documentation**: https://docs.brew.sh
-- **GoReleaser Brew Documentation**: https://goreleaser.com/customization/homebrew/
-- **Formula Cookbook**: https://docs.brew.sh/Formula-Cookbook
-- **Tap Repository**: https://github.com/tomaszpeksa/homebrew-tap
-- **Main Repository**: https://github.com/tomaszpeksa/remote-docker-host-port-forwarder
-
-## See Also
-
-- Main README: ../README.md
-- User Guide: ./user-guide.md
-- Release Checklist: ./RELEASE_CHECKLIST.md
-- CI/CD Documentation: ./ci-cd.md
+- [GoReleaser Homebrew casks](https://goreleaser.com/customization/homebrew_casks/)
+- [GoReleaser formula migration](https://goreleaser.com/deprecations/#brews)
+- [Homebrew Cask Cookbook](https://docs.brew.sh/Cask-Cookbook)
+- [Tap repository](https://github.com/tomaszpeksa/homebrew-tap)
+- [User guide](user-guide.md)
+- [CI/CD documentation](ci-cd.md)

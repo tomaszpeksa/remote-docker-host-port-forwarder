@@ -20,6 +20,8 @@ if [ -z "$STAGED_GO_FILES" ]; then
     exit 0
 fi
 
+scripts/check-tools.sh go gofmt jq
+
 echo -e "${GREEN}Checking staged Go files...${NC}"
 
 # Check formatting

@@ -11,44 +11,100 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
+    env:
+      GOTOOLCHAIN: local
+      MISE_AUTO_INSTALL: "0"
+      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
+      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
+      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
+      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
+      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
+      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
+      GOCACHE: ${{ runner.temp }}/s07-go-cache
+      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          go-version: '1.24'
-          cache: true
+          version: '2026.10.8'
+          sha256: 'c72477ae6c3a8e7d817a322f43da70e4643e75ee5c21265f1c19c894273b7428'
+          install: false
+          env: false
+          export_path: false
+          add_shims_to_path: false
+          cache: false
 
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: Install locked project tools
+        shell: bash
+        run: |
+          mkdir -p "$MISE_CONFIG_DIR"
+          : > "$MISE_GLOBAL_CONFIG_FILE"
+          : > "$MISE_SYSTEM_CONFIG_FILE"
+          MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:golangci/golangci-lint aqua:jqlang/jq
+          mise exec -- scripts/check-tools.sh go golangci-lint jq
 
       - name: Run gosec security scanner
-        run: gosec -fmt=json -out=gosec-report.json -severity medium -confidence medium ./cmd/... ./internal/...
+        run: scripts/security.sh gosec-report.json ./cmd/... ./internal/...
 
       - name: Upload security report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-report
-          path: gosec-report.json
+          path: |
+            gosec-report.json
+            gosec-report.json.*
 
       - name: Print security summary
-        run: gosec -fmt=text -severity medium -confidence medium ./cmd/... ./internal/...
+        if: always()
+        run: jq '.Issues // []' gosec-report.json
 
   coverage:
     name: Test Coverage
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
+    env:
+      GOTOOLCHAIN: local
+      MISE_AUTO_INSTALL: "0"
+      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
+      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
+      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
+      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
+      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
+      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
+      GOCACHE: ${{ runner.temp }}/s07-go-cache
+      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          go-version: '1.24'
-          cache: true
+          version: '2026.10.8'
+          sha256: 'c72477ae6c3a8e7d817a322f43da70e4643e75ee5c21265f1c19c894273b7428'
+          install: false
+          env: false
+          export_path: false
+          add_shims_to_path: false
+          cache: false
+
+      - name: Install locked project tools
+        shell: bash
+        run: |
+          mkdir -p "$MISE_CONFIG_DIR"
+          : > "$MISE_GLOBAL_CONFIG_FILE"
+          : > "$MISE_SYSTEM_CONFIG_FILE"
+          MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:jqlang/jq
+          mise exec -- scripts/check-tools.sh go gofmt jq
 
       - name: List unit-check tests and record source
         env:
@@ -93,7 +149,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: |
@@ -103,9 +159,10 @@ jobs:
 
       - name: Upload to Codecov (optional)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          file: coverage.out
+          files: coverage.out
+          version: v11.3.1
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
@@ -115,7 +172,7 @@ jobs:
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const coverage = '${{ steps.coverage.outputs.COVERAGE }}';
@@ -136,26 +193,53 @@ jobs:
   dependencies:
     name: Dependency Check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
+    env:
+      GOTOOLCHAIN: local
+      MISE_AUTO_INSTALL: "0"
+      MISE_DATA_DIR: ${{ runner.temp }}/s07-mise-data
+      MISE_CACHE_DIR: ${{ runner.temp }}/s07-mise-cache
+      MISE_STATE_DIR: ${{ runner.temp }}/s07-mise-state
+      MISE_CONFIG_DIR: ${{ runner.temp }}/s07-mise-config
+      MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/global.toml
+      MISE_SYSTEM_CONFIG_FILE: ${{ runner.temp }}/s07-mise-config/system.toml
+      GOCACHE: ${{ runner.temp }}/s07-go-cache
+      GOMODCACHE: ${{ runner.temp }}/s07-go-mod
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          go-version: '1.24'
-          cache: true
+          version: '2026.10.8'
+          sha256: 'c72477ae6c3a8e7d817a322f43da70e4643e75ee5c21265f1c19c894273b7428'
+          install: false
+          env: false
+          export_path: false
+          add_shims_to_path: false
+          cache: false
+
+      - name: Install locked project tools
+        shell: bash
+        run: |
+          mkdir -p "$MISE_CONFIG_DIR"
+          : > "$MISE_GLOBAL_CONFIG_FILE"
+          : > "$MISE_SYSTEM_CONFIG_FILE"
+          MISE_LOCKED_SCOPES=project mise install --locked core:go go:golang.org/x/vuln/cmd/govulncheck go:github.com/psampaz/go-mod-outdated
+          mise exec -- scripts/check-tools.sh go govulncheck go-mod-outdated
 
       - name: Check for outdated dependencies
         run: |
-          go list -u -m -json all | go run github.com/psampaz/go-mod-outdated@latest -update -direct
+          go list -u -m -json all | go-mod-outdated -update -direct
 
       - name: Run go mod verify
         run: go mod verify
 
       - name: Check for vulnerabilities
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
       - name: Tidy dependencies

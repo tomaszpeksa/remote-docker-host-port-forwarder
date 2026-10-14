@@ -180,7 +180,10 @@ func TestDockerMissingMuxTrust(t *testing.T) {
 						// Start a second owned container only after the real stream is listening.
 						// docker events --since is not added to the production command.
 						time.Sleep(300 * time.Millisecond)
-						f.Docker("stop", id)
+						// This owned sleep container is only an event trigger. PID1
+						// can ignore TERM; do not spend Docker's default 10s grace
+						// period inside the 8s event-observation deadline.
+						f.Docker("stop", "--time", "0", id)
 						f.Docker("start", id)
 						matched := false
 						for !matched {

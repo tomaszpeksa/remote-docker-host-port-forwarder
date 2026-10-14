@@ -6,7 +6,7 @@ root="$PWD/.itests"
 [ -e "$root" ] || exit 0
 [ -f "$root/owner" ] || { echo 'Refusing unowned/legacy .itests state.' >&2; exit 1; }
 owner=$(cat "$root/owner")
-[ -n "$owner" ] || exit 1
+[[ "$owner" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || { echo 'Refusing malformed fixture owner.' >&2; exit 1; }
 if [ -s "$root/container-id" ]; then
   id=$(cat "$root/container-id")
   [[ "$id" =~ ^[a-f0-9]{64}$ ]] || exit 1

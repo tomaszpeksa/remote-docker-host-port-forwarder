@@ -64,7 +64,7 @@ func TestAuthorizedKeysExactBytes(t *testing.T) {
 			file := filepath.Join(root, "authorized_keys")
 			require.NoError(t, os.WriteFile(file, []byte(original), 0600))
 			// Fixed Docker stand-in copies stdin/output verbatim. No daemon, SSH or keys.
-			require.NoError(t, os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nif [ \"$2\" = -i ]; then /bin/cat > \"$AUTH_FILE\"; else /bin/cat \"$AUTH_FILE\"; fi\n"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nprintf diagnostic >&2\nif [ \"$2\" = -i ]; then /bin/cat > \"$AUTH_FILE\"; else /bin/cat \"$AUTH_FILE\"; fi\n"), 0700))
 			t.Setenv("PATH", root)
 			t.Setenv("AUTH_FILE", file)
 			f := &Fixture{T: t, Container: strings.Repeat("a", 64)}

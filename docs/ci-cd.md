@@ -114,6 +114,13 @@ The conditional control-check test mixes an owned fake-child association with a
 real OpenSSH command; only separate Master/HTTP scenarios establish real lifecycle
 and recovery behavior. Local/preconfigured-host runs do not execute this disruptive
 hosted matrix. Missing evidence or skips cannot satisfy these mandatory scenarios.
+
+A separate bounded diagnostic step preserves source diffs/hashes and expected red
+outcomes for the accepted-A Master overlay and each individual BatchMode removal.
+These are not frozen-candidate passes: each must fail its named scenario for the
+expected reason, not a compile error or deadline kill. The script restores exact
+candidate source after every control. Cleanup results are retained alongside the
+scenario artifacts, without private keys or account configuration backups.
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
 

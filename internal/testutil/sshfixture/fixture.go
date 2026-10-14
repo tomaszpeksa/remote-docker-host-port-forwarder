@@ -5,6 +5,7 @@
 package sshfixture
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -79,7 +80,10 @@ func New(t *testing.T) *Fixture {
 	f.mode = info.Mode().Perm()
 	f.previous, err = os.ReadFile(f.config)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, os.WriteFile(f.config, f.previous, f.mode)) })
+	t.Cleanup(func() {
+		require.NoError(t, os.WriteFile(f.config, f.previous, f.mode))
+		t.Log("restored exact disposable-account SSH config bytes and mode")
+	})
 	// #nosec G304 -- Public host key from retained owned container provisioning, never keyscan or an arbitrary caller path.
 	key, err := os.ReadFile(filepath.Join(owned, "host-key.pub"))
 	require.NoError(t, err)
@@ -87,6 +91,7 @@ func New(t *testing.T) *Fixture {
 	require.GreaterOrEqual(t, len(fields), 2)
 	require.Equal(t, "ssh-ed25519", fields[0])
 	f.PublicKey = strings.Join(fields[:2], " ")
+	t.Logf("owned server id=%s public-host-key=%s", f.Container, f.PublicKey)
 	f.UserHosts = filepath.Join(f.Dir, "known_hosts")
 	f.GlobalHosts = filepath.Join(f.Dir, "global_hosts")
 	f.Marker = filepath.Join(f.Dir, "askpass-called")
@@ -127,16 +132,22 @@ func (f *Fixture) dockerOutput(args ...string) string {
 	defer cancel()
 	// #nosec G204 -- Only reviewed trusted test callers: owned inspect/cp/exec/run/start/stop/rm operands; not an arbitrary Docker API.
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	require.NoError(f.T, ctx.Err())
-	require.NoError(f.T, err, "owned Docker fixture: %s", out)
+	require.NoError(f.T, err, "owned Docker fixture: %s", stderr.String())
 	return string(out)
 }
 
 func (f *Fixture) authorizeTemporaryKey(public string) {
 	f.T.Helper()
 	original := f.dockerOutput("exec", f.Container, "cat", "/home/testuser/.ssh/authorized_keys")
-	f.T.Cleanup(func() { f.setAuthorized(original) })
+	f.T.Cleanup(func() {
+		f.setAuthorized(original)
+		require.Equal(f.T, original, f.dockerOutput("exec", f.Container, "cat", "/home/testuser/.ssh/authorized_keys"))
+		f.T.Log("restored authorized_keys exact bytes on owned server")
+	})
 	augmented := original
 	if augmented != "" && !strings.HasSuffix(augmented, "\n") {
 		augmented += "\n"
@@ -174,6 +185,7 @@ func (f *Fixture) Configure(policy, userKey, globalKey, identity, control string
 	}
 	block := fmt.Sprintf("Host %s\n  HostName 127.0.0.1\n  User testuser\n  Port 2222\n  IdentityFile %s\n  IdentitiesOnly yes\n  IdentityAgent none\n  BatchMode no\n  ControlMaster %s\n  ControlPersist no\n  UserKnownHostsFile %s\n  GlobalKnownHostsFile %s\n  HostKeyAlgorithms ssh-ed25519\n  KnownHostsCommand none\n  VerifyHostKeyDNS no\n  UpdateHostKeys no\n  CanonicalizeHostname no\n  ProxyCommand none\n  ProxyJump none\n  LogLevel ERROR\n%s\n", f.Alias, identity, control, f.UserHosts, f.GlobalHosts, strict)
 	require.NoError(f.T, os.WriteFile(f.config, append([]byte(block), f.previous...), f.mode))
+	f.T.Logf("owned Host configuration (application argv can override):\n%s", block)
 	f.ClearPrompt()
 }
 func (f *Fixture) ClearPrompt() {
@@ -227,7 +239,11 @@ func (f *Fixture) PasswordChallenge() {
 		require.NoError(f.T, cmd.Run())
 		require.NoError(f.T, ctx.Err())
 	}
-	f.T.Cleanup(func() { set(previous) })
+	f.T.Cleanup(func() {
+		set(previous)
+		require.Equal(f.T, previous, f.dockerOutput("exec", f.Container, "cat", path))
+		f.T.Log("restored sshd_config exact bytes and reloaded owned server")
+	})
 	set("PasswordAuthentication yes\n" + previous)
 	require.Contains(f.T, f.Docker("exec", f.Container, "/usr/sbin/sshd", "-T"), "passwordauthentication yes")
 }
@@ -240,6 +256,7 @@ func (f *Fixture) Backend(image string, port int, labels ...string) string {
 		owner := f.Docker("inspect", "--format", `{{index .Config.Labels "rdhpf.trust"}}`, name)
 		require.Equal(f.T, f.Alias, owner)
 		f.Docker("rm", "-f", name)
+		f.T.Logf("removed owned backend name=%s verified-label=%s", name, owner)
 	})
 	args := []string{"run", "-d", "--name", name, "--label", "rdhpf.trust=" + f.Alias}
 	for _, label := range labels {

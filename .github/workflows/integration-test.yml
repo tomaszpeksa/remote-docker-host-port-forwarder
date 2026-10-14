@@ -25,7 +25,7 @@ jobs:
     defaults:
       run:
         shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
-    # Phase budgets total 26m; leave setup, evidence upload and cleanup margin.
+    # Scenario budgets total 29m plus a bounded diagnostic step; job remains 35m.
     timeout-minutes: 35
     env:
       GOTOOLCHAIN: local
@@ -35,6 +35,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Isolate managed tool paths
         shell: bash
@@ -67,8 +69,8 @@ jobs:
           mkdir -p "$MISE_CONFIG_DIR"
           : > "$MISE_GLOBAL_CONFIG_FILE"
           : > "$MISE_SYSTEM_CONFIG_FILE"
-          MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:jqlang/jq
-          mise exec -- scripts/check-tools.sh go gofmt jq
+          MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:jqlang/jq core:python
+          mise exec -- scripts/check-tools.sh go gofmt jq python3
 
       - name: List integration tests and record planned phases
         env:
@@ -204,6 +206,12 @@ jobs:
             all(.[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))
           ' test-evidence/all.jsonl test-evidence/trust-internal.jsonl
 
+      - name: Source-bound trust red controls
+        timeout-minutes: 3
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: bash scripts/itest-trust-mutations.sh
+
       - name: Inventory executed, excluded and unrun tests
         if: always()
         run: |
@@ -219,14 +227,6 @@ jobs:
               --arg exit "$(cat "test-evidence/$phase.exit" 2>/dev/null || echo unrun)" \
               -f .github/test-inventory.jq "test-evidence/$phase.jsonl" > "test-evidence/$phase.inventory.json"
           done < test-evidence/plan.txt
-
-      - name: Upload integration test evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: integration-test-evidence
-          path: test-evidence/
-          if-no-files-found: error
 
       - name: Collect logs on failure
         if: failure()
@@ -254,4 +254,18 @@ jobs:
             done
             rm -f "$HOME/.ssh/id_rdhpf_test" "$HOME/.ssh/id_rdhpf_test.pub"
           fi
-          bash scripts/itest-down.sh
+          set +e
+          bash scripts/itest-down.sh > test-evidence/cleanup.stdout 2> test-evidence/cleanup.stderr
+          status=$?
+          printf '%s\n' "$status" > test-evidence/cleanup.exit
+          set -e
+          test "$status" -eq 0
+          test ! -e .itests
+
+      - name: Upload integration test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-test-evidence
+          path: test-evidence/
+          if-no-files-found: error

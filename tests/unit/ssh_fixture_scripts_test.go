@@ -33,7 +33,7 @@ printf 'ssh-ed25519 owned-public-key\n' > "$2.pub"
 container) exit 1;;
 create) printf '%064d\n' 1;;
 inspect) if [ -f "$FIXTURE_FOREIGN" ]; then echo foreign; else cat "$FIXTURE_ROOT/.itests/owner"; fi;;
-exec) if [ "$3" = cat ]; then printf 'ssh-ed25519 owned-public-key\n'; fi;;
+exec) if [ "$3" = /usr/sbin/sshd ] && [ "$4" = -T ]; then printf 'persourcepenalties no\n'; elif [ "$3" = cat ]; then printf 'ssh-ed25519 owned-public-key\n'; fi;;
 rm) printf removed > "$FIXTURE_REMOVED";;
 esac
 `)

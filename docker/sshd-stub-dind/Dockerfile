@@ -15,6 +15,10 @@ RUN sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd
     echo 'PermitOpen any' >> /etc/ssh/sshd_config && \
     echo 'GatewayPorts no' >> /etc/ssh/sshd_config
 
+# This owned loopback fixture deliberately repeats failed authentication. Keep
+# those controls independent; never apply this test setting to operator sshd.
+RUN echo 'PerSourcePenalties no' >> /etc/ssh/sshd_config
+
 # Create test user with password (required by Alpine sshd even with key auth)
 RUN adduser -D -s /bin/sh testuser && \
     echo 'testuser:testpass' | chpasswd && \

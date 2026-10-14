@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,10 +55,15 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 				switch operation {
 				case "startup":
 					id := f.Backend(sshfixture.Nginx, 18083)
+					// Preserve production's short-ID behavior; independently observe
+					// Docker ps rather than changing reconciliation to --no-trunc.
+					psID := f.Docker("ps", "--filter", "id="+id, "--format", "{{.ID}}")
+					require.NotEmpty(t, psID)
+					require.True(t, strings.HasPrefix(id, psID))
 					err = m.reconcileStartup(ctx)
 					if success {
 						require.NoError(t, err)
-						require.Contains(t, st.GetDesired(), state.ContainerPorts{ContainerID: id, Ports: []int{18083}})
+						require.Contains(t, st.GetDesired(), state.ContainerPorts{ContainerID: psID, Ports: []int{18083}})
 					} else {
 						require.Error(t, err)
 						require.Empty(t, st.GetDesired())

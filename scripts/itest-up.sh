@@ -28,6 +28,7 @@ for attempt in {1..50}; do
   if docker exec "$id" test -s /etc/ssh/ssh_host_ed25519_key.pub; then break; fi
   sleep .1
 done
+docker exec "$id" /usr/sbin/sshd -T | grep -qx 'persourcepenalties no'
 docker cp "$root/home/.ssh/id_ed25519.pub" "$id:/tmp/rdhpf-authorized-key"
 docker exec "$id" sh -ec 'cat /tmp/rdhpf-authorized-key > /home/testuser/.ssh/authorized_keys; chmod 600 /home/testuser/.ssh/authorized_keys; chown testuser:testuser /home/testuser/.ssh/authorized_keys; rm /tmp/rdhpf-authorized-key'
 # Public key obtained through the retained container, never unauthenticated keyscan.
@@ -55,6 +56,7 @@ chmod 700 "$root/bin/ssh"
   docker image inspect rdhpf-sshd-stub --format '{{.Id}}'
   docker exec "$id" apk info -v
   docker exec "$id" /usr/sbin/sshd -V
+  docker exec "$id" /usr/sbin/sshd -T | grep -E '^(persourcepenalties|passwordauthentication|pubkeyauthentication|kbdinteractiveauthentication|permitrootlogin) '
   docker exec "$id" docker version
 } > "$root/provenance.txt" 2>&1
 complete=1

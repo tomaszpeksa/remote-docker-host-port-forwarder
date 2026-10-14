@@ -140,6 +140,20 @@ func TestMasterProcess(t *testing.T) {
 		}
 		command, _ := bufio.NewReader(conn).ReadString('\n')
 		switch strings.TrimSpace(command) {
+		case "":
+			// associate closes this credential-only connection after verifying
+			// the retained PID and socket. Arm only after Open has completed.
+			if gate := os.Getenv("S07_REMOVE_MUX_GATE"); gate != "" {
+				if _, err := os.Stat(gate); err == nil {
+					conn.Close()
+					closeListener()
+					require.NoError(t, os.WriteFile(gate+".ready", []byte("removed\n"), 0600))
+					// Keep the exact owned process alive until Master retires it.
+					for {
+						time.Sleep(time.Hour)
+					}
+				}
+			}
 		case "check":
 			if marker := os.Getenv("S06_CHECK_BLOCK"); marker != "" {
 				if _, err := os.Stat(marker); err == nil {

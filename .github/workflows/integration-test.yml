@@ -172,25 +172,6 @@ jobs:
 
           echo "✓ Phase 2b complete: E2E container test passed"
 
-      - name: Phase 3 - Run all integration tests
-        env:
-          SSH_TEST_HOST: ssh://testuser@localhost:2222
-        run: |
-          echo "=== Phase 3: All Integration Tests ==="
-          echo "Running complete integration test suite (15m test budget)"
-          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-
-          set +e
-          go test -tags=rdhpf_integration -json -count=1 -timeout=15m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/all.coverage ./tests/integration/... 2> test-evidence/all.stderr | tee test-evidence/all.jsonl
-          status=("${PIPESTATUS[@]}")
-          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/all.exit
-          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
-          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
-
-          # A missing selector must not silently turn mandatory hosted proof into skips.
-          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
-          echo "✓ Phase 3 complete: All integration tests passed"
-
       - name: Private command trust and conditional control requests
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
@@ -211,6 +192,25 @@ jobs:
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: bash scripts/itest-trust-mutations.sh
+
+      - name: Phase 3 - Run all integration tests
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          echo "=== Phase 3: All Integration Tests ==="
+          echo "Running complete integration test suite (15m test budget)"
+          echo "SSH_TEST_HOST=$SSH_TEST_HOST"
+
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=15m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/all.coverage ./tests/integration/... 2> test-evidence/all.stderr | tee test-evidence/all.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/all.exit
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
+
+          # A missing selector must not silently turn mandatory hosted proof into skips.
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
+          echo "✓ Phase 3 complete: All integration tests passed"
 
       - name: Inventory executed, excluded and unrun tests
         if: always()

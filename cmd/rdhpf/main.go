@@ -41,11 +41,10 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "rdhpf",
 	Short: "Remote Docker Host Port Forwarder",
-	Long: `rdhpf automatically forwards published container ports from a remote Docker host 
-to your local machine via SSH.
-
-When a container starts with published ports, rdhpf detects it and establishes 
-SSH port forwards so you can access the services on localhost.`,
+	Long: "rdhpf automatically forwards published container ports from a remote Docker host \n" +
+		"to your local machine via SSH.\n\n" +
+		"When a container starts with published ports, rdhpf detects it and establishes \n" +
+		"SSH port forwards so you can access the services on localhost.",
 	SilenceUsage: true,
 }
 
@@ -69,10 +68,9 @@ var (
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show status of active port forwards",
-	Long: `Display the current status of all active port forwards.
-	
-This command queries the SSH ControlMaster to determine which forwards
-are currently active and displays them in the requested format.`,
+	Long: "Display the current status of all active port forwards.\n\t\n" +
+		"This command queries the SSH ControlMaster to determine which forwards\n" +
+		"are currently active and displays them in the requested format.",
 	RunE: runStatus,
 }
 

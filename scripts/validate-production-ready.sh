@@ -40,14 +40,14 @@ echo "1. Build Verification"
 echo "--------------------"
 if make clean > /dev/null 2>&1 && make build > /dev/null 2>&1; then
     pass "Build successful"
-    
+
     # Test binary
     if ./build/rdhpf --help > /dev/null 2>&1; then
         pass "Binary functional (--help)"
     else
         fail "Binary --help failed"
     fi
-    
+
     if ./build/rdhpf version > /dev/null 2>&1; then
         pass "Binary functional (version)"
     else

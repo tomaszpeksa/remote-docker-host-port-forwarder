@@ -337,7 +337,7 @@ func TestForwardValidation(t *testing.T) {
         },
         // ... more cases
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             _, err := NewForward(tt.local, tt.remote, tt.port)
@@ -371,11 +371,11 @@ func (m *Manager) Start() error {
     if err := m.connectSSH(); err != nil {
         return fmt.Errorf("failed to connect SSH: %w", err)
     }
-    
+
     if err := m.setupForwards(); err != nil {
         return fmt.Errorf("failed to setup forwards: %w", err)
     }
-    
+
     return nil
 }
 ```
@@ -478,13 +478,13 @@ Releases are automated via GitHub Actions when a tag is pushed.
 1. **Update CHANGELOG.md**:
    ```markdown
    ## [1.0.0] - 2024-01-15
-   
+
    ### Added
    - Feature X
-   
+
    ### Changed
    - Improvement Y
-   
+
    ### Fixed
    - Bug Z
    ```

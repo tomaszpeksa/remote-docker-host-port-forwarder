@@ -33,6 +33,10 @@ repos:
       - id: go-fmt
         args: [-s]
       - id: go-vet
+        entry: go vet
+        language: system
+        args: [./...]
+        pass_filenames: false
       - id: go-mod-tidy
 
   - repo: local

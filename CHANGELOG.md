@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
 - Comprehensive debug logging for docker events SSH command execution
   - Logs full SSH command with arguments before execution
   - Captures and logs stderr separately (SSH warnings, error messages)
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Logs exit codes and signal information for better debugging
 
 ### Changed
+
 - SSH masters run as directly owned foreground children; occupied or ambiguous
   control endpoints are refused rather than adopted or removed. Forced rdhpf
   termination (for example, SIGKILL) may leave an idle SSH child alive. Normal
@@ -41,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parent-death supervisor or global shutdown deadline is provided.
 
 ### Fixed
+
 - Separate SSH connection replacement from monitor shutdown, serialize it with
   forwarding transactions, and invalidate retired connection state while
   preserving desired ports and logical-forward creation times.
@@ -57,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0]
 
 ### Added
+
 - Event‑driven port forwarding based on Docker events and inspect
 - SSH ControlMaster management and idempotent reconciliation
 - Conflict handling with retry; structured logging; integration tests (real Docker + harness)

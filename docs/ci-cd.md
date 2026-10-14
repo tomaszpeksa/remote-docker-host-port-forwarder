@@ -20,7 +20,7 @@ The primary continuous integration workflow that runs on every code change.
   - `go vet` - Static analysis
   - `gofmt -s` - Code formatting
   - `golangci-lint` - Comprehensive linting
-  
+
 - **test**: Infrastructure-independent tests
   - Runs on pinned Go 1.27.2 with race detection and uncached execution
   - Clears integration host/key variables; remote scenarios self-skip
@@ -255,10 +255,10 @@ go test -bench=BenchmarkReconcile ./internal/reconcile/
 1. **Update CHANGELOG.md**:
    ```markdown
    ## [1.0.0] - 2024-01-15
-   
+
    ### Added
    - New feature
-   
+
    ### Fixed
    - Bug fix
    ```

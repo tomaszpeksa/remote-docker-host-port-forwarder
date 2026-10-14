@@ -93,8 +93,7 @@ func (n *masterNamespace) reclaim() error {
 		cancel()
 		if dialErr == nil {
 			pid, peerErr := unixPeerPID(conn.(*net.UnixConn))
-			conn.Close()
-			return fmt.Errorf("live foreign SSH endpoint after child retirement (peer %d, identity error %v)", pid, peerErr)
+			return errors.Join(fmt.Errorf("live foreign SSH endpoint after child retirement (peer %d, identity error %v)", pid, peerErr), conn.Close())
 		}
 		if !errors.Is(dialErr, syscall.ECONNREFUSED) && !os.IsNotExist(dialErr) {
 			return fmt.Errorf("uncertain SSH namespace entry: %w", dialErr)

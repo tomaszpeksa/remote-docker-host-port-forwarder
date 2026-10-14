@@ -27,8 +27,13 @@ func TestIntegrationWorkflowMandatoryTrustPasses(t *testing.T) {
 	}
 	require.NoError(t, yaml.Unmarshal(source, &workflow))
 	phase := ""
+	allEvidenceProduced := false
 	for _, step := range workflow.Jobs["integration-test"].Steps {
+		if step.Name == "Phase 3 - Run all integration tests" {
+			allEvidenceProduced = true
+		}
 		if step.Name == "Private command trust and conditional control requests" {
+			require.True(t, allEvidenceProduced, "combined trust guard requires prior all.jsonl production")
 			phase = step.Run
 		}
 	}

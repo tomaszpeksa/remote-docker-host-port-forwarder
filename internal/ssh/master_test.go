@@ -153,6 +153,7 @@ func TestMasterProcess(t *testing.T) {
 						time.Sleep(time.Hour)
 					}
 				}
+				require.NoError(t, os.WriteFile(gate+".idle", []byte("startup association consumed\n"), 0600))
 			}
 		case "check":
 			if marker := os.Getenv("S06_CHECK_BLOCK"); marker != "" {

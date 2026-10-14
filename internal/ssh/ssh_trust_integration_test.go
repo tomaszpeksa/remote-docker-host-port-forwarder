@@ -59,6 +59,12 @@ func checkAfterOwnedSocketRemoval(t *testing.T, host, executable string, ctx con
 	gate := filepath.Join(dir, "remove-mux")
 	t.Setenv("S07_REMOVE_MUX_GATE", gate)
 	require.NoError(t, master.Open(ctx))
+	// Consume startup's association EOF before arming: otherwise a delayed
+	// startup EOF could remove the socket before Check's own association.
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(gate + ".idle")
+		return err == nil
+	}, time.Second, 5*time.Millisecond)
 	master.host = host
 	launcher := t.TempDir()
 	script := fmt.Sprintf(`#!/bin/bash

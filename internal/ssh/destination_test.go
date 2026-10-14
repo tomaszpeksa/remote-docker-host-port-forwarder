@@ -35,7 +35,7 @@ func TestMasterDestinationBoundary(t *testing.T) {
 			require.NoError(t, err)
 			want := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 				"-o", "ControlPath=" + m.ControlPath(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null",
+				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes",
 				"-i", "/identity with spaces"}
 			want = append(want, tc.port...)
 			want = append(want, "--", tc.destination)
@@ -43,7 +43,7 @@ func TestMasterDestinationBoundary(t *testing.T) {
 			require.NoError(t, m.Check())
 			data, err = os.ReadFile(filepath.Join(dir, "check-args"))
 			require.NoError(t, err)
-			want = append([]string{"-S", m.ControlPath(), "-O", "check"}, tc.port...)
+			want = append([]string{"-o", "BatchMode=yes", "-S", m.ControlPath(), "-O", "check"}, tc.port...)
 			want = append(want, "--", tc.destination)
 			require.Equal(t, want, strings.Split(string(data), "\x00"))
 		})
@@ -68,7 +68,7 @@ func TestForwardDestinationBoundary(t *testing.T) {
 					call = CancelForward
 				}
 				require.NoError(t, call(forwardTestContext(t), "/control socket", tc.host, 15432, 5432, quietForwardLogger()))
-				want := append([]string{"-S", "/control socket"}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-S", "/control socket"}, tc.port...)
 				want = append(want, "-O", operation, "-L", "127.0.0.1:15432:localhost:5432", "--", tc.destination)
 				require.Equal(t, [][]string{want}, fake.calls(t))
 			})

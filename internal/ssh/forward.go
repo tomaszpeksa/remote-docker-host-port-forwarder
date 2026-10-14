@@ -187,7 +187,7 @@ func AddForward(ctx context.Context, controlPath, host string, localPort, remote
 	// Build SSH command - port flag must come before control operations
 	// Use "localhost" for remote side so it can be resolved via /etc/hosts in test environments
 	forwardSpec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", localPort, remotePort)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -267,7 +267,7 @@ func CancelForward(ctx context.Context, controlPath, host string, localPort, rem
 	// Build SSH command - port flag must come before control operations
 	// Use "localhost" for remote side so it can be resolved via /etc/hosts in test environments
 	forwardSpec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", localPort, remotePort)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

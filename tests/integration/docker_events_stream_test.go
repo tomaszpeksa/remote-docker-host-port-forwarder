@@ -120,7 +120,7 @@ func TestDockerEventsStreamReceivesEvents(t *testing.T) {
 
 	// Start a test container to generate events
 	t.Log("Starting test container to generate events...")
-	containerID, cleanup := startDockerContainer(t, sshHost, "alpine:latest", map[int]int{})
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureAlpine, map[int]int{})
 	defer cleanup()
 
 	// Wait for and verify we receive events

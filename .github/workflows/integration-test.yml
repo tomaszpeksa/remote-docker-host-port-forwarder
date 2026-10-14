@@ -31,6 +31,7 @@ jobs:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
       RDHPF_HOSTED_RECOVERY: '1'
+      RDHPF_HOSTED_TRUST: '1'
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,76 +87,37 @@ jobs:
             sha256sum "$ssh_executable"
             ssh -V 2>&1
           } > test-evidence/source.txt
-          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' > test-evidence/plan.txt
-          go test -tags=rdhpf_integration -json -list . ./tests/integration/ > test-evidence/list.jsonl 2> test-evidence/list.stderr
+          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust)' > test-evidence/plan.txt
+          go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
         run: |
           # Docker should already be available on ubuntu-latest
           docker --version
 
-      - name: Build SSH test container with Docker-in-Docker
+      - name: Provision owned SSH fixture and trusted public key
         run: |
-          echo "Building sshd-stub-dind (Docker-in-Docker) image..."
-          docker build --no-cache -t rdhpf-sshd-stub \
-            -f docker/sshd-stub-dind/Dockerfile \
-            docker/sshd-stub-dind/
-
-      - name: Generate SSH test key
-        run: |
-          echo "Generating SSH key for tests..."
-          mkdir -p $HOME/.ssh
-          ssh-keygen -t ed25519 -f $HOME/.ssh/id_rdhpf_test -N "" -C "rdhpf-ci-test"
-          chmod 600 $HOME/.ssh/id_rdhpf_test
-          chmod 644 $HOME/.ssh/id_rdhpf_test.pub
-
-      - name: Start SSH test container with Docker socket mount
-        run: |
-          echo "Starting SSH container with Docker socket mount..."
-          docker run -d --name rdhpf-sshd-stub \
-            -p 2222:22 \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            --label rdhpf.test-infrastructure=true \
-            rdhpf-sshd-stub
-
-          echo "Waiting for Docker CLI access via socket..."
-          sleep 2
-
-          echo "Verifying Docker access..."
-          if ! docker exec rdhpf-sshd-stub docker info >/dev/null 2>&1; then
-            echo "ERROR: Docker socket access failed"
-            docker logs rdhpf-sshd-stub
-            exit 1
-          fi
-
-          echo "✓ Docker CLI ready (using host daemon via socket mount)"
-
-          echo "Waiting for SSH server to be ready..."
-          sleep 2
-
-          echo "Configuring SSH key authentication in container..."
-          docker cp $HOME/.ssh/id_rdhpf_test.pub rdhpf-sshd-stub:/tmp/pubkey
-          docker exec rdhpf-sshd-stub sh -c "
-            mv /tmp/pubkey /home/testuser/.ssh/authorized_keys && \
-            chmod 600 /home/testuser/.ssh/authorized_keys && \
-            chown testuser:testuser /home/testuser/.ssh/authorized_keys
-          "
-
-          echo "Testing SSH connection..."
-          ssh -i $HOME/.ssh/id_rdhpf_test \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o LogLevel=ERROR \
-            -p 2222 testuser@localhost echo "✓ SSH connection successful"
-
-          echo "Testing Docker access over SSH..."
-          ssh -i $HOME/.ssh/id_rdhpf_test \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o LogLevel=ERROR \
-            -p 2222 testuser@localhost docker info
-
-          echo "✓ SSH and Docker both working"
+          test -z "${DOCKER_API_VERSION:-}" # Preserve API negotiation.
+          bash scripts/itest-up.sh 2>&1 | tee test-evidence/fixture-build.log
+          cp .itests/provenance.txt test-evidence/fixture-provenance.txt
+          cp .itests/host-key.pub test-evidence/host-key.pub
+          id=$(cat .itests/container-id)
+          docker exec "$id" sh -ec 'sha256sum /etc/apk/keys/*; apk policy openssh-server docker-cli; /usr/sbin/sshd -T' > test-evidence/fixture-policy.txt
+          # Actual account config is used by real application SSH. Save exact
+          # previous bytes privately; never upload this backup or private keys.
+          test "$GITHUB_ACTIONS" = true
+          test "$HOME" = "$(getent passwd "$(id -un)" | cut -d: -f6)"
+          mkdir -p "$HOME/.ssh" "$RUNNER_TEMP/s07-ssh-backup"
+          test ! -e "$HOME/.ssh/id_rdhpf_test"
+          test ! -e "$HOME/.ssh/id_rdhpf_test.pub"
+          for file in config known_hosts; do
+            if [ -e "$HOME/.ssh/$file" ]; then cp -p "$HOME/.ssh/$file" "$RUNNER_TEMP/s07-ssh-backup/$file"; fi
+          done
+          touch "$RUNNER_TEMP/s07-ssh-backup/owned"
+          cp .itests/home/.ssh/id_ed25519 "$HOME/.ssh/id_rdhpf_test"
+          cp .itests/home/.ssh/id_ed25519.pub "$HOME/.ssh/id_rdhpf_test.pub"
+          cp .itests/home/.ssh/config "$HOME/.ssh/config"
+          cp .itests/home/.ssh/known_hosts "$HOME/.ssh/known_hosts"
 
       - name: Phase 1 - Run SSH Master integration tests
         env:
@@ -164,18 +126,6 @@ jobs:
           echo "=== Phase 1: SSH Master Tests ==="
           echo "Running SSH ControlMaster tests (8 tests, ~30s)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-
-          # Configure SSH for tests
-          mkdir -p $HOME/.ssh
-          cat > $HOME/.ssh/config <<EOF
-          Host localhost
-            Port 2222
-            IdentityFile $HOME/.ssh/id_rdhpf_test
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            LogLevel ERROR
-          EOF
-          chmod 600 $HOME/.ssh/config
 
           set +e
           go test -tags=rdhpf_integration -json -count=1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/ssh.coverage -run 'TestSSHMaster' ./tests/integration/ 2> test-evidence/ssh.stderr | tee test-evidence/ssh.jsonl
@@ -239,6 +189,21 @@ jobs:
           jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
           echo "✓ Phase 3 complete: All integration tests passed"
 
+      - name: Private command trust and conditional control requests
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run 'Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust)' ./internal/manager ./internal/docker ./internal/ssh 2> test-evidence/trust-internal.stderr | tee test-evidence/trust-internal.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/trust-internal.exit
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
+          jq -e -s --rawfile required .github/required-trust-tests.txt '
+            . as $events | ($required | split("\n") | map(select(length > 0))) |
+            all(.[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))
+          ' test-evidence/all.jsonl test-evidence/trust-internal.jsonl
+
       - name: Inventory executed, excluded and unrun tests
         if: always()
         run: |
@@ -278,10 +243,15 @@ jobs:
       - name: Cleanup test environment
         if: always()
         run: |
-          # Stop and remove SSH test container
-          docker stop rdhpf-sshd-stub || true
-          docker rm rdhpf-sshd-stub || true
-
-          # Clean up SSH keys
-          rm -f $HOME/.ssh/id_rdhpf_test $HOME/.ssh/id_rdhpf_test.pub
-          rm -f $HOME/.ssh/config
+          # Restore exact disposable-account config before deleting owned keys.
+          if [ -f "$RUNNER_TEMP/s07-ssh-backup/owned" ]; then
+            for file in config known_hosts; do
+              if [ -f "$RUNNER_TEMP/s07-ssh-backup/$file" ]; then
+                cp -p "$RUNNER_TEMP/s07-ssh-backup/$file" "$HOME/.ssh/$file"
+              else
+                rm -f "$HOME/.ssh/$file"
+              fi
+            done
+            rm -f "$HOME/.ssh/id_rdhpf_test" "$HOME/.ssh/id_rdhpf_test.pub"
+          fi
+          bash scripts/itest-down.sh

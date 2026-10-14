@@ -45,7 +45,7 @@ func TestDockerDestinationBoundary(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, []int{8080}, got)
 				}
-				want := append([]string{"-S", "/control socket"}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-S", "/control socket"}, tc.port...)
 				want = append(want, "--", tc.destination, operation.command)
 				require.Equal(t, want, argv())
 			})

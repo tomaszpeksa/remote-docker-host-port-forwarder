@@ -118,7 +118,7 @@ func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
 		// Build SSH command that executes docker via sh -c
 		// Important: sh -c and the docker command must be passed as a single argument to SSH
 		remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-		args := []string{"-S", r.controlPath}
+		args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
 		if port != "" {
 			args = append(args, "-p", port)
 		}

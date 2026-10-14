@@ -31,8 +31,8 @@ func TestAddForwardArgv(t *testing.T) {
 		name, host string
 		want       []string
 	}{
-		{"default_port", "ssh://docker@fixture.invalid", []string{"-S", "/control socket", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}},
-		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "user@fixture.invalid"}},
+		{"default_port", "ssh://docker@fixture.invalid", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}},
+		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "user@fixture.invalid"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := installFakeSSH(t, sshResponse{})
@@ -139,7 +139,7 @@ func requireRetryResult(t *testing.T, tc forwardRetryCase, err error, fake *fake
 	calls := fake.calls(t)
 	require.Len(t, calls, tc.calls)
 	for _, argv := range calls {
-		require.Equal(t, []string{"-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}, argv)
+		require.Equal(t, []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}, argv)
 	}
 }
 

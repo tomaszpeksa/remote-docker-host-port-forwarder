@@ -13,8 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need the separately published tap transition; normal OS security remains enabled,
   so unsigned macOS downloads may be blocked on first launch. See the Homebrew guide.
 - Prevent SSH destination options from being interpreted as local flags across
-  production launches and the integration PID helper. Inherited SSH trust and
-  BatchMode changes remain deferred to S07B; they are not part of this release.
+  production launches and the integration PID helper.
+- S07B: inherit configured SSH trust sources/checking policy instead of forcing
+  accept-new and discarding user pins. Force BatchMode on all application SSH paths;
+  default unknown hosts and unavailable noninteractive credentials now fail rather
+  than prompting. Explicit accept-new enrollment remains configurable.
+- Pin owned SSH/backend fixtures, provision verified owned public host keys and
+  exercise real trust, prompts, missing-mux commands and recovery without weakening
+  production policy.
 
 - S06 correction: isolate each SSH Master in a short private namespace and reclaim
   owned stale sockets only after child retirement. Paths remain stable within a

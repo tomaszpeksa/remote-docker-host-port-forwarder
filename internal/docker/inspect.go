@@ -60,7 +60,7 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	// Build SSH command that executes docker via sh -c
 	// Important: sh -c and the docker command must be passed as a single argument to SSH
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -144,7 +144,7 @@ func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, container
 	// Get container labels
 	dockerCmd := fmt.Sprintf("docker inspect %s --format '{{json .Config.Labels}}'", containerID)
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

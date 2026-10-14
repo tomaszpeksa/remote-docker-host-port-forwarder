@@ -237,6 +237,20 @@ For an already configured isolated host, set `SSH_TEST_HOST=ssh://user@host:port
 and run `make test-integration`. SSH authentication uses your SSH configuration
 or the optional `SSH_TEST_KEY_PATH` for fixture commands.
 
+The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.8.2-r0
+and nginx 1.30.5-alpine3.24. The isolated harness daemon must support Docker API
+1.40 or newer with negotiation enabled; this is not a production-daemon policy.
+No script upgrades your daemon. Startup refuses existing container/state rather
+than adopting it, obtains the public host key from its retained owned container,
+and binds SSH only to loopback. `itest-down` verifies ID/label before removal and
+removes owned private keys; foreign or legacy resources require manual disposition.
+
+OpenSSH does not use HOME alone to locate account config. Local `make itest` and
+`make itest-stability` select an owned exec launcher that adds only an absolute
+`-F` config; it never injects trust or BatchMode overrides. Do not install this
+launcher globally. New trust/prompt/private-command tests are hosted-only and
+require explicit `RDHPF_HOSTED_TRUST=1`; do not select them on an operator host.
+
 The two disruptive S06 recovery scenarios are hosted-only and produce named
 skips in these local entry points, before changing SSH configuration, acquiring
 publisher ownership or creating backends. Only the disposable Actions job selects

@@ -187,7 +187,7 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	}
 	args := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 		"-o", "ControlPath=" + m.controlPath, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null"}
+		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"}
 	if key := os.Getenv("SSH_TEST_KEY_PATH"); key != "" {
 		args = append(args, "-i", key)
 	}
@@ -310,7 +310,7 @@ func (m *Master) checkConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"-S", m.controlPath, "-O", "check"}
+	args := []string{"-o", "BatchMode=yes", "-S", m.controlPath, "-O", "check"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

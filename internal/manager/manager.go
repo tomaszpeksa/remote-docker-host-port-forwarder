@@ -855,7 +855,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	// Build SSH command args
 	// Important: sh -c and the docker command must be passed as a single argument to SSH
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -933,7 +933,7 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' %s", docker.LabelTestInfrastructure, containerID)
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
 
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -959,7 +959,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	// Simple docker version command to test connectivity
 	dockerCmd := "docker version --format '{{.Server.Version}}'"
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

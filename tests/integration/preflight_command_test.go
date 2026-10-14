@@ -17,7 +17,7 @@ func TestIntegrationPreflightCommand(t *testing.T) {
 		require.NoError(t, integrationPreflight(context.Background(), "ssh://user@fixture:2222", "/fixture/key"))
 		got, err := os.ReadFile(argv)
 		require.NoError(t, err)
-		require.Equal(t, "-o\nStrictHostKeyChecking=no\n-o\nUserKnownHostsFile=/dev/null\n-i\n/fixture/key\n-p\n2222\nuser@fixture\ndocker\nps\n", string(got))
+		require.Equal(t, "-o\nBatchMode=yes\n-i\n/fixture/key\n-p\n2222\n--\nuser@fixture\ndocker\nps\n", string(got))
 	})
 	t.Run("deadline", func(t *testing.T) {
 		fakeIntegrationSSH(t, "exec /bin/sleep 30")

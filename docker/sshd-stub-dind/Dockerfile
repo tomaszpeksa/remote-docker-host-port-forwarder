@@ -2,13 +2,10 @@
 # Uses host Docker daemon via socket mount (no Docker-in-Docker)
 # This avoids iptables compatibility issues while providing real Docker access
 
-FROM alpine:3.19
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # Install OpenSSH server and Docker CLI
-RUN apk add --no-cache openssh-server docker-cli
-
-# Generate SSH host keys
-RUN ssh-keygen -A
+RUN apk add --no-cache openssh-server=10.3_p1-r1 docker-cli=29.8.2-r0
 
 # Configure sshd for key-based authentication and allow port forwarding
 RUN sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \

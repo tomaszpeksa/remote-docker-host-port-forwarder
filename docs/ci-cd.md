@@ -99,7 +99,21 @@ Ensures documentation quality and validity.
 manual dispatch, nightly schedule (2 AM UTC).
 
 The `integration-test` job starts an SSH container on the isolated hosted runner,
-mounts its Docker socket, and runs SSH, stream, one-port and full-suite phases.
+mounts its Docker socket, and runs SSH, stream, one-port, full-suite and private
+command trust phases. The fixture bootstrap pins image digests/package revisions,
+uses fresh container-owned host keys, trusts only its public key obtained through
+the retained container, and restores disposable-account configuration exactly.
+Private keys/config backups are never uploaded. Native build/APK/runtime/API
+provenance accompanies the public test evidence.
+
+`.github/required-trust-tests.txt` names every mandatory trust subcase. The workflow
+requires actual PASS records across full-suite/internal-package JSON, in addition
+to both recovery guards. Native askpass positive controls must fire with
+BatchMode=no; application refusal must complete before deadlines without prompting.
+The conditional control-check test mixes an owned fake-child association with a
+real OpenSSH command; only separate Master/HTTP scenarios establish real lifecycle
+and recovery behavior. Local/preconfigured-host runs do not execute this disruptive
+hosted matrix. Missing evidence or skips cannot satisfy these mandatory scenarios.
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
 

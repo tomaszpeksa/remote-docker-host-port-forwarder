@@ -47,7 +47,7 @@ func TestManager_LongRunningTunnelStability(t *testing.T) {
 	cleanups := make([]func(), 0, len(ports))
 
 	for _, port := range ports {
-		containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+		containerID, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 			port: 80,
 		})
 		cleanups = append(cleanups, cleanup)
@@ -287,7 +287,7 @@ func TestManager_TunnelStabilityUnderLoad(t *testing.T) {
 	t.Log("Step 2: Starting nginx container...")
 
 	const targetPort = 19090
-	containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		targetPort: 80,
 	})
 	defer cleanup()

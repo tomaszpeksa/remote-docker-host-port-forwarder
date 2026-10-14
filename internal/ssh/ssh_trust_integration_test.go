@@ -3,11 +3,14 @@
 package ssh
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -59,12 +62,9 @@ func checkAfterOwnedSocketRemoval(t *testing.T, host, executable string, ctx con
 	gate := filepath.Join(dir, "remove-mux")
 	t.Setenv("S07_REMOVE_MUX_GATE", gate)
 	require.NoError(t, master.Open(ctx))
-	// Consume startup's association EOF before arming: otherwise a delayed
-	// startup EOF could remove the socket before Check's own association.
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(gate + ".idle")
-		return err == nil
-	}, time.Second, 5*time.Millisecond)
+	// Open checks the mux between TWO associations. Acknowledge both EOFs,
+	// not merely the first, before arming removal for Check's association.
+	require.Eventually(t, func() bool { return startupAssociationsConsumed(gate) }, time.Second, 5*time.Millisecond)
 	master.host = host
 	launcher := t.TempDir()
 	script := fmt.Sprintf(`#!/bin/bash
@@ -93,6 +93,62 @@ exit 125
 	require.NoError(t, master.Close())
 	t.Logf("mixed owned fake-child / real Check command after socket removal: elapsed=%s argv=%q", elapsed, argv)
 	return err
+}
+
+func startupAssociationsConsumed(gate string) bool {
+	_, err := os.Stat(gate + ".startup-complete")
+	return err == nil
+}
+
+// This regression holds the final startup EOF while the real child's first
+// acknowledgement exists. No sleep or scheduler luck selects the bad window.
+func TestOwnedAssociationCheckFallbackRejectsStaleStartupAck(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "s07-startup-eof-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(dir, "gate"), Net: "unix"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(3*time.Second)))
+	t.Setenv("S07_FINAL_STARTUP_EOF_GATE", listener.Addr().String())
+	observed := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			observed <- err
+			return
+		}
+		defer conn.Close()
+		if err = conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			observed <- err
+			return
+		}
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			observed <- err
+			return
+		}
+		gate := strings.TrimSpace(line)
+		_, firstErr := os.Stat(gate + ".idle")
+		var observation error
+		if firstErr != nil {
+			observation = fmt.Errorf("first startup acknowledgement missing: %w", firstErr)
+		}
+		if startupAssociationsConsumed(gate) {
+			observation = fmt.Errorf("stale first acknowledgement accepted while final startup EOF is held")
+		}
+		_, err = conn.Write([]byte{1})
+		if err != nil {
+			observation = err
+		}
+		observed <- observation
+	}()
+	t.Cleanup(func() { require.NoError(t, <-observed) })
+	executable := filepath.Join(t.TempDir(), "native-command-standin")
+	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0700))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.ErrorContains(t, checkAfterOwnedSocketRemoval(t, "ssh://fixture.invalid", executable, ctx), "exit status 23")
 }
 
 func TestOwnedAssociationCheckFallbackGate(t *testing.T) {

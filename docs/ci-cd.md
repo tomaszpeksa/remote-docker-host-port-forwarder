@@ -120,7 +120,12 @@ outcomes for the accepted-A Master overlay and each individual BatchMode removal
 These are not frozen-candidate passes: each must fail its named scenario for the
 expected reason, not a compile error or deadline kill. The script restores exact
 candidate source after every control. Cleanup results are retained alongside the
-scenario artifacts, without private keys or account configuration backups.
+scenario artifacts, without private keys or account configuration backups. The
+same disposable runner also exercises the documented Make fixture lifecycle:
+up, a named Manager test in its per-invocation runtime HOME, down, a second up,
+both real stability cases, and down. Named PASS guards reject skips; uncertain
+publisher failure retains runtime storage rather than deleting its lock inode.
+
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
 

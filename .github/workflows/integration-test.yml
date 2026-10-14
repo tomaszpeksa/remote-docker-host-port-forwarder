@@ -25,7 +25,7 @@ jobs:
     defaults:
       run:
         shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
-    # Scenario budgets total 29m plus a bounded diagnostic step; job remains 35m.
+    # Existing scenario budgets remain; Make-cycle proof is bounded within the 35m job.
     timeout-minutes: 35
     env:
       GOTOOLCHAIN: local
@@ -89,7 +89,7 @@ jobs:
             sha256sum "$ssh_executable"
             ssh -V 2>&1
           } > test-evidence/source.txt
-          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust)' > test-evidence/plan.txt
+          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback)' > test-evidence/plan.txt
           go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
@@ -196,7 +196,7 @@ jobs:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           set +e
-          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run 'Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust)' ./internal/manager ./internal/docker ./internal/ssh 2> test-evidence/trust-internal.stderr | tee test-evidence/trust-internal.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run 'Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback)' ./internal/manager ./internal/docker ./internal/ssh 2> test-evidence/trust-internal.stderr | tee test-evidence/trust-internal.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/trust-internal.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
@@ -261,6 +261,39 @@ jobs:
           set -e
           test "$status" -eq 0
           test ! -e .itests
+
+      - name: Documented Make fixture lifecycle
+        timeout-minutes: 12
+        env:
+          RDHPF_HOSTED_TRUST: ''
+          RDHPF_HOSTED_RECOVERY: ''
+        run: |
+          # Separate ordinary local-mode proof on this disposable daemon, after
+          # the actual-account fixture above has been fully restored/removed.
+          trap 'make itest-down' EXIT
+          make itest-up > test-evidence/make-up.stdout 2> test-evidence/make-up.stderr
+          set +e
+          make itest GOTEST_FLAGS='-json -run ^TestManager_ContainerWithOnePort$' 2> test-evidence/make-itest.stderr | tee test-evidence/make-itest.stdout
+          status=("${PIPESTATUS[@]}")
+          printf 'make=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/make-itest.exit
+          set -e
+          test "${status[0]}" -eq 0; test "${status[1]}" -eq 0
+          jq -Rc 'fromjson? | select(.Action != null)' test-evidence/make-itest.stdout > test-evidence/make-itest.jsonl
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestManager_ContainerWithOnePort")' test-evidence/make-itest.jsonl
+          make itest-down > test-evidence/make-down.stdout 2> test-evidence/make-down.stderr
+          test ! -e .itests; test ! -e .itests-cleanup-owner
+          make itest-up > test-evidence/make-second-up.stdout 2> test-evidence/make-second-up.stderr
+          set +e
+          make itest-stability GOTEST_FLAGS=-json 2> test-evidence/make-stability.stderr | tee test-evidence/make-stability.stdout
+          status=("${PIPESTATUS[@]}")
+          printf 'make=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/make-stability.exit
+          set -e
+          test "${status[0]}" -eq 0; test "${status[1]}" -eq 0
+          jq -Rc 'fromjson? | select(.Action != null)' test-evidence/make-stability.stdout > test-evidence/make-stability.jsonl
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestManager_LongRunningTunnelStability") and any(.[]; .Action == "pass" and .Test == "TestManager_TunnelStabilityUnderLoad")' test-evidence/make-stability.jsonl
+          make itest-down > test-evidence/make-second-down.stdout 2> test-evidence/make-second-down.stderr
+          test ! -e .itests; test ! -e .itests-cleanup-owner
+          printf 'Two Make up/test/down cycles completed with joined runtime HOME retirement.\n' > test-evidence/make-lifecycle.result
 
       - name: Upload integration test evidence
         if: always()

@@ -74,3 +74,5 @@ TestControlRequestTrust/check/yes/unknown
 TestControlRequestTrust/check/yes/encrypted
 TestControlRequestTrust/check/ask/unknown
 TestControlRequestTrust/check/ask/encrypted
+TestOwnedAssociationCheckFallbackGate
+TestOwnedAssociationCheckFallbackRejectsStaleStartupAck

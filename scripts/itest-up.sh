@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 root="$PWD/.itests"
 name=rdhpf-sshd-stub
 # Never adopt legacy state or remove a same-named container to make startup work.
-if [ -e "$root" ]; then echo 'Refusing existing .itests; use its owned itest-down first.' >&2; exit 1; fi
+if [ -e "$root" ] || [ -L "$root" ] || [ -e "$PWD/.itests-cleanup-owner" ] || [ -L "$PWD/.itests-cleanup-owner" ]; then echo 'Refusing existing .itests; use its owned itest-down first.' >&2; exit 1; fi
 if docker container inspect "$name" >/dev/null 2>&1; then echo 'Refusing existing SSH fixture container.' >&2; exit 1; fi
 mkdir "$root"
 owner="$(date +%s)-$$"

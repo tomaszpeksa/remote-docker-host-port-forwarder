@@ -248,7 +248,17 @@ removes owned private keys; foreign or legacy resources require manual dispositi
 OpenSSH does not use HOME alone to locate account config. Local `make itest` and
 `make itest-stability` select an owned exec launcher that adds only an absolute
 `-F` config; it never injects trust or BatchMode overrides. Do not install this
-launcher globally. New trust/prompt/private-command tests are hosted-only and
+launcher globally. Each Make test invocation uses a short, private disposable
+runtime HOME, separate from the provisioned SSH keys/config. Successful tests join
+owned publishers before that runtime tree (including caches and the persistent
+publisher lock inode) is retired. Concurrent fixture operations are refused.
+A failed/interrupted command retains `.itests/operation` and its recorded runtime
+HOME; teardown refuses this uncertain state. Inspect it and confirm every owned
+process has joined before manual recovery—never unlink a live publisher lock.
+Partial provisioning teardown retains `.itests-cleanup-owner` for a safe retry;
+unknown provisioning entries are refused, not recursively deleted.
+
+New trust/prompt/private-command tests are hosted-only and
 require explicit `RDHPF_HOSTED_TRUST=1`; do not select them on an operator host.
 
 The two disruptive S06 recovery scenarios are hosted-only and produce named

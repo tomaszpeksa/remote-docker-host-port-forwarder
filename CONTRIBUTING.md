@@ -173,7 +173,7 @@ make coverage
 
 ### Integration Tests
 
-Integration tests require Docker and use a containerized SSH server with Docker socket access:
+Integration tests use a containerized SSH server with Docker socket access. Run this harness only on an isolated Docker daemon: tests create and stop containers.
 
 ```bash
 # Start test environment (SSH container with Docker socket mount)
@@ -186,18 +186,30 @@ make itest
 make itest-down
 ```
 
-For more details, see [`docs/ci-integration-tests.md`](docs/ci-integration-tests.md).
+For an already configured isolated host, set `SSH_TEST_HOST=ssh://user@host:port`
+and run `make test-integration`. SSH authentication uses your SSH configuration
+or the optional `SSH_TEST_KEY_PATH` for fixture commands.
 
-Or run specific integration tests:
+A nonempty `SSH_TEST_HOST` explicitly requests integration: unavailable SSH/Docker
+fails preflight within 10 seconds, rather than reporting success without tests.
+Selecting the package (or a build tag) alone does not request infrastructure;
+without the host, remote scenarios self-skip. `make test` and `make coverage`
+clear these integration variables and never require the harness.
+
+For example, after configuring the host:
 
 ```bash
-go test -v -timeout=10m -tags=integration ./tests/integration/end_to_end_test.go
+go test -v -count=1 -timeout=3m -run '^TestManager_ContainerWithOnePort$' ./tests/integration/
 ```
+
+The one-port fixture waits up to five seconds for its owned nginx backend before
+checking the original forwarded TCP/HTTP assertions. This is not a forwarded-request
+retry. See [CI test evidence](docs/ci-cd.md) for result and coverage interpretation.
 
 ### Running All Tests
 
 ```bash
-# Complete test suite
+# Local build, lint and infrastructure-independent tests (not the Docker harness)
 make ci
 ```
 

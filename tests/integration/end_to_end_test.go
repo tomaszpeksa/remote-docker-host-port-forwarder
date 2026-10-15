@@ -31,25 +31,21 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	// Check if Docker is available on the remote host
-	if !isDockerAvailable() {
-		fmt.Println("Docker not available on remote host, skipping end-to-end tests")
-		os.Exit(0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err := integrationPreflight(ctx, os.Getenv("SSH_TEST_HOST"), os.Getenv("SSH_TEST_KEY_PATH"))
+	cancel()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// Run tests
 	os.Exit(m.Run())
 }
 
-// isDockerAvailable checks if Docker is available on the remote SSH host
-func isDockerAvailable() bool {
-	host := os.Getenv("SSH_TEST_HOST")
-	if host == "" {
-		return false
-	}
-
+// integrationPreflight checks requested infrastructure without running test bodies.
+func integrationPreflight(ctx context.Context, host, keyPath string) error {
 	sshHost := strings.TrimPrefix(host, "ssh://")
-	keyPath := os.Getenv("SSH_TEST_KEY_PATH")
 
 	// Parse port from sshHost if present (e.g., user@host:2222)
 	hostPart := sshHost
@@ -69,14 +65,15 @@ func isDockerAvailable() bool {
 	}
 	args = append(args, hostPart, "docker", "ps")
 
-	// Try to run docker ps via SSH
-	cmd := exec.Command("ssh", args...)
+	// Discard remote output: it may be unbounded or contain credentials.
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Docker not available: %v\n", err)
-		return false
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return fmt.Errorf("requested integration preflight failed (check SSH_TEST_HOST, SSH_TEST_KEY_PATH and remote Docker): %w", err)
 	}
-
-	return true
+	return nil
 }
 
 // setupManager creates and starts a manager instance in a background goroutine
@@ -330,6 +327,12 @@ func TestManager_ContainerWithOnePort(t *testing.T) {
 		testPort: 80,
 	})
 	defer cleanup()
+
+	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+	readyErr := waitForNginxBackend(readyCtx, sshHost, containerID)
+	readyCancel()
+	require.NoError(t, readyErr, "Owned nginx backend must be ready before checking forwarded traffic")
+	t.Log("nginx backend ready; checking original forwarded traffic")
 
 	// Wait for tunnel to be established
 	portOpened := waitForPortOpen(testPort, 3*time.Second)

@@ -21,16 +21,13 @@ The primary continuous integration workflow that runs on every code change.
   - `gofmt -s` - Code formatting
   - `golangci-lint` - Comprehensive linting
   
-- **test**: Unit tests
-  - Runs on Go 1.23
-  - Includes race detection (`-race`)
-  - Generates coverage reports
-  - Uploads coverage artifacts
+- **test**: Infrastructure-independent tests
+  - Runs on Go 1.24 with race detection and uncached execution
+  - Clears integration host/key variables; remote scenarios self-skip
+  - Instruments production packages (`cmd/...`, `internal/...`) for coverage
+  - Retains JSON results, stderr, exits, inventory and coverage even after failure
 
-- **test-integration**: Integration tests
-  - Runs on all pull requests and pushes
-  - Sets up SSH test environment on localhost
-  - Runs integration test suite
+Real SSH/Docker scenarios run in the separate Integration Tests workflow.
 
 - **build**: Verify build
   - Builds for `linux/amd64`
@@ -61,7 +58,7 @@ Automatically builds and publishes releases when a version tag is pushed.
 
 ### 3. Code Quality Workflow (`.github/workflows/quality.yml`)
 
-**Triggers**: Push to `main`, Pull Requests
+**Triggers**: Push to `main`, pull requests targeting `main`, manual dispatch
 
 Advanced code quality and security checks.
 
@@ -69,7 +66,7 @@ Advanced code quality and security checks.
 
 - **security**: Security scanning
   - `gosec` - Security vulnerability detection
-  - Uploads security report
+  - Attempts report upload even if scanning fails; scanner failure remains a failure
 
 - **coverage**: Test coverage analysis
   - Generates HTML coverage report
@@ -97,21 +94,33 @@ Ensures documentation quality and validity.
 
 ### 5. Integration Test Workflow (`.github/workflows/integration-test.yml`)
 
-**Triggers**: Manual dispatch, Nightly schedule (2 AM UTC)
+**Triggers**: Matching Go/module/workflow changes in pull requests targeting `main`,
+manual dispatch, nightly schedule (2 AM UTC).
 
-Comprehensive integration testing against real SSH environments.
+The `integration-test` job starts an SSH container on the isolated hosted runner,
+mounts its Docker socket, and runs SSH, stream, one-port and full-suite phases.
+It does not run a nested Docker daemon or a separate remote-host job. The legacy
+manual `ssh_host` input does not change the fixed localhost harness.
 
-**Jobs**:
+### Reading test evidence
 
-- **integration-test**: Localhost testing
-  - Sets up SSH server
-  - Starts Docker test containers
-  - Runs full integration suite
+Coverage measures production packages, not only external test packages; there is
+no percentage gate. Coverage is not proof of traffic, recovery or a skipped scenario.
+Each CI artifact includes raw Go JSON, stderr, process exits, a listing and an
+inventory. Integration profiles/results are separate per phase; do not add repeated
+phase executions as if they were unique tests.
 
-- **integration-test-remote**: Remote host testing
-  - Only when manual trigger with custom host
-  - Uses SSH key authentication
-  - Tests against real remote systems
+- `results`: actual pass/fail/self-skip events, with top-level/subtest labels and skip output.
+- `excluded`: listed top-level tests deliberately omitted by the phase selector.
+- `unrun`: selected listed tests with no start event, including phases blocked by earlier failure.
+- `unfinished`: tests that started but have no completion event.
+- `process_exit`: Go/tee exits, or `unrun` when the command never ran.
+
+Listing is not execution. Dynamic subtests cannot be enumerated beforehand;
+missing listing/artifact data is a limit, not a pass. Empty execution files represent
+no observed tests. Unit checks intentionally leave real-host scenarios self-skipped.
+The one-port test separately waits for its owned nginx backend before asserting
+forwarded traffic; successful preflight or local TCP acceptance alone is insufficient.
 
 ## Local Development
 
@@ -162,13 +171,11 @@ make doctor
 For integration tests:
 
 ```bash
-# Required for integration tests
-export SSH_TEST_HOST=your-ssh-host
-export SSH_TEST_USER=your-username
+# Explicitly request tests against an isolated, configured SSH/Docker host
+export SSH_TEST_HOST=ssh://your-username@your-ssh-host:22
 
-# Optional
-export SSH_TEST_PASSWORD=your-password  # Or use key-based auth
-export SSH_TEST_PORT=22
+# Optional identity for fixture commands; configure SSH for the same host/key
+export SSH_TEST_KEY_PATH=/path/to/test-key
 ```
 
 ### Pre-commit Hooks
@@ -214,15 +221,15 @@ make test VERBOSE=1
 ### Integration Tests
 
 ```bash
-# Using Makefile
-export SSH_TEST_HOST=localhost
+# Use the configured isolated host (required by this make target)
+export SSH_TEST_HOST=ssh://testuser@localhost:2222
 make test-integration
 
-# Direct with go test
-go test -v -timeout=10m -tags=integration ./tests/integration/...
+# Direct with go test; a configured but unavailable host fails preflight
+go test -v -count=1 -timeout=15m ./tests/integration/...
 
-# Single test
-go test -v -run TestEndToEnd -tags=integration ./tests/integration/
+# Single test; package selection alone does not request infrastructure
+go test -v -count=1 -timeout=3m -run '^TestManager_ContainerWithOnePort$' ./tests/integration/
 ```
 
 ### Benchmarks

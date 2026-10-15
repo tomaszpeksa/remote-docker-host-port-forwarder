@@ -3,9 +3,23 @@
 set -euo pipefail
 umask 077
 shopt -s nullglob dotglob
-cd "$(dirname "$0")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 root="$PWD/.itests"
 receipt="$PWD/.itests-cleanup-owner"
+# Private startup-to-cleanup handoff, not a public option or stale-claim recovery.
+# Only the initiating live parent may transfer its existing operation claim.
+provision_owner=${_RDHPF_ITEST_PROVISION_OWNER:-}
+if [ -n "$provision_owner" ]; then
+  if ! [[ "$provision_owner" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] ||
+    [ "${provision_owner##*-}" != "$PPID" ] ||
+    [ ! -f "$root/owner" ] || [ -L "$root/owner" ] ||
+    [ "$(cat "$root/owner")" != "$provision_owner" ] ||
+    [ ! -f "$root/operation/provisioner" ] || [ -L "$root/operation/provisioner" ] ||
+    [ "$(cat "$root/operation/provisioner")" != "$provision_owner" ]; then
+    echo 'Refusing stale or unowned provisioning handoff.' >&2
+    exit 1
+  fi
+fi
 [ -e "$root" ] || [ -L "$root" ] || [ -e "$receipt" ] || [ -L "$receipt" ] || exit 0
 [ ! -L "$root" ] && [ ! -L "$receipt" ] || exit 1
 receipt_value=''
@@ -36,7 +50,12 @@ if [ -e "$receipt" ]; then
 fi
 # A receipt survives failure of the FINAL rmdir, including when owner was removed.
 if [ ! -e "$root" ]; then rm "$receipt"; exit 0; fi
-mkdir "$root/operation" 2>/dev/null || { echo 'Fixture operation active or uncertain; refusing teardown.' >&2; exit 1; }
+if [ -z "$provision_owner" ]; then
+  mkdir "$root/operation" 2>/dev/null || { echo 'Fixture operation active or uncertain; refusing teardown.' >&2; exit 1; }
+else
+  [ "$owner" = "$provision_owner" ] || exit 1
+  rm "$root/operation/provisioner"
+fi
 claimed=1
 trap 'if [ "$claimed" = 1 ]; then rm -f "$root/operation/receipt"; rmdir "$root/operation"; fi' EXIT
 # Explicit provisioned entries only; never recursively delete this root.

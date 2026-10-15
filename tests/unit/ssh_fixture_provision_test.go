@@ -134,6 +134,7 @@ func TestOwnedFixtureProvisionFailedHandoff(t *testing.T) {
 				if err != nil {
 					release()
 					require.Error(t, up.Wait(), "original build failure retained: %s", output.String())
+					require.Equal(t, 17, up.ProcessState.ExitCode(), "a deadline kill is not joined failure cleanup")
 					require.NoDirExists(t, filepath.Join(root, ".itests"), "joined failure cleanup must not deadlock")
 					return
 				}
@@ -148,6 +149,7 @@ func TestOwnedFixtureProvisionFailedHandoff(t *testing.T) {
 			require.NoError(t, err)
 			release()
 			require.Error(t, up.Wait(), "%s", output.String())
+			require.Equal(t, 17, up.ProcessState.ExitCode(), "old finalizer must return its original failure, not time out")
 			ownerAfter, err := os.ReadFile(filepath.Join(root, ".itests/owner"))
 			assert.NoError(t, err)
 			assert.Equal(t, string(owner), string(ownerAfter), "old cleanup must not delete newer owner")
@@ -179,6 +181,7 @@ func TestOwnedFixtureProvisionUncertainAndStaleHandoff(t *testing.T) {
 		require.NoError(t, up.Process.Signal(syscall.SIGTERM))
 		release()
 		require.Error(t, up.Wait(), "%s", output.String())
+		require.Equal(t, 143, up.ProcessState.ExitCode(), "explicit SIGTERM outcome, not outer deadline termination")
 		require.FileExists(t, filepath.Join(root, ".itests/owner"))
 		require.DirExists(t, filepath.Join(root, ".itests/operation"))
 		result, err := run("itest-down.sh")

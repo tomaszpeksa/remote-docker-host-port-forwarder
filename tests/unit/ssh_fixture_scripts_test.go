@@ -40,7 +40,8 @@ exec "$FIXTURE_TEST_EXE" -test.run=^TestOwnedFixturePublisherProcess$
 `)
 	write("ssh", `printf '%s\n' "$@" > "$FIXTURE_ARGV"
 `)
-	write("docker", `case "$1" in
+	write("docker", `printf '%s\n' "$@" >> "$FIXTURE_ROOT/docker.log"
+case "$1" in
 container) exit 1;;
 create) rm -f "$FIXTURE_REMOVED"; printf '%064d\n' 1;;
 inspect) if [ -f "$FIXTURE_ROOT/daemon-fail" ]; then exit 31; fi
@@ -121,6 +122,20 @@ if [ "$last" = "$FIXTURE_ROOT/.itests/operation" ] && [ -n "${FIXTURE_CLAIM_GATE
 	output, err = run("/bin/bash", filepath.Join(scripts, "itest-up.sh"))
 	require.NoError(t, err, "second startup: %s", output)
 
+	secondOwner, err := os.ReadFile(ownerPath)
+	require.NoError(t, err)
+	// Empty create output is an uncertain container outcome, not absence.
+	idPath := filepath.Join(root, ".itests/container-id")
+	retainedID, err := os.ReadFile(idPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(idPath, nil, 0600))
+	output, err = run("/bin/bash", filepath.Join(scripts, "itest-down.sh"))
+	require.Error(t, err, "empty create outcome: %s", output)
+	require.FileExists(t, ownerPath)
+	require.FileExists(t, idPath)
+	require.NoFileExists(t, removed)
+	require.NoError(t, os.WriteFile(idPath, retainedID, 0600))
+
 	// Unknown provisioned-root entries refuse before destructive cleanup.
 	unknown := filepath.Join(root, ".itests/unexpected")
 	require.NoError(t, os.WriteFile(unknown, []byte("foreign"), 0600))
@@ -196,11 +211,39 @@ if [ "$last" = "$FIXTURE_ROOT/.itests/operation" ] && [ -n "${FIXTURE_CLAIM_GATE
 	require.FileExists(t, filepath.Join(root, ".itests-cleanup-owner"))
 	output, err = run("/bin/bash", filepath.Join(scripts, "itest-up.sh"))
 	require.Error(t, err, "%s", output)
+	receiptPath := filepath.Join(root, ".itests-cleanup-owner")
+	receiptBytes, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, string(secondOwner)+"removed="+string(retainedID), string(receiptBytes))
+	beforeRetry, err := os.ReadFile(filepath.Join(root, "docker.log"))
+	require.NoError(t, err)
+	for _, bad := range []string{"malformed\n", strings.TrimSuffix(string(secondOwner), "\n"), string(secondOwner) + "\n", string(receiptBytes) + "removed=" + string(retainedID)} {
+		require.NoError(t, os.WriteFile(receiptPath, []byte(bad), 0600))
+		output, err = run("/bin/bash", filepath.Join(scripts, "itest-down.sh"))
+		require.Error(t, err, "malformed receipt: %s", output)
+		require.DirExists(t, filepath.Join(root, ".itests"))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".itests/container-removed"), retainedID, 0600))
+	conflicting := string(secondOwner) + "removed=" + strings.Repeat("f", 64) + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(conflicting), 0600))
+	output, err = run("/bin/bash", filepath.Join(scripts, "itest-down.sh"))
+	require.Error(t, err, "conflicting receipt: %s", output)
+	require.NoError(t, os.WriteFile(receiptPath, secondOwner, 0600))
+	// Preserve a known inner removal receipt even if the outer receipt still
+	// contains only owner (an interrupted/older cleanup record).
+	output, err = run("/bin/bash", filepath.Join(scripts, "itest-down.sh"))
+	require.Error(t, err, "final rmdir still fails: %s", output)
+	promoted, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, string(receiptBytes), string(promoted))
 	require.NoError(t, os.Remove(filepath.Join(root, "rmdir-fail")))
 	output, err = run("/bin/bash", filepath.Join(scripts, "itest-down.sh"))
 	require.NoError(t, err, "retry: %s", output)
 	require.NoDirExists(t, filepath.Join(root, ".itests"))
 	require.NoFileExists(t, filepath.Join(root, ".itests-cleanup-owner"))
+	afterRetry, err := os.ReadFile(filepath.Join(root, "docker.log"))
+	require.NoError(t, err)
+	require.Equal(t, string(beforeRetry), string(afterRetry), "receipt-only retry must not target another container")
 
 	output, err = run("/bin/bash", filepath.Join(scripts, "itest-up.sh"))
 	require.NoError(t, err, "%s", output)

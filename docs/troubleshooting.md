@@ -245,9 +245,16 @@ ERROR: failed to recreate SSH ControlMaster
 ### Auto-Recovery
 
 rdhpf includes automatic recovery:
-- Health checks every 30 seconds
+- Health checks every 15 seconds
 - Automatic reconnection on failure
-- Circuit breaker prevents retry storms (opens after 5 failures)
+- Circuit breaker prevents retry storms (opens after 5 failed connection recreations)
+
+An internal health check has a two-second deadline. If that check times out,
+rdhpf can retire and replace its SSH master even while a separate probe still
+reaches the master. A slow check subprocess can therefore interrupt the existing
+connection; a successful replacement restores forwarding through reconciliation.
+This is the current timeout policy, not a measured outage duration or a guarantee
+of recovery within two seconds.
 
 ### Manual Troubleshooting
 
@@ -351,15 +358,32 @@ rdhpf automatically cleans up SSH processes on shutdown:
 3. Reaps that child before reclaiming its private socket artifacts
 4. Removes the empty owned directory; uncertainty is reported, not adopted
 
-### Manual Cleanup
+### Forced termination and cleanup refusal
 
-If cleanup fails (e.g., after `kill -9` on rdhpf):
+Forced termination (for example, `kill -9` on rdhpf) may leave an idle SSH child,
+its forwards and its private directory behind indefinitely. A new instance uses a
+fresh SSH directory; it does not adopt or sweep the old resources, and old
+forwards may still occupy local ports.
 
-Use retained operational records to identify only your former instance and its
-exact private path. Quiesce competing tools before verified manual recovery;
-never use a wildcard `rm` or `pkill` recipe. Do not delete `~/.rdhpf/owner.lock`.
-Forced parent death may leave an idle SSH child and private directory; a new
-instance does not adopt or sweep them.
+Retain the logs identifying the former instance, its child and its exact private
+path when investigating. A pathname or a PID alone is not proof of current
+ownership. Do not remove active directories, their ancestors, publication paths
+or `~/.rdhpf/owner.lock`; never use wildcard `rm` or `pkill` recipes.
+
+A live foreign endpoint or an unknown directory entry causes cleanup refusal and
+may leave the private directory behind. This is distinct from uncertain child
+retirement: the CLI logs unrelated cleanup errors rather than retrying them as
+retirement uncertainty. Neither refusal authorizes deleting the occupant.
+
+### Shutdown awaiting owned-child retirement
+
+If shutdown reports `waiting for owned SSH retirement; retaining publisher ownership`,
+the CLI has not yet established completion of its retained SSH child. It keeps the
+publisher admission lock and retries cleanup rather than admitting a successor or
+abandoning the child. Individual termination attempts are bounded, but there is
+**no total shutdown deadline**. Repeated Ctrl+C is not a forced-exit mechanism;
+forced parent termination still has the orphan-child limitation described above.
+Do not delete the lock to bypass admission.
 
 ### Preventing Orphans
 
@@ -373,15 +397,16 @@ instance does not adopt or sweep them.
 
 ### Limitation
 
-**rdhpf maintains state in memory only.** If the process crashes (e.g., `kill -9`, panic, OOM killer), established port forwards may remain orphaned until they timeout.
+**Live forwarding ownership is maintained in memory.** Status snapshots are
+published to disk, but they are not a restart journal and do not authorize
+adopting an old SSH child. After a crash (for example, `kill -9`, panic or OOM),
+established forwards may remain orphaned; idle-child expiry is not guaranteed.
 
-### Why In-Memory Only?
+### Status snapshots are not recovery state
 
-Version 1.0 prioritizes simplicity and reliability:
-- No complex state file management
-- No file locking or corruption issues
-- No sync/recovery logic needed
-- Process restarts are fast and clean
+A new run discovers containers and creates a new SSH connection. The publisher
+lock excludes cooperating new-version runs in the same status directory, but it
+does not reclaim a previous process's orphaned SSH resources.
 
 ### Impact
 
@@ -390,10 +415,11 @@ On unclean shutdown (crash, `kill -9`):
 - SSH ControlMaster may remain running
 - Manual cleanup may be needed
 
-### Manual Recovery
+### Restart limitations
 
-Follow the ownership-verification guidance above before restarting. A new run
-uses a fresh SSH directory; an old orphan can still hold a local forwarding port.
+Review the [forced-termination limitations](#forced-termination-and-cleanup-refusal)
+before restarting. A new run uses a fresh SSH directory; an old orphan can still
+hold a local forwarding port.
 Duplicate admission protects cooperating publishers in the same status directory,
 not arbitrary external or same-UID namespace replacement.
 
@@ -506,16 +532,3 @@ If you encounter an issue not covered here:
 | `context canceled` | Normal shutdown | None needed (expected during Ctrl+C) |
 | `container not found` | Container stopped/removed | None needed (rdhpf removes forward automatically) |
 | `no published ports` | Container has no `-p` flags | Add `-p` flags to container |
-
----
-
-**Last Updated**: 2024-01-15
-**Version**: 1.0.0
-### Shutdown awaiting owned-child retirement
-
-If shutdown reports `waiting for owned SSH retirement; retaining publisher ownership`,
-the CLI has not yet established completion of its retained SSH child. It keeps the
-publisher admission lock and retries that cleanup rather than admitting a successor
-or abandoning the child. Incidental cancellation is not permission to release this
-responsibility. There is no new global shutdown deadline; forced parent termination
-still has the documented orphan-child limitation.

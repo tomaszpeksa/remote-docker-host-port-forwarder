@@ -153,12 +153,17 @@ Related code: internal/reconcile/reconciler.go
 
 States:
 - Closed: healthy
-- Open: fast-fail after N consecutive failures (N=5)
+- Open: fast-fail after five consecutive failed connection recreations
 - Half-open: single trial after cooldown (60s) to probe recovery
 
 Triggers:
-- Health check failure (ssh `-O check`)
-- Recreate master on failure; on success, reset breaker and trigger reconciliation
+- Health checks verify the retained child's socket ownership and run SSH `-O check`,
+  with a local two-second deadline.
+- A failed internal check, including that deadline, can retire the child and
+  attempt recreation. Caller/monitor cancellation does not itself retire a ready
+  connection.
+- Failed recreation increments the breaker counter; successful recreation resets
+  it. Connection changes notify reconciliation, not successful routine checks.
 
 Related code: internal/ssh/master.go
 
@@ -175,8 +180,10 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
 
 ### Startup (auto-discovery mode)
 
-1. CLI parses flags/env; builds config
-2. SSH ControlMaster opens with keep-alives and ControlPath
+1. CLI parses flags/env, builds config and acquires exclusive publisher admission
+   in the actual `HOME/.rdhpf` directory before SSH or publication changes.
+2. A directly owned foreground SSH child opens with keep-alives in a private
+   namespace. Inherited backgrounding and ControlPersist are explicitly disabled.
 3. Manager:
    - Starts Docker event stream over SSH (start/die/stop)
    - Performs startup reconciliation (inspect existing containers, build desired)
@@ -193,16 +200,30 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
 
 ### Health check and recovery
 
-1. Health monitor periodically runs ssh `-O check`
-2. On failure: breaker path triggers Close → Open → Recreate → Half-open trial → Closed on success
-3. After recovery: Manager triggers full reconciliation to restore forwards
+1. The health monitor calls `EnsureAlive` every 15 seconds. Retirement and
+   replacement use the same lifecycle gate as whole forwarding transactions;
+   replacement does not call `Close` or stop the monitor.
+2. A failed check leads to retained-child retirement before a successor can start.
+   Proven retirement advances the generation; uncertain retirement blocks
+   replacement and retains cleanup responsibility.
+3. `Changes()` coalesces connection-change notifications. Manager observes the
+   current generation inside `WithConnection`, invalidates retired actual state,
+   then runs Diff/Apply only if the connection is ready. Desired ports and logical
+   creation times survive recovery; notification ordering is not state authority.
 
 ### Shutdown and cleanup
 
-1. SIGINT/SIGTERM captured; context canceled
-2. Manager stops event loop; reconciler removes all desired entries
-3. Apply removes via SSH -O cancel; SSH master exits with `-O exit`
-4. Control socket cleaned up; ports released promptly
+1. SIGINT/SIGTERM cancels the run context. Manager fences and joins its recovery
+   worker/health monitor; forwarding cleanup uses the lifecycle gate and sends
+   SSH `-O cancel` only when the transport is ready.
+2. Final status publication and socket pathname cleanup are joined before
+   publisher admission is released. This is not a join of every socket handler.
+3. CLI cleanup calls Master `Close`, which signals the retained child with SIGTERM,
+   escalates to Kill if needed and observes its single Wait completion before
+   reclaiming owned socket artifacts and removing the empty private directory.
+4. If retirement is uncertain, CLI cleanup retains admission and retries without
+   a total deadline. Other cleanup errors are logged, not retried as uncertainty.
+   Forced parent death may leave a child and directory; no orphan sweep is provided.
 
 ## Testing Strategy
 
@@ -218,8 +239,9 @@ rdhpf uses a layered test strategy to validate correctness, performance, and res
 - Forward planner and conflict handling/backoff:
   - tests/unit/forward_plan_test.go
 - SSH utilities and health:
-  - tests/unit/ssh_controlpath_test.go
-  - tests/unit/ssh_master_health_test.go
+  - internal/ssh/master_test.go
+  - internal/ssh/check_cancellation_test.go
+  - internal/ssh/retirement_test.go
 - Status formatting:
   - tests/unit/status_format_test.go
 
@@ -237,16 +259,14 @@ rdhpf uses a layered test strategy to validate correctness, performance, and res
 - Status command behavior:
   - tests/integration/status_test.go
 
-Targets validated (per spec/plan):
-- p99 ≤ 2s for add/remove (target < 1s)
-- Self-healing within 10s after SSH failures
-- Published-ports-only (exposed-only ignored)
-- Idempotent operations (no duplicates)
-- Clean shutdown and port release
+Scenario assertions cover published ports, idempotent operations, recovery and
+normal shutdown. Compilation or a skipped scenario does not prove runtime
+behavior. The 15-second health interval, check/startup deadlines and breaker
+cooldown do not constitute a ten-second recovery SLA or a total shutdown bound.
 
 ## Future Enhancements
 
-- State persistence to disk for faster restarts and crash recovery
+- Restart recovery beyond the existing published status snapshots
 - Metrics and Prometheus endpoint for observability
 - Docker socket forwarding (opt-in) for advanced workflows
 - Multi-host support (multiple remote hosts with isolated managers)
@@ -257,7 +277,7 @@ Targets validated (per spec/plan):
 References:
 - CLI/flags: cmd/rdhpf/main.go
 - Config: internal/config/config.go
-- SSH: internal/ssh/master.go, internal/ssh/forward.go, internal/ssh/controlpath.go
+- SSH: internal/ssh/master.go, internal/ssh/forward.go, internal/ssh/namespace.go
 - Docker: internal/docker/events.go, internal/docker/inspect.go
 - Reconciler: internal/reconcile/reconciler.go
 - State: internal/state/model.go

@@ -92,6 +92,10 @@ func calculateBackoff(attempt int) time.Duration {
 //   - *PortConflictError if port remains in use after all retries
 //   - other error if different failure occurs
 func AddForwardWithRetry(ctx context.Context, controlPath, host string, localPort, remotePort int, logger *slog.Logger) error {
+	return addForwardWithRetry(ctx, controlPath, host, localPort, remotePort, logger, time.After)
+}
+
+func addForwardWithRetry(ctx context.Context, controlPath, host string, localPort, remotePort int, logger *slog.Logger, after func(time.Duration) <-chan time.Time) error {
 	const maxAttempts = 5
 
 	var lastErr error
@@ -106,7 +110,7 @@ func AddForwardWithRetry(ctx context.Context, controlPath, host string, localPor
 				"delay", delay.String())
 
 			select {
-			case <-time.After(delay):
+			case <-after(delay):
 				// Continue to retry
 			case <-ctx.Done():
 				return ctx.Err()

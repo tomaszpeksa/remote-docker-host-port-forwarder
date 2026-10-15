@@ -45,6 +45,30 @@ type HistorySnapshot struct {
 	FinalStatus string    `json:"final_status"`
 }
 
+// NewSnapshot copies the supplied state and metadata into the wire format.
+// Empty forwards and history are represented as non-nil slices.
+func NewSnapshot(host string, pid int, startedAt, updatedAt time.Time, forwards []state.ForwardState, history []state.HistoryEntry) StateFile {
+	forwardSnapshots := make([]ForwardSnapshot, len(forwards))
+	for i, f := range forwards {
+		forwardSnapshots[i] = FromForwardState(f)
+	}
+
+	historySnapshots := make([]HistorySnapshot, len(history))
+	for i, h := range history {
+		historySnapshots[i] = FromHistoryEntry(h)
+	}
+
+	return StateFile{
+		Version:   CurrentVersion,
+		Host:      host,
+		PID:       pid,
+		StartedAt: startedAt,
+		UpdatedAt: updatedAt,
+		Forwards:  forwardSnapshots,
+		History:   historySnapshots,
+	}
+}
+
 // FromForwardState converts a state.ForwardState to ForwardSnapshot
 func FromForwardState(fs state.ForwardState) ForwardSnapshot {
 	return ForwardSnapshot{

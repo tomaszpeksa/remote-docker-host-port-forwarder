@@ -501,3 +501,11 @@ control, both two-loss/monitor proofs, both full three-minute Make stability
 cases and cleanup remain mandatory. Discovery adds evidence rather than replacing
 those requirements. Native compilation is not owned runtime proof, nor does this
 workflow imply release, cask/Gatekeeper or every-platform runtime clearance.
+
+The owned fixture pins Alpine's `docker-cli=29.8.2-r1`, a same-source rebuild of
+Docker CLI 29.8.2 against Alpine Go 1.26.9 (previous r0 used Go 1.26.8). The
+[official Alpine recipe change](https://gitlab.alpinelinux.org/alpine/aports/-/commit/c02e0c037b032adc0301e2027ad0f3a1c0b98a7a)
+changes only this recipe's package revision; the Docker upstream source commits
+are unchanged. This is the fixture CLI's distribution build, not the application's
+Go toolchain. Exact package/version assertions and normal apk signature checks
+remain enabled; no package ranges, mirror replacement or trust bypass is used.

@@ -55,6 +55,7 @@ func newDiscoveryOwned(t *testing.T) *discoveryOwned {
 	t.Logf("host create CLI/Engine/API:\n%s", f.Docker("version"))
 	t.Logf("application CLI/Engine/API:\n%s", f.Docker("exec", f.Container, "docker", "version"))
 	require.Equal(t, "29.8.2", f.Docker("exec", f.Container, "docker", "version", "--format", "{{.Client.Version}}"))
+	require.Equal(t, "docker-cli-29.8.2-r1", f.Docker("exec", f.Container, "apk", "info", "-v", "docker-cli"))
 	t.Logf("owned server packages:\n%s", f.Docker("exec", f.Container, "apk", "info", "-v"))
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

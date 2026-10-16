@@ -37,6 +37,14 @@ func TestManagerDiscoveryRunIndependentOfConnectionGate(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- m.Run(ctx, owner) }()
+	// Join on assertion failure too, before the earlier owner/HOME defers run.
+	defer func() {
+		cancel()
+		once.Do(func() { close(release) })
+		gateErr, runErr := <-gateDone, <-done
+		require.NoError(t, gateErr)
+		require.NoError(t, runErr)
+	}()
 	select {
 	case <-audited:
 	case <-time.After(2 * time.Second):
@@ -44,8 +52,4 @@ func TestManagerDiscoveryRunIndependentOfConnectionGate(t *testing.T) {
 	}
 	require.Contains(t, m.state.GetDesired(), state.ContainerPorts{ContainerID: discoveryA, Ports: []int{1001}})
 	require.Empty(t, m.state.GetByContainer(discoveryA), "inventory must not fabricate actual forwards")
-	cancel()
-	once.Do(func() { close(release) })
-	require.NoError(t, <-gateDone)
-	require.NoError(t, <-done)
 }

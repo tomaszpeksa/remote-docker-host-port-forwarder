@@ -65,7 +65,7 @@ func TestRemoteDockerPing(t *testing.T) {
 			t.Setenv("PING_EXIT", "17")
 			require.ErrorContains(t, m.watchdog.dockerPing.Ping(ctx), "event health ping docker run failed: exit status 17")
 			cancel()
-			require.Error(t, m.watchdog.dockerPing.Ping(ctx), "canceled invocation must fail")
+			require.ErrorIs(t, m.watchdog.dockerPing.Ping(ctx), context.Canceled, "cancellation must not be mistaken for the prior exit-status failure")
 		})
 	}
 }

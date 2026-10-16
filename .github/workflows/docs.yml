@@ -97,13 +97,13 @@ jobs:
           CI
           CD
           EOF
-          
+
           # Check all markdown files
           find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/.git/*" | while read file; do
             echo "Checking: $file"
             aspell list --mode=markdown --lang=en --personal=.aspell.en.pws < "$file" | sort -u | tee -a spelling-errors.txt
           done
-          
+
           # Show errors but don't fail
           if [ -s spelling-errors.txt ]; then
             echo "⚠️ Potential spelling errors found:"
@@ -129,14 +129,14 @@ jobs:
             "CHANGELOG.md"
             "docs/troubleshooting.md"
           )
-          
+
           missing_files=()
           for file in "${required_files[@]}"; do
             if [ ! -f "$file" ]; then
               missing_files+=("$file")
             fi
           done
-          
+
           if [ ${#missing_files[@]} -gt 0 ]; then
             echo "❌ Missing required documentation files:"
             printf '%s\n' "${missing_files[@]}"

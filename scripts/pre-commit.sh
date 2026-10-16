@@ -54,7 +54,7 @@ if [ -n "$TEST_PACKAGES" ]; then
             echo -e "${YELLOW}  ⊘ Skipping integration tests${NC}"
             continue
         fi
-        
+
         echo -e "  Testing: $pkg"
         if ! go test -short -timeout=30s "$pkg" 2>&1; then
             echo -e "${RED}✗ Tests failed in $pkg${NC}"

@@ -216,3 +216,95 @@ func TestManagerDiscoveryCandidateFenceDimensions(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerDiscoveryCapacityDeferral(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		owners, ports, idLength int
+	}{
+		{"SixEqualCycle", 6, 20000, 64},
+		{"FitOne", 2, 60000, 64},
+		{"SmallGCD", 6, 40000, 64},
+		// Synthetic list adapter exercises byte accounting independently of the
+		// tighter concrete command-capture bound; no large Docker ID is claimed.
+		{"ByteCapacity", 4, 15000, (16<<20-20000*16)/4 - 256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inventoryManager(t)
+			ids := make([]string, tc.owners)
+			for i := range ids {
+				ids[i] = strings.Repeat(string(rune('a'+i)), tc.idLength)
+			}
+			ports := make([]int, tc.ports)
+			for i := range ports {
+				ports[i] = i + 1
+			}
+			m.discovery.list = func(context.Context) ([]string, error) { return ids, nil }
+			m.discovery.observe = func(context.Context, string) ([]int, error) { return ports, nil }
+			cursor := ""
+			for pass := 0; pass < tc.owners; pass++ {
+				c := m.inventoryPass(context.Background(), inventoryFence{}, cursor)
+				require.True(t, c.incomplete)
+				require.ErrorContains(t, c.problem, "inventory candidate limit")
+				committed, _, err := m.commitInventory(c)
+				require.NoError(t, err)
+				require.True(t, committed)
+				cursor = c.cursor
+			}
+			desired := m.state.GetDesired()
+			require.Len(t, desired, tc.owners, "CAPACITY_DEFERRED_OWNER_MUST_MERGE")
+			for _, cp := range desired {
+				require.Len(t, cp.Ports, tc.ports, "CAPACITY_DEFERRED_PORTS_MUST_MERGE")
+			}
+			require.Empty(t, m.state.GetActual())
+		})
+	}
+}
+
+func TestManagerDiscoveryOversizedOwnerProgress(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		ports, idLength int
+	}{
+		{"Ports", 100001, 64},
+		{"Bytes", 20001, (16<<20-20000*16)/3 - 256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inventoryManager(t)
+			ids := []string{strings.Repeat("a", tc.idLength), strings.Repeat("b", tc.idLength), strings.Repeat("c", tc.idLength)}
+			m.state.SetDesired(ids[0], []int{99})
+			calls := map[string]int{}
+			m.discovery.list = func(context.Context) ([]string, error) { return ids, nil }
+			m.discovery.observe = func(_ context.Context, id string) ([]int, error) {
+				calls[id]++
+				if id == ids[0] {
+					return make([]int, tc.ports), nil
+				}
+				return []int{1001}, nil
+			}
+			cursor := ""
+			for pass := 0; pass < 2; pass++ {
+				c := m.inventoryPass(context.Background(), inventoryFence{}, cursor)
+				require.True(t, c.incomplete)
+				require.ErrorContains(t, c.problem, "inventory candidate limit")
+				committed, _, err := m.commitInventory(c)
+				require.NoError(t, err)
+				require.True(t, committed)
+				desired := m.state.GetDesired()
+				require.Len(t, desired, 3, "OVERSIZED_OWNER_MUST_NOT_BLOCK_HEALTHY")
+				for _, cp := range desired {
+					if cp.ContainerID == ids[0] {
+						require.Equal(t, []int{99}, cp.Ports)
+					} else {
+						require.Equal(t, []int{1001}, cp.Ports)
+					}
+				}
+				cursor = c.cursor
+			}
+			for _, id := range ids {
+				require.Equal(t, 2, calls[id], "one attempt per owner per pass")
+			}
+			require.Empty(t, m.state.GetActual())
+		})
+	}
+}

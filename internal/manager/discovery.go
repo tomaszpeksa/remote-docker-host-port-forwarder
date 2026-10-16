@@ -73,6 +73,7 @@ func (m *Manager) inventoryPass(ctx context.Context, f inventoryFence, cursor st
 	for _, id := range c.listed {
 		bytes += len(id) + 256
 	}
+	listedBytes := bytes
 	for offset := 0; offset < len(c.listed); offset++ {
 		if ctx.Err() != nil {
 			c.problem = ctx.Err()
@@ -96,6 +97,13 @@ func (m *Manager) inventoryPass(ctx context.Context, f inventoryFence, cursor st
 		if len(ports) > 100000-portsCount || len(ports) > (16<<20-bytes)/16 {
 			c.problem = fmt.Errorf("inventory candidate limit exceeded")
 			c.incomplete = true
+			if len(ports) > 100000 || len(ports) > (16<<20-listedBytes)/16 {
+				// This owner cannot fit even an empty candidate; keep others moving.
+				continue
+			}
+			// Preserve the predecessor so this aggregate-deferred owner starts
+			// the next pass with the candidate's full available capacity.
+			c.cursor = c.listed[(start+offset+len(c.listed)-1)%len(c.listed)]
 			break
 		}
 		portsCount += len(ports)

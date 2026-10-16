@@ -299,6 +299,9 @@ block. Startup, stream replacement and failed observation retain repair work;
 normal audits run every 10 seconds. Failed/incomplete passes retain one retry
 eligibility deadline (1, 2, 4, 8, 16, then 30 seconds), rather than postponing it
 on every event. A sorted circular full-ID cursor advances even after failures.
+An individually admissible observation that exceeds remaining aggregate capacity
+gets first opportunity on the next pass. An observation too large even for an
+empty candidate remains unknown while the pass advances to other owners.
 One pass has a 30-second observation slice and reserves a whole five-second
 observation plus two-second cleanup allowance before starting another ID.
 

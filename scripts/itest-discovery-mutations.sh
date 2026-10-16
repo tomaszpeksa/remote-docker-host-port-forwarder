@@ -35,7 +35,7 @@ run_case() {
     jq -e -s --arg names "$names" '. as $events | all(($names|split(","))[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))' "$case_dir/$phase.jsonl"
   fi
 }
-for control in disable-fence disable-retry disable-absence disable-partial-preserve disable-unapplied disable-size-error; do
+for control in disable-fence disable-retry disable-absence disable-partial-preserve disable-unapplied disable-size-error advance-deferred-cursor; do
   case_dir="$evidence/$control"; mkdir -p "$case_dir"
   package=./internal/manager
   case "$control" in
@@ -64,6 +64,10 @@ for control in disable-fence disable-retry disable-absence disable-partial-prese
       source_file=internal/util/capture.go; package=./internal/docker
       selector='^TestInspectPortsCaptureLimit$'
       names=TestInspectPortsCaptureLimit; marker=CAPTURE_OVERFLOW_IS_NOT_EMPTY_SUCCESS ;;
+    advance-deferred-cursor)
+      source_file=internal/manager/discovery.go
+      selector='^TestManagerDiscoveryCapacityDeferral$'
+      names=TestManagerDiscoveryCapacityDeferral/SixEqualCycle; marker=CAPACITY_DEFERRED_OWNER_MUST_MERGE ;;
   esac
   git show "HEAD:$source_file" > "$evidence/original.txt"
   cp "$evidence/original.txt" "$case_dir/original.txt"
@@ -90,6 +94,8 @@ elif control == 'disable-partial-preserve':
     s = before + body.replace(needle, 'changed := false\nfor _, id := range listed {s.desired[id]=[]int{};changed=true}', 1)
 elif control == 'disable-unapplied':
     replace('m.discovery.request++', '')
+elif control == 'advance-deferred-cursor':
+    replace('c.cursor = c.listed[(start+offset+len(c.listed)-1)%len(c.listed)]', 'c.cursor = id')
 elif control == 'disable-size-error':
     replace('b.exceeded = true', 'b.exceeded = false')
     replace('return remaining, ErrOutputLimit', 'return len(p), nil')
@@ -105,4 +111,4 @@ PY
   run_case restored-green
   source_file=
 done
-printf 'Six source-bound discovery assertion reds and exact restored greens observed.\n' > "$evidence/result.txt"
+printf 'Seven source-bound discovery assertion reds and exact restored greens observed.\n' > "$evidence/result.txt"

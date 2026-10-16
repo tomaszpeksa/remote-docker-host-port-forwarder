@@ -488,9 +488,11 @@ CLI/Engine/API negotiation and source/tree identities accompany the artifact.
 The workflow records Go/tee exits and fails on missing/skipped names or malformed
 JSON/jq errors; native unit tests execute that actual shell block negatively.
 
-`scripts/itest-discovery-mutations.sh` records six diagnostic source overlays:
+`scripts/itest-discovery-mutations.sh` records seven diagnostic source overlays:
 `disable-fence`, `disable-retry`, `disable-absence`, `disable-partial-preserve`,
-`disable-unapplied`, and `disable-size-error`. Named assertion reds, exact original
+`disable-unapplied`, `disable-size-error`, and `advance-deferred-cursor`.
+The last restores the capacity-starvation behavior and must fail a desired-merge
+assertion for six individually admissible owners. Named assertion reds, exact original
 bytes/hashes/diffs and restored greens distinguish these from candidate evidence.
 The first three controls exercise all four owned cases; the remaining controls
 exercise focused production-method tests. Compile failures, test timeouts and

@@ -21,7 +21,7 @@ func TestManagerDestinationBoundary(t *testing.T) {
 	for _, operation := range []struct {
 		name, output, command string
 	}{
-		{"startup", "", `sh -c "docker ps --format '{{.ID}}'"`},
+		{"startup", "", `sh -c "docker ps --no-trunc --format '{{.ID}}'"`},
 		{"label", "true", `sh -c 'docker inspect --format '"'"'{{index .Config.Labels "rdhpf.test-infrastructure"}}'"'"' -- '"'"'abc123def456'"'"''`},
 		{"connectivity", "29.8.2", `sh -c "docker version --format '{{.Server.Version}}'"`},
 	} {

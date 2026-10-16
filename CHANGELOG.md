@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Request full container IDs during startup inventory so stopping a preexisting
+  container removes its forwards and restarting the same container restores one
+  consistent owner. Inventory/event handoff and resynchronization are unchanged.
 - Separate SSH connection replacement from monitor shutdown, serialize it with
   forwarding transactions, and invalidate retired connection state while
   preserving desired ports and logical-forward creation times.

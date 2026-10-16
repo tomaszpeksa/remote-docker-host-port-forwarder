@@ -52,28 +52,35 @@ func TestIntegrationWorkflowMandatoryRecoveryPasses(t *testing.T) {
 	t.Logf("actual phase SHA256=%x bash=%s jq=%s tee=%s", sha256.Sum256([]byte(phase)), bash, jq, tee)
 	const graceful = `{"Action":"pass","Test":"TestConnectionLossRecovery"}`
 	const hard = `{"Action":"pass","Test":"TestOwnedChildHardLossRecovery"}`
+	const identity = `{"Action":"pass","Test":"TestManagerPreexistingContainerIdentity"}`
 	both := graceful + "\n" + hard
+	all := both + "\n" + identity
 	cases := []struct {
 		name, output                  string
 		goStatus, teeStatus, jqStatus int
 		wantExit                      int // -1 means any nonzero parser error
 	}{
-		{name: "missing-graceful", output: hard, wantExit: 1},
-		{name: "missing-hard-loss", output: graceful, wantExit: 1},
+		{name: "missing-graceful", output: hard + "\n" + identity, wantExit: 1},
+		{name: "missing-hard-loss", output: graceful + "\n" + identity, wantExit: 1},
+		{name: "missing-identity", output: both, wantExit: 1},
+		{name: "skipped-identity", output: both + "\n" + `{"Action":"skip","Test":"TestManagerPreexistingContainerIdentity"}`, wantExit: 1},
 		{name: "both-missing", output: `{"Action":"pass","Test":"Unrelated"}`, wantExit: 1},
 		{name: "skip-only", output: `{"Action":"skip","Test":"TestConnectionLossRecovery"}` + "\n" + `{"Action":"skip","Test":"TestOwnedChildHardLossRecovery"}`, wantExit: 1},
 		{name: "empty-output", wantExit: 1},
 		{name: "malformed-json", output: "{broken", wantExit: -1},
-		{name: "jq-failure", output: both, jqStatus: 73, wantExit: 73},
-		{name: "both-passes", output: both},
-		{name: "go-failure", output: both, goStatus: 23, wantExit: 23},
-		{name: "tee-failure", output: both, teeStatus: 24, wantExit: 24},
-		{name: "go-and-tee-failure", output: both, goStatus: 23, teeStatus: 24, wantExit: 23},
+		{name: "jq-failure", output: all, jqStatus: 73, wantExit: 73},
+		{name: "all-required-pass", output: all},
+		{name: "go-failure", output: all, goStatus: 23, wantExit: 23},
+		{name: "tee-failure", output: all, teeStatus: 24, wantExit: 24},
+		{name: "go-and-tee-failure", output: all, goStatus: 23, teeStatus: 24, wantExit: 23},
 	}
 	// Cover the Actions default bash -e and explicit bash/pipefail execution.
 	for _, pipefail := range []bool{false, true} {
 		for _, tc := range cases {
 			t.Run(fmt.Sprintf("pipefail=%t/%s", pipefail, tc.name), func(t *testing.T) {
+				// Each shell owns its files and explicit cmd.Env; no global
+				// environment or real infrastructure is shared between cases.
+				t.Parallel()
 				root := t.TempDir()
 				bin := filepath.Join(root, "bin")
 				require.NoError(t, os.Mkdir(bin, 0700))

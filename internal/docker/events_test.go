@@ -252,3 +252,13 @@ func TestEventReaderStreamCommandFailure(t *testing.T) {
 	require.Equal(t, float64(7), failures[0]["exitCode"])
 	require.Equal(t, "fixture failure\n", failures[0]["stderr"])
 }
+
+func TestEventReaderCanceledBeforeStart(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reader := NewEventReader("ssh://fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result := <-reader.Stream(ctx, func(context.Context, Event) error { return nil })
+	require.True(t, result.Canceled, "PRESTART_CANCELLATION_IS_TERMINAL")
+	require.ErrorIs(t, result.Err, context.Canceled)
+}

@@ -81,7 +81,7 @@ This section maps responsibilities to packages and files in the repository. Link
 
 - Manager
   - Wires config, event reader, reconciler, SSH master, and state
-  - Debounces event bursts; reconciles on startup and after recoveries
+  - Debounces event bursts; independently audits inventory and retains unapplied work
   - Files:
     - internal/manager/manager.go — orchestration and event loop
 
@@ -186,7 +186,7 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
    namespace. Inherited backgrounding and ControlPersist are explicitly disabled.
 3. Manager:
    - Starts Docker event stream over SSH (start/die/stop)
-   - Performs startup reconciliation (inspect existing containers, build desired)
+   - Starts independent bounded startup inventory/audits (partial desired merge)
 4. Reconciler computes add actions and applies via SSH -O forward
 5. State reflects active forwards; logs emitted with correlation IDs
 
@@ -291,3 +291,44 @@ unknown information, not an empty port set. Discovery commands cap captured
 output and use cancellation deadlines; overflow cannot authorize inventory
 absence. These deadlines do not promise bounded OS-level process termination.
 Desired-only inventory merging preserves actual forward ownership and history.
+
+### Discovery repair and stream ownership
+
+Manager starts a Run-owned inventory worker before connection maintenance can
+block. Startup, stream replacement and failed observation retain repair work;
+normal audits run every 10 seconds. Failed/incomplete passes retain one retry
+eligibility deadline (1, 2, 4, 8, 16, then 30 seconds), rather than postponing it
+on every event. A sorted circular full-ID cursor advances even after failures.
+One pass has a 30-second observation slice and reserves a whole five-second
+observation plus two-second cleanup allowance before starting another ID.
+
+A complete running-container list authorizes absence removals and independently
+successful observations. Listed but unknown containers retain their **current**
+desired ports; failed/truncated lists authorize no removals. Candidates are
+bounded to 16 MiB/100,000 ports and validated as unique subsets of the list.
+Before list dispatch and at commit, Manager checks stream generation, acceptance
+revision, attempt and zero pending events. Acceptance reserves before enqueue;
+processing or canceled enqueue retires exactly once. Inspections run outside the
+discovery mutex, with generation/cancellation checked before desired mutation.
+
+The event callback may backpressure through ten buffered records plus one
+producer-held record. `StreamResult` is emitted once after the owned command,
+readers and cancellation machinery join. Clean EOF is `Err == nil && !Canceled`,
+not readiness or replay. Malformed/short-ID records are rejected before slicing;
+records and retained diagnostic tails are capped at 64 KiB. Accepted queued
+records are drained before stream replacement. Cancellation retires queued
+reservations without manufacturing new forwards or removal history. Deadlines
+initiate cancellation/pipe closure/kill; OS-uninterruptible children do not have
+a guaranteed bounded join.
+
+Desired changes retain a request revision independently of debounce and EOF.
+Only a ready-gated Diff/Apply attempt acknowledges its captured revision; a newer
+request remains owed. Unavailable transport retains timer work, while a failed
+resource operation discharges the attempted revision. Unchanged audits therefore
+do not introduce perpetual operation retries (S12 remains separate).
+
+This is eventual repair under quiescence and finite observation latency, not an
+atomic Docker snapshot or complete event history. A delayed start for a stopped
+but inspectable container can transiently restore desired ports until an audit.
+Continuous churn, permanent observation failure and capacity limits can delay
+convergence. Bounded discovery does not bound existing State tombstones.

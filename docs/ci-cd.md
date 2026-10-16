@@ -469,3 +469,35 @@ Planned improvements:
 - [GoReleaser Documentation](https://goreleaser.com/)
 - [Pre-commit Framework](https://pre-commit.com/)
 - [Semantic Versioning](https://semver.org/)
+
+### Mandatory discovery repair evidence
+
+The additive `discovery-owned` phase executes actual Manager.Run, Docker
+commands/parser, State and gated Diff/Apply against the same pinned owned fixture.
+`.github/required-discovery-tests.txt` requires exact passes for:
+
+- `TestManagerDiscoveryOwnedStartupGap`
+- `TestManagerDiscoveryOwnedInventoryOverlap`
+- `TestManagerDiscoveryOwnedDowntime`
+- `TestManagerDiscoveryOwnedInspectRetry`
+
+Gates surround real command dispatch/results, not simulated inventories or event
+replay. Each case records full IDs, unique HTTP200 bodies, once-only target
+transitions, stopped-listener ECONNREFUSED, history/CreatedAt and joined cleanup.
+CLI/Engine/API negotiation and source/tree identities accompany the artifact.
+The workflow records Go/tee exits and fails on missing/skipped names or malformed
+JSON/jq errors; native unit tests execute that actual shell block negatively.
+
+`scripts/itest-discovery-mutations.sh` records six diagnostic source overlays:
+`disable-fence`, `disable-retry`, `disable-absence`, `disable-partial-preserve`,
+`disable-unapplied`, and `disable-size-error`. Named assertion reds, exact original
+bytes/hashes/diffs and restored greens distinguish these from candidate evidence.
+The first three controls exercise all four owned cases; the remaining controls
+exercise focused production-method tests. Compile failures, test timeouts and
+unjoined cleanup are not accepted as regression reds.
+
+All inherited 89 mandatory trust names, fourteen trust controls, S08 full-ID
+control, both two-loss/monitor proofs, both full three-minute Make stability
+cases and cleanup remain mandatory. Discovery adds evidence rather than replacing
+those requirements. Native compilation is not owned runtime proof, nor does this
+workflow imply release, cask/Gatekeeper or every-platform runtime clearance.

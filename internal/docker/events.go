@@ -67,6 +67,9 @@ func (r *EventReader) Stream(ctx context.Context, deliver func(context.Context, 
 }
 
 func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, Event) error) (result StreamResult) {
+	if err := ctx.Err(); err != nil {
+		return StreamResult{Err: err, Canceled: true}
+	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	host, port, err := ssh.ParseHost(r.sshHost)
@@ -95,10 +98,18 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
 		_ = writer.Close()
-		result.Err = fmt.Errorf("failed to start docker events: %w", err)
+		if ctx.Err() != nil {
+			result.Err = ctx.Err()
+			result.Canceled = true
+		} else {
+			result.Err = fmt.Errorf("failed to start docker events: %w", err)
+		}
 		return
 	}
 	r.logger.Info("docker events stream started", "host", host, "startup_duration_ms", time.Since(started).Milliseconds(), "pid", cmd.Process.Pid)
+	finished := make(chan struct{})
+	cleanupDone := watchStreamCleanup(streamCtx, finished, r.logger)
+	defer func() { close(finished); <-cleanupDone }()
 	waited := make(chan error, 1)
 	go func() {
 		waitErr := cmd.Wait()
@@ -165,4 +176,26 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 	}
 	r.logger.Info("docker events stream ended", "host", host, "total_duration_ms", time.Since(started).Milliseconds(), "events_received", count, "rejected", result.Rejected, "diagnostics_truncated", result.DiagnosticsTruncated)
 	return
+}
+
+func watchStreamCleanup(ctx context.Context, finished <-chan struct{}, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-finished:
+			return
+		case <-ctx.Done():
+		}
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-finished:
+			return
+		case <-timer.C:
+		}
+		logger.Warn("docker events cleanup allowance exceeded; still joining owned workers")
+		<-finished
+	}()
+	return done
 }

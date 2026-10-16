@@ -2,28 +2,39 @@ package docker
 
 import (
 	"context"
-	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // The owned fake SSH executes OpenSSH's remote command string through a real
 // harmless /bin/sh; a second shell records whether expansion already occurred.
-func inspectShellFixture(t *testing.T, response string) (string, string, string) {
+// The scripts are immutable and shared within this serial test only. Each
+// case still has private outputs and environment, avoiding repeated executable
+// setup without dropping either real shell layer or any operand case.
+func inspectShellExecutables(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	marker, argv, launch := filepath.Join(dir, "marker"), filepath.Join(dir, "argv"), filepath.Join(dir, "launch")
+	bin := t.TempDir()
 	for name, script := range map[string]string{
 		"ssh":    "#!/bin/sh\nprintf launched > \"$SHELL_LAUNCH\"\nfor last do :; done\nexec /bin/sh -c \"$last\"\n",
 		"sh":     "#!/bin/sh\nif [ -e \"$SHELL_MARKER\" ]; then printf outer > \"$SHELL_PHASE\"; else printf absent > \"$SHELL_PHASE\"; fi\nexec /bin/sh \"$@\"\n",
 		"docker": "#!/bin/sh\nn=0\nif [ -f \"$SHELL_ARGV.count\" ]; then read -r n < \"$SHELL_ARGV.count\"; fi\nn=$((n+1))\nprintf '%s\\n' \"$n\" > \"$SHELL_ARGV.count\"\nprintf '%s\\000' \"$@\" > \"$SHELL_ARGV.$n\"\nif [ \"$SHELL_REPLY\" = fallback ] && [ \"$n\" = 1 ]; then printf '{}'; elif [ \"$SHELL_REPLY\" = fallback ]; then printf '{\"rdhpf.forward.18081\":\"80\"}'; else printf '%s' \"$SHELL_REPLY\"; fi\n",
 	} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(script), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(script), 0700))
 	}
-	t.Setenv("PATH", dir)
+	return bin
+}
+
+func inspectShellFixture(t *testing.T, response, bin string) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker, argv, launch := filepath.Join(dir, "marker"), filepath.Join(dir, "argv"), filepath.Join(dir, "launch")
+
+	t.Setenv("PATH", bin)
 	t.Setenv("HOME", dir)
 	t.Setenv("SHELL_MARKER", marker)
 	t.Setenv("SHELL_PHASE", filepath.Join(dir, "phase"))
@@ -45,6 +56,7 @@ func inspectShellOperands() []struct{ name, id string } {
 }
 
 func TestInspectShellOperands(t *testing.T) {
+	bin := inspectShellExecutables(t)
 	for _, method := range []struct{ name, reply, format string }{
 		{"InspectPorts", `{"80/tcp":[{"HostPort":"18081"}]}`, "{{json .HostConfig.PortBindings}}"},
 		{"inspectPortsFromLabels", `{"rdhpf.forward.18081":"80"}`, "{{json .Config.Labels}}"},
@@ -52,7 +64,7 @@ func TestInspectShellOperands(t *testing.T) {
 	} {
 		for _, tc := range inspectShellOperands() {
 			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
-				marker, argv, launch := inspectShellFixture(t, method.reply)
+				marker, argv, launch := inspectShellFixture(t, method.reply, bin)
 				t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
 				call := InspectPorts
 				if method.name == "inspectPortsFromLabels" {

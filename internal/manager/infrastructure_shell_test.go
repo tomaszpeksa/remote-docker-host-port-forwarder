@@ -2,8 +2,6 @@ package manager
 
 import (
 	"context"
-	"github.com/stretchr/testify/require"
-	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"io"
 	"log/slog"
 	"os"
@@ -11,22 +9,35 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 )
 
 // The owned fake SSH executes OpenSSH's remote command string through a real
 // harmless /bin/sh; a second shell records whether expansion already occurred.
-func inspectShellFixture(t *testing.T, response string) (string, string, string) {
+// The scripts are immutable and shared within this serial test only. Each
+// case still has private outputs and environment, avoiding repeated executable
+// setup without dropping either real shell layer or any operand case.
+func inspectShellExecutables(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	marker, argv, launch := filepath.Join(dir, "marker"), filepath.Join(dir, "argv"), filepath.Join(dir, "launch")
+	bin := t.TempDir()
 	for name, script := range map[string]string{
 		"ssh":    "#!/bin/sh\nprintf launched > \"$SHELL_LAUNCH\"\nfor last do :; done\nexec /bin/sh -c \"$last\"\n",
 		"sh":     "#!/bin/sh\nif [ -e \"$SHELL_MARKER\" ]; then printf outer > \"$SHELL_PHASE\"; else printf absent > \"$SHELL_PHASE\"; fi\nexec /bin/sh \"$@\"\n",
 		"docker": "#!/bin/sh\nn=0\nif [ -f \"$SHELL_ARGV.count\" ]; then read -r n < \"$SHELL_ARGV.count\"; fi\nn=$((n+1))\nprintf '%s\\n' \"$n\" > \"$SHELL_ARGV.count\"\nprintf '%s\\000' \"$@\" > \"$SHELL_ARGV.$n\"\nif [ \"$SHELL_REPLY\" = fallback ] && [ \"$n\" = 1 ]; then printf '{}'; elif [ \"$SHELL_REPLY\" = fallback ]; then printf '{\"rdhpf.forward.18081\":\"80\"}'; else printf '%s' \"$SHELL_REPLY\"; fi\n",
 	} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(script), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(script), 0700))
 	}
-	t.Setenv("PATH", dir)
+	return bin
+}
+
+func inspectShellFixture(t *testing.T, response, bin string) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker, argv, launch := filepath.Join(dir, "marker"), filepath.Join(dir, "argv"), filepath.Join(dir, "launch")
+
+	t.Setenv("PATH", bin)
 	t.Setenv("HOME", dir)
 	t.Setenv("SHELL_MARKER", marker)
 	t.Setenv("SHELL_PHASE", filepath.Join(dir, "phase"))
@@ -48,9 +59,10 @@ func inspectShellOperands() []struct{ name, id string } {
 }
 
 func TestInfrastructureLabelShellOperands(t *testing.T) {
+	bin := inspectShellExecutables(t)
 	for _, tc := range inspectShellOperands() {
 		t.Run(tc.name, func(t *testing.T) {
-			marker, argv, launch := inspectShellFixture(t, "true")
+			marker, argv, launch := inspectShellFixture(t, "true", bin)
 			m := &Manager{cfg: &config.Config{Host: "ssh://fixture.invalid:2222"}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()

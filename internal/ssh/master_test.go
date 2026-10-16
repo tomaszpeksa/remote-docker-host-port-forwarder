@@ -46,6 +46,16 @@ func TestMasterProcess(t *testing.T) {
 		if marker := os.Getenv("S07_CHECK_MARKER"); marker != "" {
 			require.NoError(t, os.WriteFile(marker, []byte(strings.Join(args, "\x00")), 0600))
 		}
+		// Delay only the check subprocess, leaving the retained master responsive.
+		if marker := os.Getenv("CHECK_CLIENT_BLOCK"); operation == "check" && marker != "" {
+			if _, err := os.Stat(marker); err == nil {
+				gate, err := net.Dial("unix", os.Getenv("CHECK_CLIENT_GATE"))
+				require.NoError(t, err)
+				defer gate.Close()
+				_, err = bufio.NewReader(gate).ReadByte()
+				require.NoError(t, err)
+			}
+		}
 		conn, err := net.Dial("unix", path)
 		if err != nil {
 			os.Exit(1)

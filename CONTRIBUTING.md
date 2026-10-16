@@ -265,12 +265,14 @@ unknown provisioning entries are refused, not recursively deleted.
 New trust/prompt/private-command tests are hosted-only and
 require explicit `RDHPF_HOSTED_TRUST=1`; do not select them on an operator host.
 
-The two disruptive S06 recovery scenarios are hosted-only and produce named
-skips in these local entry points, before changing SSH configuration, acquiring
-publisher ownership or creating backends. Only the disposable Actions job selects
-`RDHPF_HOSTED_RECOVERY=1`; selection retains strict runner/target/key checks and
-requires both scenarios to pass. Do not set this variable for a local host.
-This exclusion does not change the requested-infrastructure preflight below.
+The two disruptive SSH recovery scenarios are hosted-only. In these local entry
+points, the graceful-loss scenario produces a named skip; the hard-loss scenario
+is excluded from the build without the `rdhpf_integration` tag. Neither runs
+against a local host. Only the disposable Actions job selects `RDHPF_HOSTED_RECOVERY=1`
+and the tag; selection retains strict runner/target/key checks before changing SSH
+configuration, acquiring publisher ownership or creating backends, and requires
+both scenarios to pass. Do not set this variable for a local host. This exclusion
+does not change the requested-infrastructure preflight below.
 
 A nonempty `SSH_TEST_HOST` explicitly requests integration: unavailable SSH/Docker
 fails preflight within 10 seconds, rather than reporting success without tests.

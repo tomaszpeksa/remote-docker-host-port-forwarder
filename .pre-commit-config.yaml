@@ -70,6 +70,7 @@ repos:
         entry: markdownlint-cli2
         language: system
         files: \.(md|mdown|markdown)$
+        pass_filenames: true
 
 # Global settings
 default_install_hook_types: [pre-commit, pre-push]

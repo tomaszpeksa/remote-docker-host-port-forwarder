@@ -283,3 +283,11 @@ References:
 - State: internal/state/model.go
 - Status: internal/status/status.go
 - Logging: internal/logging/logger.go
+
+### Discovery observation errors
+
+A required infrastructure-label or enabled forwarding-label inspection failure is
+unknown information, not an empty port set. Discovery commands cap captured
+output and use cancellation deadlines; overflow cannot authorize inventory
+absence. These deadlines do not promise bounded OS-level process termination.
+Desired-only inventory merging preserves actual forward ownership and history.

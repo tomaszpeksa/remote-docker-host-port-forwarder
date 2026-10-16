@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/statefile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/util"
 )
 
 // dockerPingRunner generates health-ping events on the monitored daemon.
@@ -841,7 +843,9 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 //  2. For each container, inspect its ports
 //  3. Update desired state
 //  4. Perform reconciliation
-func (m *Manager) reconcileStartup(ctx context.Context) error {
+func (m *Manager) listRunning(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	m.logger.Info("performing startup reconciliation")
 
 	// Get control path for SSH commands
@@ -850,7 +854,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	// Parse host and port from SSH URL
 	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
 	if err != nil {
-		return fmt.Errorf("failed to parse SSH host: %w", err)
+		return nil, fmt.Errorf("failed to parse SSH host: %w", err)
 	}
 
 	// Get list of running containers
@@ -869,9 +873,21 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 
-	output, err := cmd.Output()
+	stdout, stderr := util.NewLimitedBuffer(4<<20), util.NewLimitedBuffer(64<<10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
+	err = cmd.Run()
+	if stdout.Err() != nil {
+		return nil, stdout.Err()
+	}
+	if stderr.Err() != nil {
+		return nil, stderr.Err()
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	output := stdout.Bytes()
 	if err != nil {
-		return fmt.Errorf("failed to list running containers: %w", err)
+		return nil, fmt.Errorf("failed to list running containers: %w", err)
 	}
 
 	// Parse container IDs
@@ -879,17 +895,37 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
+			if len(line) < 12 || len(strings.Fields(line)) != 1 {
+				return nil, fmt.Errorf("malformed container list record")
+			}
 			containerIDs = append(containerIDs, line)
+			if len(containerIDs) > 10000 {
+				return nil, fmt.Errorf("container list limit exceeded")
+			}
 		}
 	}
 
 	m.logger.Info("found running containers",
 		"count", len(containerIDs))
 
+	sort.Strings(containerIDs)
+	return containerIDs, nil
+}
+
+func (m *Manager) reconcileStartup(ctx context.Context) error {
+	containerIDs, err := m.listRunning(ctx)
+	if err != nil {
+		return err
+	}
+	controlPath := m.sshMaster.ControlPath()
 	// Inspect each container and update desired state
 	for _, containerID := range containerIDs {
 		// Check if container has test-infrastructure label (skip it)
-		if m.hasTestInfrastructureLabel(ctx, controlPath, containerID) {
+		infrastructure, labelErr := m.hasTestInfrastructureLabel(ctx, controlPath, containerID)
+		if labelErr != nil {
+			continue
+		}
+		if infrastructure {
 			m.logger.Debug("skipping test infrastructure container",
 				"containerID", containerID[:12])
 			continue
@@ -927,22 +963,24 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 }
 
 // hasTestInfrastructureLabel checks if a container has the rdhpf.test-infrastructure label
-func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, containerID string) bool {
+func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, containerID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
 	if err != nil {
 		m.logger.Warn("failed to parse SSH host", "error", err.Error())
-		return false
+		return false, err
 	}
 
 	operand, err := ssh.QuoteShellArg(containerID)
 	if err != nil {
 		m.logger.Warn("invalid container operand", "error", err.Error())
-		return false
+		return false, err
 	}
 	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' -- %s", docker.LabelTestInfrastructure, operand)
 	quoted, err := ssh.QuoteShellArg(dockerCmd)
 	if err != nil {
-		return false
+		return false, err
 	}
 	remoteCmd := "sh -c " + quoted
 
@@ -954,12 +992,24 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	output, err := cmd.Output()
+	stdout, stderr := util.NewLimitedBuffer(1<<20), util.NewLimitedBuffer(64<<10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
+	err = cmd.Run()
+	if stdout.Err() != nil {
+		return false, stdout.Err()
+	}
+	if stderr.Err() != nil {
+		return false, stderr.Err()
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	output := stdout.Bytes()
 	if err != nil {
-		return false
+		return false, err
 	}
 
-	return strings.TrimSpace(string(output)) == "true"
+	return strings.TrimSpace(string(output)) == "true", nil
 }
 
 // validateDockerConnectivity performs a quick test of Docker daemon connectivity

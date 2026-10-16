@@ -70,7 +70,13 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 					}
 				case "label":
 					// This real container is known to carry true; false alone would not prove auth failure.
-					require.True(t, m.hasTestInfrastructureLabel(ctx, master.ControlPath(), f.Container) == success)
+					infrastructure, inspectErr := m.hasTestInfrastructureLabel(ctx, master.ControlPath(), f.Container)
+					require.Equal(t, success, infrastructure)
+					if success {
+						require.NoError(t, inspectErr)
+					} else {
+						require.Error(t, inspectErr)
+					}
 				case "ping", "connectivity":
 					if operation == "ping" {
 						err = m.watchdog.dockerPing.Ping(ctx)

@@ -35,8 +35,7 @@ func TestMasterDestinationBoundary(t *testing.T) {
 			require.NoError(t, err)
 			want := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 				"-o", "ControlPath=" + m.ControlPath(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes",
-				"-i", "/identity with spaces"}
+				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"}
 			want = append(want, tc.port...)
 			want = append(want, "--", tc.destination)
 			assert.Equal(t, want, strings.Split(string(data), "\n"))

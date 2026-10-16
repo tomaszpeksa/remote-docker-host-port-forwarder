@@ -60,6 +60,14 @@ func TestSSHTrust(t *testing.T) {
 				f.PasswordChallenge()
 			}
 			f.Configure(policy, userKey, globalKey, identity, "no")
+			// Application authentication must use configured IdentityFile, never
+			// this fixture-only variable. A usable alternate key must not bypass
+			// the encrypted-key/password negative cases either.
+			conflictingIdentity := f.Key
+			if identity == f.Key {
+				conflictingIdentity = f.EncryptedKey
+			}
+			t.Setenv("SSH_TEST_KEY_PATH", conflictingIdentity)
 			if name == "DefaultUnknown" || name == "EncryptedIdentityNoPrompt" || name == "PasswordNoPrompt" {
 				f.PromptControl()
 			}

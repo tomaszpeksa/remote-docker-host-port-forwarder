@@ -235,7 +235,10 @@ make itest-down
 
 For an already configured isolated host, set `SSH_TEST_HOST=ssh://user@host:port`
 and run `make test-integration`. SSH authentication uses your SSH configuration
-or the optional `SSH_TEST_KEY_PATH` for fixture commands.
+or the optional `SSH_TEST_KEY_PATH` for fixture commands. The shipped application
+ignores that test variable; configure `IdentityFile` (or your SSH agent) through
+OpenSSH configuration. The owned local launcher supplies its explicit `-F` config,
+and the disposable hosted fixture supplies account configuration.
 
 The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.8.2-r0
 and nginx 1.30.5-alpine3.24. The isolated harness daemon must support Docker API

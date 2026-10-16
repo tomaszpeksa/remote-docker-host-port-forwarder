@@ -118,7 +118,7 @@ hosted matrix. Missing evidence or skips cannot satisfy these mandatory scenario
 The production launch inventory is explicit (all invoke SSH with BatchMode=yes):
 
 | Source | Actual launch methods |
-|---|---|
+| --- | --- |
 | `internal/ssh/master.go` | `openConnection`, `checkConnection` |
 | `internal/ssh/forward.go` | `AddForward`, `CancelForward` |
 | `internal/docker/events.go` | `EventReader.Stream` |

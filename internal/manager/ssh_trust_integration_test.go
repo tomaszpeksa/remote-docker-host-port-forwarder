@@ -113,7 +113,7 @@ func TestRemoteDockerPingOwnedEvent(t *testing.T) {
 	backend := f.Backend(sshfixture.Nginx, 18089)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	events, errs := docker.NewEventReader(f.Host, master.ControlPath(), slog.Default()).Stream(ctx)
+	events, errs := streamChannelsForTest(ctx, docker.NewEventReader(f.Host, master.ControlPath(), slog.Default()))
 	defer func() {
 		cancel()
 		for range events {
@@ -161,4 +161,28 @@ func TestRemoteDockerPingOwnedEvent(t *testing.T) {
 	require.Empty(t, f.Docker("ps", "-a", "--filter", "label=rdhpf.health-check=true", "-q"), "ping container must be removed by --rm")
 	require.NoError(t, ctx.Err())
 	f.NoPrompt()
+}
+
+// Adapt inherited channel-based tests only. S09 lifecycle proof consumes the
+// joined result directly; this bridge does not supply readiness or replay.
+func streamChannelsForTest(ctx context.Context, r *docker.EventReader) (<-chan docker.Event, <-chan error) {
+	events := make(chan docker.Event, 10)
+	errs := make(chan error, 1)
+	done := r.Stream(ctx, func(ctx context.Context, e docker.Event) error {
+		select {
+		case events <- e:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	go func() {
+		result := <-done
+		if result.Err != nil && !result.Canceled {
+			errs <- result.Err
+		}
+		close(events)
+		close(errs)
+	}()
+	return events, errs
 }

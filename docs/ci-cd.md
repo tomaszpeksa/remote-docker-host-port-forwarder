@@ -121,9 +121,9 @@ The production launch inventory is explicit (all invoke SSH with BatchMode=yes):
 | --- | --- |
 | `internal/ssh/master.go` | `openConnection`, `checkConnection` |
 | `internal/ssh/forward.go` | `AddForward`, `CancelForward` |
-| `internal/docker/events.go` | `EventReader.Stream` |
+| `internal/docker/events.go` | `EventReader.stream` (owned by `Stream`) |
 | `internal/docker/inspect.go` | `InspectPorts`, `inspectPortsFromLabels` |
-| `internal/manager/manager.go` | `reconcileStartup`, `hasTestInfrastructureLabel`, `validateDockerConnectivity`, `remoteDockerPingRunner.Ping` |
+| `internal/manager/manager.go` | `listRunning`, `hasTestInfrastructureLabel`, `validateDockerConnectivity`, `remoteDockerPingRunner.Ping` |
 
 The eleven launch sites have actual argv and individual native BatchMode-removal
 controls. A generic AST launch guard is deferred; this inventory is not a guarantee

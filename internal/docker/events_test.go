@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -23,27 +27,97 @@ func collectStream(t *testing.T, host, controlPath string, logger *slog.Logger) 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	events, errs := NewEventReader(host, controlPath, logger).Stream(ctx)
 	var got []Event
+	result := <-NewEventReader(host, controlPath, logger).Stream(ctx, func(ctx context.Context, event Event) error { got = append(got, event); return nil })
 	var failures []error
-	for events != nil || errs != nil {
-		select {
-		case event, ok := <-events:
-			if !ok {
-				events = nil
-			} else {
-				got = append(got, event)
-			}
-		case err, ok := <-errs:
-			if !ok {
-				errs = nil
-			} else {
-				failures = append(failures, err)
-			}
-		}
+	if result.Err != nil {
+		failures = append(failures, result.Err)
 	}
 	require.NoError(t, ctx.Err(), "fixture stream did not complete before deadline")
 	return got, failures
+}
+
+func TestEventReaderStreamRejectsShortID(t *testing.T) {
+	if os.Getenv("RDHPF_SHORT_ID_CHILD") == "1" {
+		got, errs := collectStream(t, "ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		require.Empty(t, errs)
+		require.Len(t, got, 1)
+		require.Equal(t, eventContainerID, got[0].ContainerID)
+		return
+	}
+	installFakeSSH(t, fmt.Sprintf("{\"Action\":\"start\",\"Actor\":{\"ID\":\"x\"}}\n{\"Action\":\"stop\"}\n{\"Action\":\"start\",\"Actor\":{\"ID\":%q}}\n", eventContainerID), "", 0)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestEventReaderStreamRejectsShortID$")
+	cmd.Env = append(os.Environ(), "RDHPF_SHORT_ID_CHILD=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, ctx.Err())
+	require.NoError(t, err, "MALFORMED_RECORD_MUST_NOT_PANIC: %s", output)
+}
+
+func TestEventReaderStreamDiagnosticLimit(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte(`#!/bin/sh
+i=0
+while [ "$i" -lt 100 ]; do printf '%1000s' '' >&2; i=$((i+1)); done
+printf tail >&2
+`), 0700))
+	var logs streamLogBuffer
+	_, errs := collectStream(t, "ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	require.Empty(t, errs)
+	for _, record := range logs.records(t) {
+		if stderr, ok := record["stderr"].(string); ok {
+			require.LessOrEqual(t, len(stderr), 64<<10, "STREAM_DIAGNOSTICS_BOUNDED")
+			require.True(t, strings.HasSuffix(stderr, "tail"))
+		}
+	}
+}
+
+func TestEventReaderCompletionOwnsWorkers(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := <-NewEventReader("ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil))).Stream(ctx, func(context.Context, Event) error { return nil })
+	require.NoError(t, result.Err)
+	var stacks string
+	require.Eventually(t, func() bool {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		stacks = string(buf[:n])
+		return !strings.Contains(stacks, "docker.(*EventReader).")
+	}, time.Second, time.Millisecond, "STREAM_TERMINAL_MUST_JOIN_OWNED_WORKERS: %s", stacks)
+}
+
+func TestEventReaderOwnedCancellation(t *testing.T) {
+	installFakeSSH(t, fmt.Sprintf("{\"Action\":\"start\",\"Actor\":{\"ID\":%q}}\n", eventContainerID), "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	done := NewEventReader("ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil))).Stream(ctx, func(ctx context.Context, e Event) error { close(entered); <-ctx.Done(); return ctx.Err() })
+	<-entered
+	cancel()
+	result := <-done
+	require.True(t, result.Canceled)
+	require.ErrorIs(t, result.Err, context.Canceled)
+	_, ok := <-done
+	require.False(t, ok, "one terminal result")
+}
+
+func TestEventReaderOversizedOpenStderr(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte(`#!/bin/sh
+i=0
+while [ "$i" -lt 100 ]; do printf '%1000s' ''; i=$((i+1)); done
+while :; do :; done
+`), 0700))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := <-NewEventReader("ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil))).Stream(ctx, func(context.Context, Event) error { return nil })
+	require.NoError(t, ctx.Err(), "SCANNER_ERROR_MUST_NOT_WAIT_FOR_OPEN_STDERR")
+	require.ErrorContains(t, result.Err, "scanner error")
+	require.False(t, result.Canceled)
 }
 
 func TestEventReaderStreamParsing(t *testing.T) {

@@ -92,8 +92,8 @@ forward|internal/ssh/forward.go|AddForward|./internal/ssh|^TestControlRequestTru
 cancel|internal/ssh/forward.go|CancelForward|./internal/ssh|^TestControlRequestTrust$/^cancel$/^yes$/^encrypted$|TestControlRequestTrust/cancel/yes/encrypted
 ports|internal/docker/inspect.go|InspectPorts|./tests/integration|^TestDockerMissingMuxTrust$/^ports$/^encrypted$|TestDockerMissingMuxTrust/ports/encrypted
 labels|internal/docker/inspect.go|inspectPortsFromLabels|./internal/docker|^TestLabelMissingMuxTrust$/^encrypted$|TestLabelMissingMuxTrust/encrypted
-events|internal/docker/events.go|Stream|./tests/integration|^TestDockerMissingMuxTrust$/^events$/^encrypted$|TestDockerMissingMuxTrust/events/encrypted
-startup|internal/manager/manager.go|reconcileStartup|./internal/manager|^TestManagerMissingMuxTrust$/^startup$/^encrypted$|TestManagerMissingMuxTrust/startup/encrypted
+events|internal/docker/events.go|stream|./tests/integration|^TestDockerMissingMuxTrust$/^events$/^encrypted$|TestDockerMissingMuxTrust/events/encrypted
+startup|internal/manager/manager.go|listRunning|./internal/manager|^TestManagerMissingMuxTrust$/^startup$/^encrypted$|TestManagerMissingMuxTrust/startup/encrypted
 infrastructure|internal/manager/manager.go|hasTestInfrastructureLabel|./internal/manager|^TestManagerMissingMuxTrust$/^label$/^encrypted$|TestManagerMissingMuxTrust/label/encrypted
 ping|internal/manager/manager.go|Ping|./internal/manager|^TestManagerMissingMuxTrust$/^ping$/^encrypted$|TestManagerMissingMuxTrust/ping/encrypted
 connectivity|internal/manager/manager.go|validateDockerConnectivity|./internal/manager|^TestManagerMissingMuxTrust$/^connectivity$/^encrypted$|TestManagerMissingMuxTrust/connectivity/encrypted

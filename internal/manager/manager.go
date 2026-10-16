@@ -441,7 +441,15 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			"max_attempts", maxConsecutiveFailures,
 			"timestamp", streamStartTime.Format(time.RFC3339))
 
-		events, errs := m.eventReader.Stream(ctx)
+		events := make(chan docker.Event, 10)
+		terminal := m.eventReader.Stream(ctx, func(ctx context.Context, event docker.Event) error {
+			select {
+			case events <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
 
 		if consecutiveFailures > 0 {
 			m.logger.Warn("event stream restarted",
@@ -452,7 +460,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		}
 
 		// Run event loop until stream closes or errors
-		streamClosed := m.runEventLoop(ctx, events, errs)
+		streamClosed := m.runEventLoop(ctx, events, terminal)
 		streamDuration := time.Since(streamStartTime)
 
 		// DIAGNOSTIC: Log stream end with timing
@@ -555,10 +563,11 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, fatalCh chan<- err
 // events together and reconciles 200ms after the last event received.
 //
 // Returns true if stream closed cleanly, false otherwise
-func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, errs <-chan error) bool {
+func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, terminal <-chan docker.StreamResult) bool {
 	// Debouncing timer - reconcile 200ms after last event
 	var debounceTimer *time.Timer
 	var eventCount int
+	var result *docker.StreamResult
 
 	// Helper to reset/create timer
 	resetDebounceTimer := func() {
@@ -569,28 +578,28 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 	}
 
 	for {
+		if result != nil && len(events) == 0 {
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			return result.Err == nil || result.Canceled
+		}
 		select {
 		case <-ctx.Done():
+			if terminal != nil {
+				<-terminal
+			}
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
 			return true
 
-		case err, ok := <-errs:
-			if !ok {
-				// Error channel closed, stream ended
-				m.logger.Info("event error channel closed")
-				if debounceTimer != nil {
-					debounceTimer.Stop()
-				}
-				return true
+		case completed := <-terminal:
+			result = &completed
+			terminal = nil
+			if completed.Err != nil && !completed.Canceled {
+				m.logger.Error("event stream error", "error", completed.Err)
 			}
-			m.logger.Error("event stream error", "error", err.Error())
-			// Stream error occurred, will trigger restart
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			return false
 
 		case event, ok := <-events:
 			if !ok {

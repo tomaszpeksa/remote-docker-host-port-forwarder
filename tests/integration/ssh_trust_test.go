@@ -187,7 +187,7 @@ func TestDockerMissingMuxTrust(t *testing.T) {
 						require.Error(t, err)
 					}
 				case "events":
-					events, errs := docker.NewEventReader(f.Host, missing, slog.Default()).Stream(ctx)
+					events, errs := streamChannelsForTest(ctx, docker.NewEventReader(f.Host, missing, slog.Default()))
 					if success {
 						// Start a second owned container only after the real stream is listening.
 						// docker events --since is not added to the production command.

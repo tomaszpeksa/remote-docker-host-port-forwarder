@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -100,18 +99,11 @@ func runTwoLossRecovery(t *testing.T, forceLoss func(context.Context, *ssh.Maste
 		}
 	}
 	assertHTTP()
-	// Startup inventory currently uses short IDs; preserve that contract, not
-	// the deferred canonical-ID/resync policy. Each requested owner must be ours.
+	// Inventory and events retain the exact identity of each owned backend.
 	desired := st.GetDesired()
 	require.Len(t, desired, 2)
 	for _, entry := range desired {
-		found := false
-		for _, id := range ownedIDs {
-			if strings.HasPrefix(id, entry.ContainerID) {
-				found = true
-			}
-		}
-		require.True(t, found, "desired owner must be one of the two owned backends")
+		require.Contains(t, ownedIDs, entry.ContainerID, "desired owner must be an exact owned backend ID")
 	}
 	created := make(map[int]time.Time)
 	for _, forward := range st.GetActual() {

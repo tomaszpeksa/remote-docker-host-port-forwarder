@@ -191,7 +191,7 @@ jobs:
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
 
           # A missing selector must not silently turn mandatory hosted proof into skips.
-          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestManagerPreexistingContainerIdentity")' test-evidence/all.jsonl || exit "$?"
           echo "✓ Phase 3 complete: All integration tests passed"
 
       - name: Private command trust and conditional control requests
@@ -214,6 +214,12 @@ jobs:
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: bash scripts/itest-trust-mutations.sh
+
+      - name: Source-bound container identity control
+        timeout-minutes: 3
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: bash scripts/itest-identity-mutation.sh
 
       - name: Inventory executed, excluded and unrun tests
         if: always()

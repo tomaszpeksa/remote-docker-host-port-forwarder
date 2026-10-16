@@ -837,7 +837,7 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 // it will establish forwards for them.
 //
 // Steps:
-//  1. Execute `docker ps --format '{{.ID}}'` via SSH to get running container IDs
+//  1. Execute `docker ps --no-trunc --format '{{.ID}}'` via SSH to get full running container IDs
 //  2. For each container, inspect its ports
 //  3. Update desired state
 //  4. Perform reconciliation
@@ -855,7 +855,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 
 	// Get list of running containers
 	// Build the docker command as a single quoted string to protect {{.ID}} from shell expansion
-	dockerCmd := "docker ps --format '{{.ID}}'"
+	dockerCmd := "docker ps --no-trunc --format '{{.ID}}'"
 
 	// Build SSH command args
 	// Important: sh -c and the docker command must be passed as a single argument to SSH

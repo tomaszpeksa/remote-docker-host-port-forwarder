@@ -57,11 +57,9 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 				switch operation {
 				case "startup":
 					id := f.Backend(sshfixture.Nginx, 18083)
-					// Preserve production's short-ID behavior; independently observe
-					// Docker ps rather than changing reconciliation to --no-trunc.
-					psID := f.Docker("ps", "--filter", "id="+id, "--format", "{{.ID}}")
-					require.NotEmpty(t, psID)
-					require.True(t, strings.HasPrefix(id, psID))
+					// Independently observe full inventory identity, then exercise startup.
+					psID := f.Docker("ps", "--no-trunc", "--filter", "id="+id, "--format", "{{.ID}}")
+					require.Equal(t, id, psID)
 					err = m.reconcileStartup(ctx)
 					if success {
 						require.NoError(t, err)

@@ -304,7 +304,10 @@ observation plus two-second cleanup allowance before starting another ID.
 
 A complete running-container list authorizes absence removals and independently
 successful observations. Listed but unknown containers retain their **current**
-desired ports; failed/truncated lists authorize no removals. Candidates are
+desired ports; failed/truncated lists authorize no removals. New zero-port
+observations do not invent desired owners; existing event/absence tombstones
+remain, and an authoritative empty observation still clears an existing owner.
+Candidates are
 bounded to 16 MiB/100,000 ports and validated as unique subsets of the list.
 Before list dispatch and at commit, Manager checks stream generation, acceptance
 revision, attempt and zero pending events. Acceptance reserves before enqueue;

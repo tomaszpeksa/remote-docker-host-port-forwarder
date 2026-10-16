@@ -307,6 +307,11 @@ func (s *State) MergeInventory(listed []string, observed []ContainerPorts) bool 
 	}
 	for _, cp := range observed {
 		old, exists := s.desired[cp.ContainerID]
+		// Startup inventory never owned infrastructure or newly seen portless
+		// containers. Authoritative empty still clears an existing owner.
+		if !exists && len(cp.Ports) == 0 {
+			continue
+		}
 		if exists && samePorts(old, cp.Ports) {
 			continue
 		}

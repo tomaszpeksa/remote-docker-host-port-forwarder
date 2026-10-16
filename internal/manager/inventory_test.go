@@ -117,3 +117,16 @@ func TestManagerDiscoveryInventory(t *testing.T) {
 		require.Empty(t, m.state.GetDesired())
 	})
 }
+
+func TestManagerDiscoveryKnownEmptyStartup(t *testing.T) {
+	m := inventoryManager(t)
+	m.discovery.list = func(context.Context) ([]string, error) { return []string{discoveryA}, nil }
+	m.discovery.observe = func(context.Context, string) ([]int, error) { return []int{}, nil }
+	candidate := m.inventoryPass(context.Background(), inventoryFence{}, "")
+	committed, changed, err := m.commitInventory(candidate)
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.False(t, changed, "PORTLESS_INVENTORY_MUST_NOT_INVENT_OWNER")
+	require.Empty(t, m.state.GetDesired())
+	require.Zero(t, m.discovery.request)
+}

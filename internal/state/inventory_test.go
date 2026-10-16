@@ -1,8 +1,9 @@
 package state
 
 import (
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Absence is authoritative, but a listed unknown owner must retain its latest value.
@@ -23,4 +24,15 @@ func TestMergeInventory(t *testing.T) {
 	require.Contains(t, s.GetDesired(), ContainerPorts{ContainerID: "unknown", Ports: []int{2004}}, "preserve latest, not a pass-start snapshot")
 	require.True(t, s.MergeInventory(nil, nil), "complete empty list removes desired")
 	require.Equal(t, actual, s.GetActual())
+}
+
+func TestMergeInventoryKnownEmptyDoesNotInventOwner(t *testing.T) {
+	s := NewState()
+	empty := []ContainerPorts{{ContainerID: "infrastructure", Ports: []int{}}}
+	require.False(t, s.MergeInventory([]string{"infrastructure"}, empty), "NEW_EMPTY_INVENTORY_OWNER")
+	require.Empty(t, s.GetDesired(), "startup previously omitted infrastructure and portless owners")
+	s.SetDesired("infrastructure", []int{1001})
+	require.True(t, s.MergeInventory([]string{"infrastructure"}, empty), "authoritative empty must still clear an existing owner")
+	require.Contains(t, s.GetDesired(), ContainerPorts{ContainerID: "infrastructure", Ports: []int{}})
+	require.False(t, s.MergeInventory([]string{"infrastructure"}, empty), "existing event/absence tombstone remains unchanged")
 }

@@ -929,9 +929,17 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 		return false
 	}
 
-	// Inspect container labels
-	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' %s", docker.LabelTestInfrastructure, containerID)
-	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+	operand, err := ssh.QuoteShellArg(containerID)
+	if err != nil {
+		m.logger.Warn("invalid container operand", "error", err.Error())
+		return false
+	}
+	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' -- %s", docker.LabelTestInfrastructure, operand)
+	quoted, err := ssh.QuoteShellArg(dockerCmd)
+	if err != nil {
+		return false
+	}
+	remoteCmd := "sh -c " + quoted
 
 	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {

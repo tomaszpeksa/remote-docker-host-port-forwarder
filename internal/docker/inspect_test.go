@@ -57,7 +57,7 @@ func TestInspectPortsArgv(t *testing.T) {
 			got, err := InspectPorts(ctx, tc.host, "/control socket", "abc123def456")
 			require.NoError(t, err)
 			require.Equal(t, []int{}, got)
-			want := append(tc.want, `sh -c "docker inspect abc123def456 --format '{{json .HostConfig.PortBindings}}'"`)
+			want := append(tc.want, `sh -c 'docker inspect --format '"'"'{{json .HostConfig.PortBindings}}'"'"' -- '"'"'abc123def456'"'"''`)
 			require.Equal(t, want, argv())
 		})
 	}

@@ -25,6 +25,9 @@ func TestTrustMutationsAcceptedASource(t *testing.T) {
 		{"fetch-fails", true, false}, {"wrong-commit", false, false}, {"wrong-blob", false, false}, {"missing-blob", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each script has private files and an explicit child environment;
+			// no process-wide environment or Git state is shared between cases.
+			t.Parallel()
 			root := t.TempDir()
 			for _, dir := range []string{"scripts", "bin", "internal/ssh"} {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0700))

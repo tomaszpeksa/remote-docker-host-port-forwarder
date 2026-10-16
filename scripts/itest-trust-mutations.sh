@@ -9,6 +9,26 @@ git diff --exit-code
 evidence="$PWD/test-evidence/trust-mutations"
 mkdir -p "$evidence"
 base=5acdc328ae148c538cf076c3c62cc0f5d2726d8d
+master_blob=12232176fbc37250c000ea6478d3c36b761c9858
+# Rewritten/squashed ancestry need not contain historical accepted A. Resolve
+# this immutable diagnostic input before any redirection can mutate source.
+if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+  printf 'git fetch --no-tags --no-write-fetch-head --depth=1 origin %s\n' "$base" > "$evidence/accepted-A-fetch.command"
+  fetch_status=0
+  git fetch --no-tags --no-write-fetch-head --depth=1 origin "$base" > "$evidence/accepted-A-fetch.stdout" 2> "$evidence/accepted-A-fetch.stderr" || fetch_status=$?
+  printf '%s\n' "$fetch_status" > "$evidence/accepted-A-fetch.exit"
+  if [ "$fetch_status" -ne 0 ]; then
+    printf 'Cannot fetch immutable accepted-A source; refusing mutation.\n' >&2
+    exit 1
+  fi
+fi
+if [ "$(git rev-parse --verify "$base^{commit}")" != "$base" ] ||
+   [ "$(git rev-parse --verify "$base:internal/ssh/master.go")" != "$master_blob" ] ||
+   ! git cat-file -e "$base:internal/ssh/master.go"; then
+  printf 'Unexpected accepted-A commit/Master blob identity; refusing mutation.\n' >&2
+  exit 1
+fi
+printf '%s\n%s\n' "$base" "$master_blob" > "$evidence/accepted-A-identity.txt"
 git rev-parse HEAD HEAD^{tree} > "$evidence/candidate.txt"
 printf '%s\n' "$base" > "$evidence/accepted-A.txt"
 source_file=

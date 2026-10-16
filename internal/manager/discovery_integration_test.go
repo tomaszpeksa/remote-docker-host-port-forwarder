@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -38,7 +39,8 @@ type discoveryOwned struct {
 	owner     *instancepath.Owner
 	ctx       context.Context
 	cancel    context.CancelFunc
-	done      chan error
+	done      chan struct{}
+	runErr    error
 	joined    sync.Once
 	events    chan docker.Event
 	rawStream func(context.Context, func(context.Context, docker.Event) error) <-chan docker.StreamResult
@@ -55,8 +57,9 @@ func newDiscoveryOwned(t *testing.T) *discoveryOwned {
 	t.Logf("host create CLI/Engine/API:\n%s", f.Docker("version"))
 	t.Logf("application CLI/Engine/API:\n%s", f.Docker("exec", f.Container, "docker", "version"))
 	require.Equal(t, "29.8.2", f.Docker("exec", f.Container, "docker", "version", "--format", "{{.Client.Version}}"))
-	require.Equal(t, "docker-cli-29.8.2-r1", f.Docker("exec", f.Container, "apk", "info", "-v", "docker-cli"))
-	t.Logf("owned server packages:\n%s", f.Docker("exec", f.Container, "apk", "info", "-v"))
+	packages := f.Docker("exec", f.Container, "apk", "info", "-v")
+	require.Contains(t, strings.Fields(packages), "docker-cli-29.8.2-r1")
+	t.Logf("owned server packages:\n%s", packages)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	master, err := ssh.NewMaster(f.Host, logger)
@@ -84,8 +87,10 @@ func (h *discoveryOwned) close() {
 		h.cancel()
 		if h.done != nil {
 			select {
-			case err := <-h.done:
-				require.NoError(h.t, err)
+			case <-h.done:
+				if h.runErr != nil {
+					h.t.Errorf("owned Manager returned error: %v", h.runErr)
+				}
 			case <-time.After(15 * time.Second):
 				h.t.Fatal("discovery Manager did not join")
 			}
@@ -97,8 +102,8 @@ func (h *discoveryOwned) close() {
 	})
 }
 func (h *discoveryOwned) start() {
-	h.done = make(chan error, 1)
-	go func() { h.done <- h.m.Run(h.ctx, h.owner) }()
+	h.done = make(chan struct{})
+	go func() { h.runErr = h.m.Run(h.ctx, h.owner); close(h.done) }()
 	h.t.Cleanup(h.close)
 }
 func (h *discoveryOwned) backend() discoveryBackend {
@@ -159,8 +164,8 @@ func (h *discoveryOwned) wait(marker string, condition func() error) {
 	for time.Now().Before(end) {
 		require.NoError(h.t, h.ctx.Err())
 		select {
-		case err := <-h.done:
-			h.t.Fatalf("Manager exited: %v", err)
+		case <-h.done:
+			h.t.Fatalf("Manager exited: %v", h.runErr)
 		default:
 		}
 		last = condition()

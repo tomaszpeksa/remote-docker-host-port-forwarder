@@ -191,7 +191,7 @@ func AddForward(ctx context.Context, controlPath, host string, localPort, remote
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, "-O", "forward", "-L", forwardSpec, sshHost)
+	args = append(args, "-O", "forward", "-L", forwardSpec, "--", sshHost)
 
 	logger.Info("adding SSH port forward",
 		"localPort", localPort,
@@ -271,7 +271,7 @@ func CancelForward(ctx context.Context, controlPath, host string, localPort, rem
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, "-O", "cancel", "-L", forwardSpec, sshHost)
+	args = append(args, "-O", "cancel", "-L", forwardSpec, "--", sshHost)
 
 	logger.Info("canceling SSH port forward",
 		"localPort", localPort,

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Execute the workflow's actual run block, not a separately implemented guard.
@@ -26,6 +26,8 @@ func TestIntegrationWorkflowMandatoryRecoveryPasses(t *testing.T) {
 		t.Skip("workflow-shell regression requires jq (not found)")
 	}
 	require.NoError(t, err)
+	guardOutput, guardErr := exec.Command("../../scripts/check-tools.sh", "jq").CombinedOutput()
+	require.NoError(t, guardErr, "managed jq required before executing jq: %s", guardOutput)
 	tee, err := exec.LookPath("tee")
 	require.NoError(t, err)
 	data, err := os.ReadFile("../../.github/workflows/integration-test.yml")

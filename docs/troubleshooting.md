@@ -115,7 +115,7 @@ This should NOT happen with graceful shutdown (Ctrl+C or `kill`). If it does:
 **Expected vs Actual:**
 
 | Scenario | Expected | Actual (if different = bug) |
-|----------|----------|----------------------------|
+| -------- | -------- | -------------------------- |
 | Ctrl+C (SIGINT) | Exit code 0, clean logs, no orphans | Report if different |
 | kill (SIGTERM) | Exit code 0, clean logs, no orphans | Report if different |
 | kill -9 (SIGKILL) | May leave orphans (expected) | Use manual cleanup |
@@ -525,7 +525,7 @@ If you encounter an issue not covered here:
 ## Common Error Messages
 
 | Error | Meaning | Solution |
-|-------|---------|----------|
+| ----- | ------- | -------- |
 | `address already in use` | Port conflict or TIME_WAIT | Wait 60s or see [Port Already in Use](#port-already-in-use) |
 | `SSH ControlMaster check failed` | SSH connection dropped | Auto-recovers; check SSH connectivity |
 | `circuit breaker open` | Too many SSH failures | Wait 60s cooldown; check SSH config |

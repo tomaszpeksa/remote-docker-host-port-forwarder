@@ -1,0 +1,22 @@
+version: "2"
+
+# Security uses the pinned official golangci-lint release distribution.
+# Preserve local gosec defaults: low severity and low confidence, all rules.
+run:
+  tests: false
+linters:
+  default: none
+  enable: [gosec]
+  settings:
+    gosec:
+      severity: low
+      confidence: low
+  exclusions:
+    generated: disable
+    presets: []
+    rules: []
+    paths: []
+issues:
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

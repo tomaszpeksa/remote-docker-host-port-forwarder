@@ -859,7 +859,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost, remoteCmd)
+	args = append(args, "--", sshHost, remoteCmd)
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -937,7 +937,7 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost, remoteCmd)
+	args = append(args, "--", sshHost, remoteCmd)
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -963,7 +963,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost, remoteCmd)
+	args = append(args, "--", sshHost, remoteCmd)
 
 	// Create a short timeout context for this test
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

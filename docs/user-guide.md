@@ -17,7 +17,8 @@ This guide helps you install, configure, and use rdhpf for remote Docker develop
 - Local machine with OpenSSH client (ssh) on PATH
 - Remote Docker host reachable over SSH (ssh://user@host) with key-based auth
 - Docker installed on the remote host
-- Optional: Go 1.23+ to build from source
+- Optional: Go 1.27.2+ to build from source; new macOS binaries require macOS 13+.
+  Repository development uses the pinned [project tools](../CONTRIBUTING.md#initial-setup).
 
 ### Install
 
@@ -27,15 +28,21 @@ This guide helps you install, configure, and use rdhpf for remote Docker develop
 # Add the tap (first time only)
 brew tap tomaszpeksa/tap
 
-# Install rdhpf
-brew install rdhpf
+# Install rdhpf (after the cask tap migration is published)
+brew install --cask rdhpf
 
 # Or in one command
-brew install tomaszpeksa/tap/rdhpf
+brew install --cask tomaszpeksa/tap/rdhpf
 
 # Verify installation
 rdhpf version
 ```
+
+Use current Homebrew with Linux/macOS binary-cask support. See the
+[formula migration and OS security notes](homebrew.md#migrating-from-the-formula)
+before upgrading an existing installation. The separate tap transition is required;
+older Homebrew clients and installed migration behavior are not proven. Normal
+macOS security may block unsigned binaries; no quarantine bypass is installed.
 
 #### Pre-built Binaries
 
@@ -49,7 +56,7 @@ sudo mv rdhpf /usr/local/bin/
 # Windows - extract zip and add to PATH
 ```
 
-#### From Source (Go 1.23+)
+#### From Source (Go 1.27.2+)
 
 ```bash
 go install github.com/tomaszpeksa/remote-docker-host-port-forwarder/cmd/rdhpf@latest

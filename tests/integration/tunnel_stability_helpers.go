@@ -178,13 +178,15 @@ func getSSHMasterPID(t *testing.T, sshHost, controlPath string) int {
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean)
+	args = append(args, "--", sshHostClean)
 
 	keyPath := os.Getenv("SSH_TEST_KEY_PATH")
 	if keyPath != "" {
 		args = append([]string{"-i", keyPath}, args...)
 	}
 
+	// #nosec G204 G702 -- Fixed ssh executable and -O check; separate key/port operands and destination after --.
+	// Host/key/SSH configuration are operator-configured; no universal SSH configuration safety is claimed.
 	cmd := exec.Command("ssh", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -286,6 +288,21 @@ func verifyNoReconnectionWarnings(t *testing.T, logOutput string) []string {
 // Load Generation
 // ============================================================================
 
+// recordSuccessfulProbe runs while generateLoad holds its statistics mutex.
+func (stats *LoadStats) recordSuccessfulProbe(resp *http.Response, latency time.Duration) {
+	stats.SuccessCount++
+	if err := resp.Body.Close(); err != nil {
+		slog.Warn("closing successful HTTP probe response", "error", err)
+	}
+	stats.Latencies = append(stats.Latencies, latency)
+	if latency < stats.MinLatency {
+		stats.MinLatency = latency
+	}
+	if latency > stats.MaxLatency {
+		stats.MaxLatency = latency
+	}
+}
+
 // generateLoad creates concurrent workers making HTTP requests
 func generateLoad(
 	ctx context.Context,
@@ -345,17 +362,7 @@ func generateLoad(
 					stats.TotalRequests++
 
 					if err == nil && resp.StatusCode == 200 {
-						stats.SuccessCount++
-						resp.Body.Close()
-
-						// Update latency stats
-						stats.Latencies = append(stats.Latencies, latency)
-						if latency < stats.MinLatency {
-							stats.MinLatency = latency
-						}
-						if latency > stats.MaxLatency {
-							stats.MaxLatency = latency
-						}
+						stats.recordSuccessfulProbe(resp, latency)
 					} else {
 						stats.FailureCount++
 						if resp != nil {

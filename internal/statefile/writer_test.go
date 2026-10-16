@@ -15,22 +15,22 @@ func snapshotFixture() ([]state.ForwardState, []state.HistoryEntry, StateFile) {
 	start := time.Date(2025, 2, 3, 4, 5, 6, 123, time.UTC)
 	end := start.Add(time.Minute)
 	return []state.ForwardState{
+		{ContainerID: "z", Port: 8080, Status: "conflict", Reason: "occupied", CreatedAt: start, UpdatedAt: end},
+		{ContainerID: "a", Port: 80, Status: "pending", Reason: "waiting", CreatedAt: end, UpdatedAt: start},
+	}, []state.HistoryEntry{
+		{ContainerID: "y", Port: 9000, StartedAt: start, EndedAt: end, EndReason: "stopped", FinalStatus: "active"},
+		{ContainerID: "b", Port: 90, StartedAt: end, EndedAt: start, EndReason: "removed", FinalStatus: "conflict"},
+	}, StateFile{
+		Version: "2.0", Host: "ssh://user@host:2222", PID: 1234, StartedAt: start, UpdatedAt: end,
+		Forwards: []ForwardSnapshot{
 			{ContainerID: "z", Port: 8080, Status: "conflict", Reason: "occupied", CreatedAt: start, UpdatedAt: end},
 			{ContainerID: "a", Port: 80, Status: "pending", Reason: "waiting", CreatedAt: end, UpdatedAt: start},
-		}, []state.HistoryEntry{
+		},
+		History: []HistorySnapshot{
 			{ContainerID: "y", Port: 9000, StartedAt: start, EndedAt: end, EndReason: "stopped", FinalStatus: "active"},
 			{ContainerID: "b", Port: 90, StartedAt: end, EndedAt: start, EndReason: "removed", FinalStatus: "conflict"},
-		}, StateFile{
-			Version: "2.0", Host: "ssh://user@host:2222", PID: 1234, StartedAt: start, UpdatedAt: end,
-			Forwards: []ForwardSnapshot{
-				{ContainerID: "z", Port: 8080, Status: "conflict", Reason: "occupied", CreatedAt: start, UpdatedAt: end},
-				{ContainerID: "a", Port: 80, Status: "pending", Reason: "waiting", CreatedAt: end, UpdatedAt: start},
-			},
-			History: []HistorySnapshot{
-				{ContainerID: "y", Port: 9000, StartedAt: start, EndedAt: end, EndReason: "stopped", FinalStatus: "active"},
-				{ContainerID: "b", Port: 90, StartedAt: end, EndedAt: start, EndReason: "removed", FinalStatus: "conflict"},
-			},
-		}
+		},
+	}
 }
 
 func TestWriterSnapshotEncoding(t *testing.T) {

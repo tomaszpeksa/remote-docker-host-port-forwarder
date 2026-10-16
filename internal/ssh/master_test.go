@@ -43,6 +43,9 @@ func TestMasterProcess(t *testing.T) {
 		}
 	}
 	if operation != "" {
+		if marker := os.Getenv("S07_CHECK_MARKER"); marker != "" {
+			require.NoError(t, os.WriteFile(marker, []byte(strings.Join(args, "\x00")), 0600))
+		}
 		// Delay only the check subprocess, leaving the retained master responsive.
 		if marker := os.Getenv("CHECK_CLIENT_BLOCK"); operation == "check" && marker != "" {
 			if _, err := os.Stat(marker); err == nil {
@@ -96,11 +99,39 @@ func TestMasterProcess(t *testing.T) {
 		listener.Close()
 		os.Exit(9)
 	}
-	listener, err := net.Listen("unix", path)
+	// Like OpenSSH muxserver_listen, bind/listen privately before publishing
+	// the final name. A direct bind exposes an unready socket to Master.Open.
+	temporary := path + ".0123456789abcdef"
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: temporary, Net: "unix"})
 	if err != nil {
 		os.Exit(2)
 	}
-	defer listener.Close()
+	// UnixListener otherwise unlinks its original (temporary) pathname, not
+	// the published hard link. Normal exit/crash must remove the final name.
+	listener.SetUnlinkOnClose(false)
+	var publication net.Conn
+	if gate := os.Getenv("S07_PUBLISH_GATE"); gate != "" {
+		publication, err = net.Dial("unix", gate)
+		require.NoError(t, err)
+		fmt.Fprintln(publication, "listening")
+		_, err = bufio.NewReader(publication).ReadByte()
+		require.NoError(t, err)
+	}
+	if err := os.Link(temporary, path); err != nil {
+		require.NoError(t, listener.Close())
+		require.NoError(t, os.Remove(temporary))
+		os.Exit(2) // Never replace a foreign final entry.
+	}
+	require.NoError(t, os.Remove(temporary))
+	closeListener := func() {
+		require.NoError(t, listener.Close())
+		require.NoError(t, os.Remove(path))
+	}
+	defer closeListener()
+	if publication != nil {
+		fmt.Fprintln(publication, "published")
+		publication.Close()
+	}
 	report := func(kind string) {
 		if path := os.Getenv("S06_EVENTS"); path != "" {
 			conn, err := net.Dial("unix", path)
@@ -134,13 +165,13 @@ func TestMasterProcess(t *testing.T) {
 			fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
 			report("check")
 		case "crash":
-			listener.Close() // unlink before EOF acknowledges the forced loss
+			closeListener() // unlink before EOF acknowledges the forced loss
 			conn.Close()
 			os.Exit(9)
 		case "exit":
 			fmt.Fprintln(conn, "Exit request sent.")
 			conn.Close()
-			listener.Close()
+			closeListener()
 			os.Exit(0)
 		}
 		conn.Close()

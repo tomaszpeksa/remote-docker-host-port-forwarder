@@ -194,9 +194,10 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost)
+	args = append(args, "--", sshHost)
 	// The retained child, not a context watcher or a daemon launcher, owns SSH.
-	// #nosec G204 - Existing SSH host/input policy; arguments remain separate.
+	// #nosec G204 G702 -- Fixed ssh executable, separate key/port operands, destination after --; no local shell.
+	// Host/key/SSH configuration are operator-configured; this is not general SSH input/configuration safety.
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -313,7 +314,7 @@ func (m *Master) checkConnection(ctx context.Context) error {
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, host)
+	args = append(args, "--", host)
 	// #nosec G204 - Existing SSH host/input policy; arguments remain separate.
 	output, err := exec.CommandContext(check, "ssh", args...).CombinedOutput()
 	if err != nil {

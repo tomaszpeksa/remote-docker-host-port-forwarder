@@ -18,6 +18,7 @@ CGO_ENABLED ?= 0
 # Directories
 BUILD_DIR := build
 COVERAGE_DIR := coverage
+SECURITY_REPORT ?= security-report.json
 
 # Verbose mode
 VERBOSE ?= 0
@@ -48,6 +49,25 @@ help: ## Show this help message
 	@printf "  make test VERBOSE=1     # Run tests with verbose output\n"
 	@printf "  make install            # Install binary to GOPATH/bin\n"
 	@printf "  make release            # Build for all platforms\n"
+
+.PHONY: check-go check-test-tools check-lint check-security
+
+check-go:
+	@scripts/check-tools.sh go gofmt
+
+check-test-tools:
+	@scripts/check-tools.sh go gofmt jq
+
+check-lint:
+	@scripts/check-tools.sh go gofmt golangci-lint
+
+check-security:
+	@scripts/check-tools.sh go golangci-lint jq
+
+build test-integration itest itest-stability fmt vet deps release: check-go
+test-unit coverage: check-test-tools
+lint: check-lint
+security: check-security
 
 build: ## Build binary for current platform
 	@printf "$(GREEN)Building $(BINARY_NAME) for $(GOOS)/$(GOARCH)...$(NC)\n"
@@ -100,13 +120,8 @@ lint: ## Run linters
 		find . -name '*.go' -not -path './.itests/*' -not -path './vendor/*' -exec gofmt -s -d {} \;; \
 		exit 1; \
 	fi
-	@printf "  - golangci-lint (if available)\n"
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m ./...; \
-	else \
-		printf "$(YELLOW)⚠ golangci-lint not installed, skipping$(NC)\n"; \
-		printf "  Install: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b \$$(go env GOPATH)/bin\n"; \
-	fi
+	@printf "  - golangci-lint\n"
+	@golangci-lint run --timeout=5m ./...
 	@printf "$(GREEN)✓ Lint checks passed$(NC)\n"
 
 fmt: ## Format code with gofmt
@@ -121,13 +136,7 @@ vet: ## Run go vet
 
 security: ## Run security checks
 	@printf "$(GREEN)Running security checks...$(NC)\n"
-	@if command -v gosec >/dev/null 2>&1; then \
-		gosec -fmt=text ./...; \
-	else \
-		printf "$(YELLOW)⚠ gosec not installed$(NC)\n"; \
-		printf "  Install: go install github.com/securego/gosec/v2/cmd/gosec@latest\n"; \
-		exit 1; \
-	fi
+	@scripts/security.sh "$(SECURITY_REPORT)"
 	@printf "$(GREEN)✓ Security checks passed$(NC)\n"
 
 coverage: ## Generate test coverage report

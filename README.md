@@ -1,6 +1,6 @@
 # Remote Docker Host Port Forwarder (rdhpf)
 
-[![CI](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Go](https://img.shields.io/badge/go-1.23%2B-00ADD8?logo=go)](go.mod) [![Coverage](https://img.shields.io/badge/coverage-%E2%80%94-informational.svg)](docs/ci-cd.md)
+[![CI](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Go](https://img.shields.io/badge/go-1.27.2%2B-00ADD8?logo=go)](go.mod) [![Coverage](https://img.shields.io/badge/coverage-%E2%80%94-informational.svg)](docs/ci-cd.md)
 
 A lightweight CLI that automatically forwards published container ports from a remote Docker host (ssh://) to your local machine via SSH. When containers on the remote host publish ports, rdhpf makes those services available on your localhost so apps that assume "localhost" keep working unchanged.
 
@@ -19,8 +19,8 @@ rdhpf is designed for developers and CI environments using a remote DOCKER_HOST 
 ## Quick Start
 
 ```bash
-# Installation (macOS/Linux via Homebrew)
-brew install tomaszpeksa/tap/rdhpf
+# Installation (macOS/Linux via Homebrew, after the cask tap migration)
+brew install --cask tomaszpeksa/tap/rdhpf
 
 # Basic usage
 rdhpf run --host ssh://user@remote-docker-host
@@ -38,11 +38,11 @@ rdhpf status --host ssh://user@example.com
 # Add the tap (first time only)
 brew tap tomaszpeksa/tap
 
-# Install rdhpf
-brew install rdhpf
+# Install rdhpf (after the cask is published to the tap)
+brew install --cask rdhpf
 
 # Or install in one command
-brew install tomaszpeksa/tap/rdhpf
+brew install --cask tomaszpeksa/tap/rdhpf
 
 # Verify installation
 rdhpf version
@@ -50,6 +50,13 @@ rdhpf version
 # Upgrade to latest version
 brew upgrade rdhpf
 ```
+
+Use a current Homebrew with Linux/macOS binary-cask support. The separate tap
+transition must be published before these cask commands work. Existing formula
+users should follow the [migration guide](docs/homebrew.md#migrating-from-the-formula).
+Normal OS security checks remain enabled; unsigned macOS binaries may be blocked
+on first launch. No quarantine bypass is installed. Older Homebrew clients and
+installed migration/first-launch behavior have not been validated.
 
 ### Pre-built Binaries
 
@@ -64,7 +71,10 @@ sudo mv rdhpf /usr/local/bin/
 # Extract the zip file and add rdhpf.exe to your PATH
 ```
 
-### From Source (Go 1.23+)
+### From Source (Go 1.27.2+)
+
+New macOS binaries require macOS 13+. Repository builds use the pinned
+[project tools](CONTRIBUTING.md#initial-setup); no global mise settings change is needed.
 
 ```bash
 # Using go install
@@ -73,7 +83,9 @@ go install github.com/tomaszpeksa/remote-docker-host-port-forwarder/cmd/rdhpf@la
 # Or clone and build with Make
 git clone https://github.com/tomaszpeksa/remote-docker-host-port-forwarder.git
 cd remote-docker-host-port-forwarder
-make build
+# Install the pinned base tool set as described in CONTRIBUTING.md.
+MISE_LOCKED_SCOPES=project mise install --locked core:go aqua:golangci/golangci-lint aqua:jqlang/jq
+mise exec -- make build
 sudo mv build/rdhpf /usr/local/bin/
 ```
 
@@ -148,7 +160,7 @@ rdhpf is primarily configured via CLI flags with a small set of optional environ
 
 ## Requirements
 
-- Go 1.23+ (to build from source)
+- Go 1.27.2+ (to build from source)
 - OpenSSH client available on PATH
 - SSH access to the remote Docker host (`ssh://user@host`), with keys/agent configured and host key known
 - Docker installed on the remote host (for auto-discovery mode)

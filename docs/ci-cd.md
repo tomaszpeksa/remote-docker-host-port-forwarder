@@ -22,7 +22,7 @@ The primary continuous integration workflow that runs on every code change.
   - `golangci-lint` - Comprehensive linting
 
 - **test**: Infrastructure-independent tests
-  - Runs on Go 1.24 with race detection and uncached execution
+  - Runs on pinned Go 1.27.2 with race detection and uncached execution
   - Clears integration host/key variables; remote scenarios self-skip
   - Instruments production packages (`cmd/...`, `internal/...`) for coverage
   - Retains JSON results, stderr, exits, inventory and coverage even after failure
@@ -65,7 +65,8 @@ Advanced code quality and security checks.
 **Jobs**:
 
 - **security**: Security scanning
-  - `gosec` - Security vulnerability detection
+  - All gosec rules/SSA through the pinned official golangci-lint release; hosted config preserves medium/medium thresholds (local Make uses low/low)
+  - Native golangci JSON, stderr, scanner exit, selected config and package scope; incomplete analysis fails
   - Attempts report upload even if scanning fails; scanner failure remains a failure
 
 - **coverage**: Test coverage analysis
@@ -182,16 +183,18 @@ export SSH_TEST_KEY_PATH=/path/to/test-key
 
 The project supports pre-commit hooks to catch issues before committing:
 
-**Installation**:
+**Installation**: install the optional hook/documentation sets from
+[CONTRIBUTING](../CONTRIBUTING.md#installing-development-tools), then:
 
 ```bash
-# Option 1: Using pre-commit framework
-pip install pre-commit
-pre-commit install
-
-# Option 2: Manual git hook
-ln -s ../../scripts/pre-commit.sh .git/hooks/pre-commit
+mise exec -- pre-commit run --all-files
+mise exec -- pre-commit install
 ```
+
+The first hook rejects missing or ambient tool providers before any Go/Markdown
+hook runs. Hook registration is explicit and optional. The manual
+`scripts/pre-commit.sh` entrypoint still operates on staged Go files and checks
+its required providers before running them.
 
 **What the hooks check**:
 - Code formatting (gofmt)
@@ -199,6 +202,9 @@ ln -s ../../scripts/pre-commit.sh .git/hooks/pre-commit
 - Fast unit tests
 - No hardcoded credentials
 - No debug statements (warning only)
+
+All local Make/Go examples assume the base tool set is installed and commands
+are run through `mise exec --` or an activated mise shell.
 
 ## Running Tests Locally
 
@@ -292,25 +298,11 @@ To add a new workflow:
 4. Test with `workflow_dispatch` trigger
 5. Update this documentation
 
-**Example workflow skeleton**:
-
-```yaml
-name: Your Workflow
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  your-job:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-      - run: make your-target
-```
+Use the existing CI workflow as the bootstrap example: SHA-pinned mise-action,
+exact bootstrap checksum, automatic install/environment/PATH export and caching
+disabled, then named project-scoped locked installs plus provider checks. Run
+existing commands through `mise exec --`; keep Make/scripts as logic owners.
+Actions and hook revisions remain in their native files, not in mise tasks.
 
 ## Troubleshooting
 
@@ -345,10 +337,10 @@ go test -race ./...
 **GoReleaser issues**:
 ```bash
 # Test release locally
-goreleaser release --snapshot --clean
+mise exec -- goreleaser release --snapshot --clean --skip=publish
 
 # Validate configuration
-goreleaser check
+mise exec -- goreleaser check
 ```
 
 **Platform-specific build issues**:
@@ -361,18 +353,15 @@ GOOS=linux GOARCH=amd64 go build ./cmd/rdhpf
 
 ### Caching
 
-All workflows use Go module caching:
-
-```yaml
-- uses: actions/setup-go@v5
-  with:
-    go-version: '1.23'
-    cache: true  # Enables automatic caching
-```
+Managed CI tools use isolated runner-temporary config/data/cache directories.
+Mise action caching is deliberately disabled during locked adoption; installs
+verify the selected artifacts. This does not claim installed caches are
+continuously byte-reverified. `GOTOOLCHAIN=local` prevents automatic compiler
+substitution. No token persistence or additional workflow permissions are added.
 
 ### Parallel Execution
 
-- Tests run in parallel across Go versions
+- Jobs share the pinned Go version; independent lint/test/build jobs run concurrently
 - Lint and test jobs run concurrently
 - Build matrix parallelizes cross-platform builds
 

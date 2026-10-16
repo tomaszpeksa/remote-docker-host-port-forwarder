@@ -70,7 +70,7 @@ exit 91
 			// Startup itself supplies all desired state. An unopened Master keeps
 			// its existing nonfatal unavailable-connection behavior; exercise the
 			// same private reconciliation operation with controlled command results.
-			require.NoError(t, m.reconcileStartup(ctx))
+			require.NoError(t, startupInventoryForTest(m, ctx))
 			require.NoError(t, m.reconcileConnection(ctx, 0, true))
 			require.Len(t, st.GetActual(), 1)
 			if scenario != "startup" {
@@ -78,7 +78,7 @@ exit 91
 				if scenario == "die" {
 					kind = "die"
 				}
-				require.NoError(t, m.handleStopEvent(ctx, docker.Event{Type: kind, ContainerID: identityContainerID}))
+				require.NoError(t, m.handleStopEvent(ctx, docker.Event{Type: kind, ContainerID: identityContainerID}, 0))
 				require.NoError(t, m.reconcileConnection(ctx, 0, true))
 				require.Empty(t, st.GetActual(), "full-ID stop must remove the startup owner")
 				require.Equal(t, []state.ContainerPorts{{ContainerID: identityContainerID, Ports: []int{}}}, st.GetDesired())
@@ -87,14 +87,14 @@ exit 91
 				require.Equal(t, "container stopped", history.GetAll()[0].EndReason)
 				if scenario == "repeated-stop-die" {
 					for _, repeated := range []string{"stop", "die", "stop"} {
-						require.NoError(t, m.handleStopEvent(ctx, docker.Event{Type: repeated, ContainerID: identityContainerID}))
+						require.NoError(t, m.handleStopEvent(ctx, docker.Event{Type: repeated, ContainerID: identityContainerID}, 0))
 						require.NoError(t, m.reconcileConnection(ctx, 0, true))
 					}
 					require.Empty(t, st.GetActual())
 					require.Len(t, history.GetAll(), 1, "repeated lifecycle records must not remove another owner")
 				}
 				if scenario == "restart" {
-					require.NoError(t, m.handleStartEvent(ctx, docker.Event{Type: "start", ContainerID: identityContainerID}))
+					require.NoError(t, m.handleStartEvent(ctx, docker.Event{Type: "start", ContainerID: identityContainerID}, 0))
 					require.NoError(t, m.reconcileConnection(ctx, 0, true))
 					require.Len(t, history.GetAll(), 1)
 				}

@@ -1,0 +1,4 @@
+TestManagerDiscoveryOwnedStartupGap
+TestManagerDiscoveryOwnedInventoryOverlap
+TestManagerDiscoveryOwnedDowntime
+TestManagerDiscoveryOwnedInspectRetry

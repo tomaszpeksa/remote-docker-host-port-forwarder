@@ -66,7 +66,7 @@ func TestInfrastructureLabelShellOperands(t *testing.T) {
 			m := &Manager{cfg: &config.Config{Host: "ssh://fixture.invalid:2222"}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			got := m.hasTestInfrastructureLabel(ctx, "/unused-control", tc.id)
+			got, _ := m.hasTestInfrastructureLabel(ctx, "/unused-control", tc.id)
 			if tc.name == "nul" {
 				require.False(t, got)
 				require.NoFileExists(t, launch)

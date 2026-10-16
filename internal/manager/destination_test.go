@@ -51,9 +51,11 @@ func TestManagerDestinationBoundary(t *testing.T) {
 				defer cancel()
 				switch operation.name {
 				case "startup":
-					require.NoError(t, m.reconcileStartup(ctx))
+					require.NoError(t, startupInventoryForTest(m, ctx))
 				case "label":
-					require.True(t, m.hasTestInfrastructureLabel(ctx, master.ControlPath(), "abc123def456"))
+					infrastructure, err := m.hasTestInfrastructureLabel(ctx, master.ControlPath(), "abc123def456")
+					require.NoError(t, err)
+					require.True(t, infrastructure)
 				case "connectivity":
 					require.NoError(t, m.validateDockerConnectivity(ctx, master.ControlPath()))
 				}

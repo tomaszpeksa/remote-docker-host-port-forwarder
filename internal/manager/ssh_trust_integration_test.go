@@ -60,7 +60,7 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 					// Independently observe full inventory identity, then exercise startup.
 					psID := f.Docker("ps", "--no-trunc", "--filter", "id="+id, "--format", "{{.ID}}")
 					require.Equal(t, id, psID)
-					err = m.reconcileStartup(ctx)
+					err = startupInventoryForTest(m, ctx)
 					if success {
 						require.NoError(t, err)
 						require.Contains(t, st.GetDesired(), state.ContainerPorts{ContainerID: psID, Ports: []int{18083}})
@@ -70,7 +70,13 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 					}
 				case "label":
 					// This real container is known to carry true; false alone would not prove auth failure.
-					require.True(t, m.hasTestInfrastructureLabel(ctx, master.ControlPath(), f.Container) == success)
+					infrastructure, inspectErr := m.hasTestInfrastructureLabel(ctx, master.ControlPath(), f.Container)
+					require.Equal(t, success, infrastructure)
+					if success {
+						require.NoError(t, inspectErr)
+					} else {
+						require.Error(t, inspectErr)
+					}
 				case "ping", "connectivity":
 					if operation == "ping" {
 						err = m.watchdog.dockerPing.Ping(ctx)
@@ -107,7 +113,7 @@ func TestRemoteDockerPingOwnedEvent(t *testing.T) {
 	backend := f.Backend(sshfixture.Nginx, 18089)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	events, errs := docker.NewEventReader(f.Host, master.ControlPath(), slog.Default()).Stream(ctx)
+	events, errs := streamChannelsForTest(ctx, docker.NewEventReader(f.Host, master.ControlPath(), slog.Default()))
 	defer func() {
 		cancel()
 		for range events {
@@ -155,4 +161,28 @@ func TestRemoteDockerPingOwnedEvent(t *testing.T) {
 	require.Empty(t, f.Docker("ps", "-a", "--filter", "label=rdhpf.health-check=true", "-q"), "ping container must be removed by --rm")
 	require.NoError(t, ctx.Err())
 	f.NoPrompt()
+}
+
+// Adapt inherited channel-based tests only. S09 lifecycle proof consumes the
+// joined result directly; this bridge does not supply readiness or replay.
+func streamChannelsForTest(ctx context.Context, r *docker.EventReader) (<-chan docker.Event, <-chan error) {
+	events := make(chan docker.Event, 10)
+	errs := make(chan error, 1)
+	done := r.Stream(ctx, func(ctx context.Context, e docker.Event) error {
+		select {
+		case events <- e:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	go func() {
+		result := <-done
+		if result.Err != nil && !result.Canceled {
+			errs <- result.Err
+		}
+		close(events)
+		close(errs)
+	}()
+	return events, errs
 }

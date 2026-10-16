@@ -80,8 +80,10 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	done := make(chan struct{})
 	var runErr error
 	go func() { runErr = mgr.Run(managerCtx, owner); close(done) }()
-	// LIFO: join Manager/stream, close Master, release publisher, then the
-	// earlier label-checked backend/marker and exact-config fixture cleanups.
+	// Join Manager, then close the owned mux before waiting for its event
+	// command's pipes: a live mux can retain those descriptors after cancellation.
+	// The helper's idempotent Close remains a fallback for startup failures.
+	// Publisher/backend/config cleanups were registered earlier and run last.
 	t.Cleanup(func() {
 		stop()
 		select {
@@ -90,10 +92,11 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Fatal("owned identity Manager did not join")
 		}
+		require.NoError(t, master.Close())
 		if observer.starts.Load() > 0 {
 			require.Eventually(t, func() bool { return observer.ends.Load() == observer.starts.Load() }, 5*time.Second, 20*time.Millisecond, "owned event command did not finish Wait")
 		}
-		t.Log("identity Manager and event command joined before Master/publisher/backend cleanup")
+		t.Log("identity Manager/Master/event command joined before publisher/backend cleanup")
 	})
 	transport := &http.Transport{DisableKeepAlives: true}
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}

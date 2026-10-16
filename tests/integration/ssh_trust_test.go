@@ -65,7 +65,11 @@ func TestSSHTrust(t *testing.T) {
 			// the encrypted-key/password negative cases either.
 			conflictingIdentity := f.Key
 			if identity == f.Key {
-				conflictingIdentity = f.EncryptedKey
+				// Keep historical A enrollment overlays focused on enrollment:
+				// an encrypted extra CLI identity would prompt before that check.
+				// The actual Master argv regression separately proves omission.
+				conflictingIdentity = filepath.Join(f.Dir, "ignored-application-key")
+				require.NoFileExists(t, conflictingIdentity)
 			}
 			t.Setenv("SSH_TEST_KEY_PATH", conflictingIdentity)
 			if name == "DefaultUnknown" || name == "EncryptedIdentityNoPrompt" || name == "PasswordNoPrompt" {

@@ -130,3 +130,89 @@ func TestManagerDiscoveryKnownEmptyStartup(t *testing.T) {
 	require.Empty(t, m.state.GetDesired())
 	require.Zero(t, m.discovery.request)
 }
+
+func TestManagerDiscoveryCandidateLimits(t *testing.T) {
+	tooMany := make([]string, 10001)
+	for i := range tooMany {
+		tooMany[i] = discoveryA
+	}
+	cases := []struct {
+		name      string
+		candidate inventoryCandidate
+		message   string
+	}{
+		{"IDs", inventoryCandidate{listedComplete: true, listed: tooMany}, "container list limit"},
+		{"ports", inventoryCandidate{listedComplete: true, listed: []string{discoveryA}, observed: []state.ContainerPorts{{ContainerID: discoveryA, Ports: make([]int, 100001)}}}, "inventory candidate limit"},
+		{"bytes", inventoryCandidate{listedComplete: true, listed: []string{strings.Repeat("a", 16<<20)}}, "inventory candidate limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := inventoryManager(t)
+			committed, changed, err := m.commitInventory(tc.candidate)
+			require.ErrorContains(t, err, tc.message, "CANDIDATE_CAPACITY_REJECTED_BEFORE_MERGE")
+			require.False(t, committed)
+			require.False(t, changed)
+			require.Empty(t, m.state.GetDesired())
+		})
+	}
+}
+
+func TestManagerDiscoveryCandidateCapacityProgress(t *testing.T) {
+	m := inventoryManager(t)
+	ids := []string{}
+	for _, digit := range []string{"1", "2", "3", "4", "5", "6", "7"} {
+		ids = append(ids, strings.Repeat(digit, 64))
+	}
+	ports := make([]int, 20000)
+	for i := range ports {
+		ports[i] = i + 1
+	}
+	m.state.SetDesired(ids[5], []int{2002})
+	m.discovery.list = func(context.Context) ([]string, error) { return ids, nil }
+	m.discovery.observe = func(context.Context, string) ([]int, error) { return ports, nil }
+	cursor := ""
+	for pass := 0; pass < 3; pass++ {
+		c := m.inventoryPass(context.Background(), inventoryFence{}, cursor)
+		require.True(t, c.incomplete, "CAPACITY_MUST_STOP_ENRICHMENT")
+		require.Len(t, c.observed, 5, "PASS_PORT_CAP")
+		require.ErrorContains(t, c.problem, "inventory candidate limit")
+		committed, _, err := m.commitInventory(c)
+		require.NoError(t, err)
+		require.True(t, committed)
+		if pass == 0 {
+			require.Contains(t, m.state.GetDesired(), state.ContainerPorts{ContainerID: ids[5], Ports: []int{2002}}, "CAPACITY_PRESERVES_UNKNOWN")
+		}
+		cursor = c.cursor
+	}
+	require.Len(t, m.state.GetDesired(), 7, "capacity-limited passes must rotate, not starve later owners")
+	for _, cp := range m.state.GetDesired() {
+		require.Len(t, cp.Ports, 20000)
+	}
+	require.Empty(t, m.state.GetActual(), "bounded candidates never invent actual ownership")
+}
+
+func TestManagerDiscoveryCandidateFenceDimensions(t *testing.T) {
+	for _, dimension := range []string{"generation", "attempt", "pending"} {
+		t.Run(dimension, func(t *testing.T) {
+			m := inventoryManager(t)
+			m.state.SetDesired(discoveryA, []int{1001})
+			m.discovery.list = func(context.Context) ([]string, error) {
+				switch dimension {
+				case "generation":
+					m.discovery.generation++
+				case "attempt":
+					m.discovery.attempt++
+				case "pending":
+					m.discovery.pending++
+				}
+				return nil, nil
+			}
+			c := m.inventoryPass(context.Background(), inventoryFence{}, "")
+			committed, changed, err := m.commitInventory(c)
+			require.NoError(t, err)
+			require.False(t, committed, "STALE_FENCE_DIMENSION")
+			require.False(t, changed)
+			require.Contains(t, m.state.GetDesired(), state.ContainerPorts{ContainerID: discoveryA, Ports: []int{1001}})
+		})
+	}
+}

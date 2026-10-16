@@ -118,6 +118,7 @@ func TestManagerDiscoveryAcceptance(t *testing.T) {
 		m.discovery.generation = 1
 		m.discovery.pending = 2
 		m.retireEvent(accepted.token)
+		m.retireEvent(&eventReservation{generation: 0})
 		require.Equal(t, 2, m.discovery.pending, "OLD_ACK_CANNOT_RETIRE_NEW")
 	})
 }

@@ -2,6 +2,11 @@
 # Entrypoint script to configure localhost to point to Docker gateway
 # so SSH port forwards can reach host's published Docker ports
 
+set -eu
+
+# Keys belong to this container, never a shared image layer.
+ssh-keygen -A
+
 # Fix docker group GID to match the mounted socket's GID
 if [ -e /var/run/docker.sock ]; then
   SOCK_GID=$(stat -c '%g' /var/run/docker.sock)

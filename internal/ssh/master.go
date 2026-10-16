@@ -187,17 +187,14 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	}
 	args := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 		"-o", "ControlPath=" + m.controlPath, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null"}
-	if key := os.Getenv("SSH_TEST_KEY_PATH"); key != "" {
-		args = append(args, "-i", key)
-	}
+		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
 	args = append(args, "--", sshHost)
 	// The retained child, not a context watcher or a daemon launcher, owns SSH.
-	// #nosec G204 G702 -- Fixed ssh executable, separate key/port operands, destination after --; no local shell.
-	// Host/key/SSH configuration are operator-configured; this is not general SSH input/configuration safety.
+	// #nosec G204 -- Fixed ssh executable, separate port/control-path operands, destination after --; no local shell.
+	// Host and inherited SSH configuration are operator-configured; this is not general SSH input/configuration safety.
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -310,7 +307,7 @@ func (m *Master) checkConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"-S", m.controlPath, "-O", "check"}
+	args := []string{"-o", "BatchMode=yes", "-S", m.controlPath, "-O", "check"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

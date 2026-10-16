@@ -22,7 +22,7 @@ func TestManagerDestinationBoundary(t *testing.T) {
 		name, output, command string
 	}{
 		{"startup", "", `sh -c "docker ps --format '{{.ID}}'"`},
-		{"label", "true", `sh -c "docker inspect --format '{{index .Config.Labels \"rdhpf.test-infrastructure\"}}' abc123def456"`},
+		{"label", "true", `sh -c 'docker inspect --format '"'"'{{index .Config.Labels "rdhpf.test-infrastructure"}}'"'"' -- '"'"'abc123def456'"'"''`},
 		{"connectivity", "29.8.2", `sh -c "docker version --format '{{.Server.Version}}'"`},
 	} {
 		for _, tc := range []struct {
@@ -59,7 +59,7 @@ func TestManagerDestinationBoundary(t *testing.T) {
 				}
 				data, err := os.ReadFile(filepath.Join(dir, "args"))
 				require.NoError(t, err)
-				want := append([]string{"-S", master.ControlPath()}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-S", master.ControlPath()}, tc.port...)
 				want = append(want, "--", tc.destination, operation.command)
 				require.Equal(t, want, strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"))
 			})

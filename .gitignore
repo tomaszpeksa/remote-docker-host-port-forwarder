@@ -39,4 +39,5 @@ gosec-report*.json
 
 # Integration test artifacts
 .itests/
+.itests-cleanup-owner
 logs/

@@ -36,7 +36,7 @@ func TestGracefulShutdownRemovesForwards(t *testing.T) {
 	testPort := 18084
 
 	// Start container with port
-	containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		testPort: 80,
 	})
 	defer cleanup()
@@ -109,7 +109,7 @@ func TestSIGINTHandling(t *testing.T) {
 
 	// Start container to establish forward
 	testPort := 18085
-	_, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	_, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		testPort: 80,
 	})
 	defer cleanup()
@@ -150,7 +150,7 @@ func TestSIGTERMHandling(t *testing.T) {
 
 	// Start container to establish forward
 	testPort := 18086
-	_, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	_, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		testPort: 80,
 	})
 	defer cleanup()
@@ -193,13 +193,13 @@ func TestCleanupRemovesAllForwards(t *testing.T) {
 	port2 := 18088
 	port3 := 18089
 
-	_, cleanup1 := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{port1: 80})
+	_, cleanup1 := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{port1: 80})
 	defer cleanup1()
 
-	_, cleanup2 := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{port2: 80})
+	_, cleanup2 := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{port2: 80})
 	defer cleanup2()
 
-	_, cleanup3 := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{port3: 80})
+	_, cleanup3 := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{port3: 80})
 	defer cleanup3()
 
 	// Wait for all ports to open

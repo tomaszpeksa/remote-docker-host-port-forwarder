@@ -92,19 +92,13 @@ itest-up: ## Start integration test harness (SSH container with Docker socket mo
 
 itest: ## Run integration tests (requires itest-up first)
 	@printf "$(GREEN)Running integration tests...$(NC)\n"
-	@HOME=$(PWD)/.itests/home \
-		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
-		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
-		go test $(GOTEST_FLAGS) -count=1 -timeout=15m ./tests/integration/...
+	@bash scripts/itest-run.sh itest $(GOTEST_FLAGS)
 	@printf "$(GREEN)✓ Integration tests passed$(NC)\n"
 
 itest-stability: ## Run only stability tests (requires itest-up first, ~7 min)
 	@printf "$(GREEN)Running tunnel stability tests (this will take ~7 minutes)...$(NC)\n"
 	@printf "$(YELLOW)Note: Tests run serially to prevent interference$(NC)\n"
-	@HOME=$(PWD)/.itests/home \
-		SSH_TEST_HOST=ssh://testuser@localhost:2222 \
-		SSH_TEST_KEY_PATH=$(PWD)/.itests/home/.ssh/id_ed25519 \
-		go test $(GOTEST_FLAGS) -count=1 -timeout=10m -run 'TestManager_(LongRunning|TunnelStability)' ./tests/integration/
+	@bash scripts/itest-run.sh stability $(GOTEST_FLAGS)
 	@printf "$(GREEN)✓ Stability tests passed$(NC)\n"
 
 itest-down: ## Stop integration test harness

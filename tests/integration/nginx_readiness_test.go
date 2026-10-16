@@ -22,14 +22,14 @@ func waitForNginxBackend(ctx context.Context, host, containerID string) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	args := []string{"-o", "BatchMode=yes"}
 	if key := os.Getenv("SSH_TEST_KEY_PATH"); key != "" {
 		args = append(args, "-i", key)
 	}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost, "docker", "exec", containerID, "wget", "-q", "-O", "/dev/null", "-T", "1", "http://127.0.0.1:80/")
+	args = append(args, "--", sshHost, "docker", "exec", containerID, "wget", "-q", "-O", "/dev/null", "-T", "1", "http://127.0.0.1:80/")
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("nginx backend readiness: %w", err)
@@ -63,7 +63,7 @@ func TestNginxBackendReadiness(t *testing.T) {
 		require.Equal(t, "2", string(count))
 		got, err := os.ReadFile(argv)
 		require.NoError(t, err)
-		require.Equal(t, "-o\nStrictHostKeyChecking=no\n-o\nUserKnownHostsFile=/dev/null\n-i\n/fixture/key\n-p\n2222\nuser@fixture\ndocker\nexec\nowned-nginx\nwget\n-q\n-O\n/dev/null\n-T\n1\nhttp://127.0.0.1:80/\n", string(got))
+		require.Equal(t, "-o\nBatchMode=yes\n-i\n/fixture/key\n-p\n2222\n--\nuser@fixture\ndocker\nexec\nowned-nginx\nwget\n-q\n-O\n/dev/null\n-T\n1\nhttp://127.0.0.1:80/\n", string(got))
 	})
 	for _, tc := range []struct{ name, script string }{
 		{"unavailable", "exit 1"},

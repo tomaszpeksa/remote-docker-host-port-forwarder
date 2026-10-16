@@ -37,7 +37,7 @@ func TestInspectPortsBindings(t *testing.T) {
 				require.ElementsMatch(t, tc.want, got)
 			}
 			// Exactly one invocation: empty results must not consult ambient label settings.
-			require.Len(t, argv(), 5)
+			require.Len(t, argv(), 7)
 		})
 	}
 }
@@ -47,8 +47,8 @@ func TestInspectPortsArgv(t *testing.T) {
 		name, host string
 		want       []string
 	}{
-		{"default_port", "ssh://docker@fixture.invalid", []string{"-S", "/control socket", "--", "docker@fixture.invalid"}},
-		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-S", "/control socket", "-p", "2222", "--", "user@fixture.invalid"}},
+		{"default_port", "ssh://docker@fixture.invalid", []string{"-o", "BatchMode=yes", "-S", "/control socket", "--", "docker@fixture.invalid"}},
+		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "--", "user@fixture.invalid"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			argv := installFakeSSH(t, `{}`, "", 0)
@@ -57,7 +57,7 @@ func TestInspectPortsArgv(t *testing.T) {
 			got, err := InspectPorts(ctx, tc.host, "/control socket", "abc123def456")
 			require.NoError(t, err)
 			require.Equal(t, []int{}, got)
-			want := append(tc.want, `sh -c "docker inspect abc123def456 --format '{{json .HostConfig.PortBindings}}'"`)
+			want := append(tc.want, `sh -c 'docker inspect --format '"'"'{{json .HostConfig.PortBindings}}'"'"' -- '"'"'abc123def456'"'"''`)
 			require.Equal(t, want, argv())
 		})
 	}

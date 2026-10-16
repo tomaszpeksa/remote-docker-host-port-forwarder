@@ -23,6 +23,9 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
 
+const fixtureAlpine = "alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+const fixtureNginx = "nginx:1.30.5-alpine3.24@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94"
+
 // TestMain checks if Docker is available before running end-to-end tests
 func TestMain(m *testing.M) {
 	// Check if we're running end-to-end tests
@@ -55,15 +58,15 @@ func integrationPreflight(ctx context.Context, host, keyPath string) error {
 		port = sshHost[idx+1:]
 	}
 
-	// Build SSH command with key authentication and disable strict host key checking
-	args := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	// Fixture commands inherit provisioned trust and never prompt.
+	args := []string{"-o", "BatchMode=yes"}
 	if keyPath != "" {
 		args = append(args, "-i", keyPath)
 	}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, hostPart, "docker", "ps")
+	args = append(args, "--", hostPart, "docker", "ps")
 
 	// Discard remote output: it may be unbounded or contain credentials.
 	cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -142,14 +145,14 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 	keyPath := os.Getenv("SSH_TEST_KEY_PATH")
 
 	// Build docker run command with port mappings
-	args := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+	args := []string{"-o", "BatchMode=yes"}
 	if keyPath != "" {
 		args = append(args, "-i", keyPath)
 	}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHostClean, "docker", "run", "-d", "--rm")
+	args = append(args, "--", sshHostClean, "docker", "run", "-d", "--rm")
 
 	// Publish ports to Docker bridge IP (172.17.0.1) to avoid conflicts with SSH forwards on 127.0.0.1
 	// This makes ports accessible via Docker gateway from SSH container, while leaving localhost free
@@ -175,14 +178,14 @@ func startDockerContainer(t *testing.T, sshHost string, image string, portMappin
 
 	cleanup := func() {
 		t.Logf("Stopping container: %s", containerID[:12])
-		stopArgs := []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"}
+		stopArgs := []string{"-o", "BatchMode=yes"}
 		if keyPath != "" {
 			stopArgs = append(stopArgs, "-i", keyPath)
 		}
 		if port != "" {
 			stopArgs = append(stopArgs, "-p", port)
 		}
-		stopArgs = append(stopArgs, sshHostClean, "docker", "stop", containerID)
+		stopArgs = append(stopArgs, "--", sshHostClean, "docker", "stop", containerID)
 		stopCmd := exec.Command("ssh", stopArgs...)
 		_ = stopCmd.Run() // Ignore errors during cleanup
 	}
@@ -280,7 +283,7 @@ func TestManager_ContainerWithNoPorts(t *testing.T) {
 	waitForManagerReady(t, 2*time.Second)
 
 	// Start container with NO port mappings
-	containerID, cleanup := startDockerContainer(t, sshHost, "alpine:latest", map[int]int{})
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureAlpine, map[int]int{})
 	defer cleanup()
 
 	// Give manager time to process the event
@@ -315,7 +318,7 @@ func TestManager_ContainerWithOnePort(t *testing.T) {
 
 	// Start container with single port
 	startTime := time.Now()
-	containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		testPort: 80,
 	})
 	defer cleanup()
@@ -395,7 +398,7 @@ func TestManager_ContainerWithThreePorts(t *testing.T) {
 	// For simplicity in this test, we'll map all 3 local ports to port 80
 	// In a real scenario, the container would have different services on different ports
 	startTime := time.Now()
-	containerID, cleanup := startDockerContainer(t, sshHost, "nginx:alpine", map[int]int{
+	containerID, cleanup := startDockerContainer(t, sshHost, fixtureNginx, map[int]int{
 		port1: 80,
 		port2: 80,
 		port3: 80,

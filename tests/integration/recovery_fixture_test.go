@@ -48,7 +48,10 @@ func recoveryAlias(t *testing.T, host string) (string, string) {
 	token := hex.EncodeToString(random[:])
 	alias := "rdhpf-s06-" + token
 	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
-	block := fmt.Sprintf("Host %s\n  HostName localhost\n  User testuser\n  Port 2222\n  IdentityFile %s\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile %s\n  LogLevel ERROR\n\n", alias, key, knownHosts)
+	pins, err := os.ReadFile(filepath.Join(home, ".ssh", "known_hosts"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(knownHosts, pins, 0600))
+	block := fmt.Sprintf("Host %s\n  HostName localhost\n  User testuser\n  Port 2222\n  IdentityFile %s\n  StrictHostKeyChecking yes\n  GlobalKnownHostsFile none\n  UserKnownHostsFile %s\n  LogLevel ERROR\n\n", alias, key, knownHosts)
 	require.NoError(t, os.WriteFile(configPath, append([]byte(block), previous...), info.Mode().Perm()))
 	t.Cleanup(func() { require.NoError(t, os.WriteFile(configPath, previous, info.Mode().Perm())) })
 	t.Setenv("SSH_TEST_KEY_PATH", key)
@@ -67,7 +70,7 @@ func recoveryRemote(ctx context.Context, host, command string) (string, error) {
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, target, fmt.Sprintf("sh -c %q", command))
+	args = append(args, "--", target, fmt.Sprintf("sh -c %q", command))
 	output, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("owned fixture command: %w: %.1024s", err, output)
@@ -95,7 +98,7 @@ func recoveryBackend(t *testing.T, ctx context.Context, host, token string, inde
 		_, err = recoveryRemote(cleanup, host, "docker rm -f "+name)
 		require.NoError(t, err)
 	})
-	command := fmt.Sprintf("docker run -d --rm --name %s --label rdhpf.s06=%s -p 172.17.0.1:%d:80 nginx:alpine", name, token, port)
+	command := fmt.Sprintf("docker run -d --rm --name %s --label rdhpf.s06=%s -p 172.17.0.1:%d:80 %s", name, token, port, fixtureNginx)
 	create, cancel := context.WithTimeout(ctx, 30*time.Second)
 	id, err := recoveryRemote(create, host, command)
 	cancel()

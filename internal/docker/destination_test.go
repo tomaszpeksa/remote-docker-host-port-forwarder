@@ -15,8 +15,8 @@ func TestDockerDestinationBoundary(t *testing.T) {
 		name, output, command string
 	}{
 		{"events", "", `sh -c "docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop"`},
-		{"ports", `{}`, `sh -c "docker inspect abc123def456 --format '{{json .HostConfig.PortBindings}}'"`},
-		{"labels", `{"rdhpf.forward.8080":"80"}`, `sh -c "docker inspect abc123def456 --format '{{json .Config.Labels}}'"`},
+		{"ports", `{}`, `sh -c 'docker inspect --format '"'"'{{json .HostConfig.PortBindings}}'"'"' -- '"'"'abc123def456'"'"''`},
+		{"labels", `{"rdhpf.forward.8080":"80"}`, `sh -c 'docker inspect --format '"'"'{{json .Config.Labels}}'"'"' -- '"'"'abc123def456'"'"''`},
 	} {
 		for _, tc := range []struct {
 			name, host, destination string
@@ -45,7 +45,7 @@ func TestDockerDestinationBoundary(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, []int{8080}, got)
 				}
-				want := append([]string{"-S", "/control socket"}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-S", "/control socket"}, tc.port...)
 				want = append(want, "--", tc.destination, operation.command)
 				require.Equal(t, want, argv())
 			})

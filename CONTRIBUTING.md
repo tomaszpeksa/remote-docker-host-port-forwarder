@@ -235,7 +235,38 @@ make itest-down
 
 For an already configured isolated host, set `SSH_TEST_HOST=ssh://user@host:port`
 and run `make test-integration`. SSH authentication uses your SSH configuration
-or the optional `SSH_TEST_KEY_PATH` for fixture commands.
+or the optional `SSH_TEST_KEY_PATH` for fixture commands. The shipped application
+ignores that test variable; configure `IdentityFile` (or your SSH agent) through
+OpenSSH configuration. The owned local launcher supplies its explicit `-F` config,
+and the disposable hosted fixture supplies account configuration.
+
+The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.8.2-r0
+and nginx 1.30.5-alpine3.24. The isolated harness daemon must support Docker API
+1.40 or newer with negotiation enabled; this is not a production-daemon policy.
+No script upgrades your daemon. Startup refuses existing container/state rather
+than adopting it, obtains the public host key from its retained owned container,
+and binds SSH only to loopback. `itest-down` verifies ID/label before removal and
+removes owned private keys; foreign or legacy resources require manual disposition.
+
+OpenSSH does not use HOME alone to locate account config. Local `make itest` and
+`make itest-stability` select an owned exec launcher that adds only an absolute
+`-F` config; it never injects trust or BatchMode overrides. Do not install this
+launcher globally. Each Make test invocation uses a short, private disposable
+runtime HOME, separate from the provisioned SSH keys/config. Successful tests join
+owned publishers before that runtime tree (including caches and the persistent
+publisher lock inode) is retired. Concurrent fixture operations are refused.
+Provisioning claims the same operation before publishing its owner and keeps it
+until commands have joined and startup completes or its owner-bound failed-start
+cleanup takes over without unlocking. Interrupted provisioning retains its claim
+and state for investigation; an obsolete startup cannot clean a newer fixture.
+A failed/interrupted command retains `.itests/operation` and its recorded runtime
+HOME; teardown refuses this uncertain state. Inspect it and confirm every owned
+process has joined before manual recovery—never unlink a live publisher lock.
+Partial provisioning teardown retains `.itests-cleanup-owner` for a safe retry;
+unknown provisioning entries are refused, not recursively deleted.
+
+New trust/prompt/private-command tests are hosted-only and
+require explicit `RDHPF_HOSTED_TRUST=1`; do not select them on an operator host.
 
 The two disruptive SSH recovery scenarios are hosted-only. In these local entry
 points, the graceful-loss scenario produces a named skip; the hard-loss scenario

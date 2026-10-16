@@ -143,13 +143,48 @@ func TestMasterProcess(t *testing.T) {
 		}
 	}
 	report("start")
+	startupCheckServed := false
+	startupAssociations := 0
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			os.Exit(3)
 		}
+		// Test-only barrier: hold the final startup association before reading
+		// its EOF, with the first association acknowledgement already present.
+		if startupCheckServed {
+			if gate := os.Getenv("S07_FINAL_STARTUP_EOF_GATE"); gate != "" {
+				barrier, err := net.Dial("unix", gate)
+				require.NoError(t, err)
+				fmt.Fprintln(barrier, os.Getenv("S07_REMOVE_MUX_GATE"))
+				_, err = bufio.NewReader(barrier).ReadByte()
+				require.NoError(t, err)
+				require.NoError(t, barrier.Close())
+			}
+			startupCheckServed = false
+		}
 		command, _ := bufio.NewReader(conn).ReadString('\n')
 		switch strings.TrimSpace(command) {
+		case "":
+			// associate closes this credential-only connection after verifying
+			// the retained PID and socket. Arm only after Open has completed.
+			if gate := os.Getenv("S07_REMOVE_MUX_GATE"); gate != "" {
+				if _, err := os.Stat(gate); err == nil {
+					conn.Close()
+					closeListener()
+					require.NoError(t, os.WriteFile(gate+".ready", []byte("removed\n"), 0600))
+					// Keep the exact owned process alive until Master retires it.
+					for {
+						time.Sleep(time.Hour)
+					}
+				}
+				startupAssociations++
+				ack := gate + ".idle"
+				if startupAssociations == 2 {
+					ack = gate + ".startup-complete"
+				}
+				require.NoError(t, os.WriteFile(ack, []byte("startup association consumed\n"), 0600))
+			}
 		case "check":
 			if marker := os.Getenv("S06_CHECK_BLOCK"); marker != "" {
 				if _, err := os.Stat(marker); err == nil {
@@ -163,6 +198,7 @@ func TestMasterProcess(t *testing.T) {
 				}
 			}
 			fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
+			startupCheckServed = true
 			report("check")
 		case "crash":
 			closeListener() // unlink before EOF acknowledges the forced loss

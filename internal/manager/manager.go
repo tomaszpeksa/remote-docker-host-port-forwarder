@@ -20,32 +20,37 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/statefile"
 )
 
-// dockerPingRunner executes local docker run commands for health pings
+// dockerPingRunner generates health-ping events on the monitored daemon.
 type dockerPingRunner interface {
 	Ping(ctx context.Context) error
 }
 
-// localDockerPingRunner runs docker commands locally (using DOCKER_HOST config)
-type localDockerPingRunner struct {
-	logger *slog.Logger
+// remoteDockerPingRunner uses the application's SSH target and owned mux path,
+// not the local Docker client's ambient host/context/TLS configuration.
+type remoteDockerPingRunner struct {
+	host, controlPath string
+	logger            *slog.Logger
 }
 
-func newLocalDockerPingRunner(logger *slog.Logger) dockerPingRunner {
-	return &localDockerPingRunner{logger: logger}
+func newRemoteDockerPingRunner(host, controlPath string, logger *slog.Logger) dockerPingRunner {
+	return &remoteDockerPingRunner{host: host, controlPath: controlPath, logger: logger}
 }
 
-func (r *localDockerPingRunner) Ping(ctx context.Context) error {
-	name := fmt.Sprintf("rdhpf-ping-%d", time.Now().UnixNano())
-	args := []string{
-		"run", "--rm",
-		"--name", name,
-		"--label", "rdhpf.health-check=true",
-		"alpine:latest",
-		"echo", "works",
+func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
+	host, port, err := ssh.ParseHost(r.host)
+	if err != nil {
+		return fmt.Errorf("failed to parse SSH host: %w", err)
 	}
+	name := fmt.Sprintf("rdhpf-ping-%d", time.Now().UnixNano())
+	remoteCmd := "docker run --rm --name " + name + " --label rdhpf.health-check=true alpine:latest echo works"
+	args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, "--", host, remoteCmd)
 
-	// #nosec G204 - docker command with controlled args
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	// #nosec G204 - Fixed SSH executable, separated destination and generated numeric ping name.
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.logger.Warn("event health ping docker run failed",
@@ -239,7 +244,7 @@ func NewManager(
 	logger *slog.Logger,
 ) *Manager {
 	now := time.Now
-	dockerPing := newLocalDockerPingRunner(logger)
+	dockerPing := newRemoteDockerPingRunner(cfg.Host, sshMaster.ControlPath(), logger)
 	startedAt := time.Now()
 
 	return &Manager{
@@ -855,7 +860,7 @@ func (m *Manager) reconcileStartup(ctx context.Context) error {
 	// Build SSH command args
 	// Important: sh -c and the docker command must be passed as a single argument to SSH
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -929,11 +934,19 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 		return false
 	}
 
-	// Inspect container labels
-	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' %s", docker.LabelTestInfrastructure, containerID)
-	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+	operand, err := ssh.QuoteShellArg(containerID)
+	if err != nil {
+		m.logger.Warn("invalid container operand", "error", err.Error())
+		return false
+	}
+	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' -- %s", docker.LabelTestInfrastructure, operand)
+	quoted, err := ssh.QuoteShellArg(dockerCmd)
+	if err != nil {
+		return false
+	}
+	remoteCmd := "sh -c " + quoted
 
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -959,7 +972,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	// Simple docker version command to test connectivity
 	dockerCmd := "docker version --format '{{.Server.Version}}'"
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

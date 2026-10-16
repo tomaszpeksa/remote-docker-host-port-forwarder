@@ -13,8 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need the separately published tap transition; normal OS security remains enabled,
   so unsigned macOS downloads may be blocked on first launch. See the Homebrew guide.
 - Prevent SSH destination options from being interpreted as local flags across
-  production launches and the integration PID helper. Inherited SSH trust and
-  BatchMode changes remain deferred to S07B; they are not part of this release.
+  production launches and the integration PID helper.
+- S07B: inherit configured SSH trust sources/checking policy instead of forcing
+  accept-new and discarding user pins. Force BatchMode on all application SSH paths;
+  default unknown hosts and unavailable noninteractive credentials now fail rather
+  than prompting. Explicit accept-new enrollment remains configurable.
+- Pin owned SSH/backend fixtures, provision verified owned public host keys and
+  exercise real trust, prompts, missing-mux commands and recovery without weakening
+  production policy.
 
 ### Added
 
@@ -25,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Logs exit codes and signal information for better debugging
 
 ### Changed
+
+- **BREAKING CHANGE:** Event-health pings use the application's SSH target and
+  noninteractive trust policy, not local Docker host/context/TLS settings. The
+  ping command, image, tick intervals and error/cancellation policy are unchanged.
+- **BREAKING CHANGE:** The application ignores `SSH_TEST_KEY_PATH`; configure
+  OpenSSH `IdentityFile` or an agent instead. Test-only fixture usage remains.
+- Quote container operands through both remote shell layers and place Docker
+  options before `--`; reject NUL without restricting names or short IDs.
 
 - **BREAKING CHANGE:** Only one `rdhpf run` may publish in the same actual
   `HOME/.rdhpf` directory, even for different SSH targets. Stop all old-version

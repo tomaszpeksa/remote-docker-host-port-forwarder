@@ -75,6 +75,25 @@ Verify:
 rdhpf status --host ssh://user@remote-host
 ```
 
+### Event health probe target
+
+The event watchdog now sends its Docker ping through the configured application
+`--host` and owned SSH control path, with inherited OpenSSH trust and
+`BatchMode=yes`, including missing-mux fallback. Local `DOCKER_HOST`,
+`DOCKER_CONTEXT` and Docker TLS/socket settings no longer select the ping daemon;
+the remote Docker environment is the same one used for discovery and events.
+
+The command remains `docker run --rm --name rdhpf-ping-<unique> --label
+rdhpf.health-check=true alpine:latest echo works`. Ten-second ticks, the
+30-second idle ping threshold, 60-second stale-event threshold, event resets,
+cancellation and ignored ping errors are unchanged. The ping is synchronous and
+can delay ticks; this is not a hard 60-second outage deadline or a redesign of
+watchdog timing/fatal handling.
+
+The application no longer reads `SSH_TEST_KEY_PATH`. Configure authentication
+with OpenSSH `IdentityFile` or an agent; the variable remains optional only for
+test-fixture commands, not shipped application policy.
+
 ### Stopping the tool
 
 Press Ctrl+C to stop gracefully. The tool responds to SIGINT and SIGTERM signals.
@@ -204,6 +223,28 @@ parent remains alive is separate and automatic.
 
 - `0`: normal termination
 - `non-zero`: unrecoverable error reported in logs
+
+### SSH trust and noninteractive authentication
+
+rdhpf inherits OpenSSH's configured user/global known-host sources and host-key
+checking policy. It no longer forces `accept-new` or discards user pins through
+`/dev/null`. With the default `ask` policy, an unknown host fails noninteractively:
+verify and provision its public host key before running rdhpf. If you deliberately
+configure `StrictHostKeyChecking accept-new`, OpenSSH can enroll unknown keys in
+your configured writable known-host file and reuse them on later connections.
+
+Every application SSH launch forces `BatchMode=yes`, including commands that can
+fall back to a fresh connection when a multiplexing socket is missing. Provide a
+usable identity or already-unlocked agent; SSH password, key-passphrase and host-key
+confirmation prompts are disabled. This does not control arbitrary UI or side
+effects of operator-configured external helpers, agents or security-key providers.
+Aliases, configured identities and URL user/port precedence remain unchanged.
+
+Your explicitly weaker checking policy and alternate authorities (global files,
+CAs, DNS verification or KnownHostsCommand) remain meaningful. A user pin is not an
+unconditional veto over every other configured authority. Configure these inputs
+only from sources you trust; the destination option boundary is not a general SSH
+configuration or remote-shell sanitizer.
 
 ### SSH configuration requirements
 

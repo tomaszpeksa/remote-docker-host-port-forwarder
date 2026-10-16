@@ -166,6 +166,15 @@ rdhpf is primarily configured via CLI flags with a small set of optional environ
 - Docker installed on the remote host (for auto-discovery mode)
 
 
+## SSH trust
+
+rdhpf inherits your OpenSSH trust sources and checking policy, and forces
+`BatchMode=yes` on every application SSH launch. The default policy rejects unknown
+hosts without prompting; provision verified host keys and usable keys/agent first.
+Explicit `accept-new` can persist enrollment in your configured known-host file.
+See [SSH trust and authentication](docs/user-guide.md#ssh-trust-and-noninteractive-authentication)
+for alternate authorities, weaker policies and external-helper limits.
+
 ## Why rdhpf?
 
 Many developer tools assume dependencies are reachable on localhost. With a remote DOCKER_HOST, published ports live on the remote machine, not on your local workstation. rdhpf bridges that gap by automatically establishing SSH tunnels for published ports so your normal workflow continues to function without code or compose changes.

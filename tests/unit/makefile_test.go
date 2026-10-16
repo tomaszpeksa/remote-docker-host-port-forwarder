@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,13 +39,29 @@ func TestMakeTestEntrypoints(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "mise"), []byte("#!/bin/sh\n[ \"$1\" = which ] || exit 2\nprintf '%s/%s\\n' \"$MANAGED_TOOLS\" \"$2\"\n"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "jq"), []byte("#!/bin/sh\nexit 0\n"), 0700))
-			for _, name := range []string{"mkdir", "grep", "awk", "date", "dirname", "basename"} {
+			for _, name := range []string{"mkdir", "grep", "awk", "date", "dirname", "basename", "bash", "cat", "mktemp", "rm", "rmdir"} {
 				path, err := exec.LookPath(name)
 				require.NoError(t, err)
 				require.NoError(t, os.Symlink(path, filepath.Join(bin, name)))
 			}
+			if tc.key != "" {
+				launcher, err := os.ReadFile("../../scripts/itest-run.sh")
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(root, "scripts/itest-run.sh"), launcher, 0700))
+				require.NoError(t, os.Mkdir(filepath.Join(root, ".itests"), 0700))
+				require.NoError(t, os.WriteFile(filepath.Join(root, ".itests/owner"), []byte("1-1\n"), 0600))
+				t.Cleanup(func() {
+					b, err := os.ReadFile(filepath.Join(root, ".itests/operation/home"))
+					if err == nil {
+						home := strings.TrimSpace(string(b))
+						require.Regexp(t, `^/tmp/rdhpf-itest\.[[:alnum:]]{8}$`, home)
+						// This inert failing Go stand-in has joined and spawned no publishers.
+						require.NoError(t, os.RemoveAll(home))
+					}
+				})
+			}
 			log := filepath.Join(root, "go.log")
-			body := "#!/bin/sh\nprintf 'HOST=%s\\nKEY=%s\\nHOME=%s\\n' \"$SSH_TEST_HOST\" \"$SSH_TEST_KEY_PATH\" \"$HOME\" >> '" + log + "'\nprintf '%s\\n' \"$@\" >> '" + log + "'\n"
+			body := "#!/bin/sh\nif [ \"$1\" = env ]; then printf '%s\\n' \"$PWD\"; exit 0; fi\nprintf 'HOST=%s\\nKEY=%s\\nHOME=%s\\n' \"$SSH_TEST_HOST\" \"$SSH_TEST_KEY_PATH\" \"$HOME\" >> '" + log + "'\nprintf '%s\\n' \"$@\" >> '" + log + "'\n"
 			if tc.fail {
 				body += "exit 17\n"
 			} else {
@@ -70,7 +87,8 @@ func TestMakeTestEntrypoints(t *testing.T) {
 			require.Contains(t, string(data), tc.wantArg)
 			if tc.key != "" {
 				require.Contains(t, string(data), "KEY="+root+tc.key+"\n")
-				require.Contains(t, string(data), "HOME="+root+"/.itests/home\n")
+				require.Regexp(t, `HOME=/tmp/rdhpf-itest\.[[:alnum:]]{8}\n`, string(data))
+				require.FileExists(t, filepath.Join(root, ".itests/operation/home"), "failed invocation retains uncertain state")
 			}
 			require.Contains(t, string(data), "-count=1\n", "uncached test execution")
 			if !tc.fail {

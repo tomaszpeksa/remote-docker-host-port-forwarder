@@ -54,13 +54,18 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 		return nil, fmt.Errorf("failed to parse SSH host: %w", err)
 	}
 
-	// Build the docker command as a single quoted string to protect {{json ...}} from shell expansion
-	dockerCmd := fmt.Sprintf("docker inspect %s --format '{{json .HostConfig.PortBindings}}'", containerID)
-
-	// Build SSH command that executes docker via sh -c
-	// Important: sh -c and the docker command must be passed as a single argument to SSH
-	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	operand, err := ssh.QuoteShellArg(containerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid container operand: %w", err)
+	}
+	dockerCmd := "docker inspect --format '{{json .HostConfig.PortBindings}}' -- " + operand
+	// OpenSSH's login shell and the explicit sh -c are separate parse layers.
+	quoted, err := ssh.QuoteShellArg(dockerCmd)
+	if err != nil {
+		return nil, err
+	}
+	remoteCmd := "sh -c " + quoted
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -141,10 +146,17 @@ func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, container
 		return nil, fmt.Errorf("failed to parse SSH host: %w", err)
 	}
 
-	// Get container labels
-	dockerCmd := fmt.Sprintf("docker inspect %s --format '{{json .Config.Labels}}'", containerID)
-	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-S", controlPath}
+	operand, err := ssh.QuoteShellArg(containerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid container operand: %w", err)
+	}
+	dockerCmd := "docker inspect --format '{{json .Config.Labels}}' -- " + operand
+	quoted, err := ssh.QuoteShellArg(dockerCmd)
+	if err != nil {
+		return nil, err
+	}
+	remoteCmd := "sh -c " + quoted
+	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

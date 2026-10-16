@@ -122,11 +122,11 @@ func validateInventory(c inventoryCandidate) error {
 	if bytes > 16<<20 {
 		return fmt.Errorf("inventory candidate limit exceeded")
 	}
-	observed := make(map[string]bool, len(c.observed))
 	ports := 0
 	if len(c.observed) > len(c.listed) {
 		return fmt.Errorf("invalid inventory observation subset")
 	}
+	observed := make(map[string]bool, len(c.observed))
 	for _, cp := range c.observed {
 		if !present[cp.ContainerID] || observed[cp.ContainerID] {
 			return fmt.Errorf("invalid inventory observation subset")
@@ -155,6 +155,9 @@ func (m *Manager) commitInventory(c inventoryCandidate) (bool, bool, error) {
 		return false, false, nil
 	}
 	changed := m.state.MergeInventory(c.listed, c.observed)
+	if changed {
+		m.requestReconcile()
+	}
 	return true, changed, nil
 }
 
@@ -208,10 +211,7 @@ func (m *Manager) runDiscovery(ctx context.Context) {
 			}
 			d.mu.Unlock()
 			if changed {
-				select {
-				case d.reconcileWake <- struct{}{}:
-				default:
-				}
+				m.wakeReconciliation()
 			}
 			continue
 		}
@@ -322,5 +322,51 @@ func (m *Manager) setEventDesired(ctx context.Context, generation uint64, id str
 		return fmt.Errorf("retired event generation")
 	}
 	m.state.SetDesired(id, ports)
+	m.requestReconcile()
 	return nil
+}
+
+// requestReconcile records desired mutation while discovery.mu is held. Waking
+// is separate so event batching can coalesce work without owning its lifetime.
+func (m *Manager) requestReconcile() { m.discovery.request++ }
+
+func (m *Manager) hasUnapplied() bool {
+	m.discovery.mu.Lock()
+	defer m.discovery.mu.Unlock()
+	return m.discovery.request > m.discovery.attempted
+}
+
+func (m *Manager) wakeReconciliation() {
+	select {
+	case m.discovery.reconcileWake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) runReconciliation(ctx context.Context) {
+	var retry <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.sshMaster.Changes(): // Proven retirement is independent of desired changes.
+		case <-m.discovery.reconcileWake:
+			if !m.hasUnapplied() {
+				continue
+			}
+		case <-retry:
+			retry = nil
+			if !m.hasUnapplied() {
+				continue
+			}
+		}
+		if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
+			m.logger.Warn("reconciliation unavailable or failed", "error", err)
+		}
+		if m.hasUnapplied() {
+			retry = m.discovery.after(time.Second)
+		} else {
+			retry = nil
+		}
+	}
 }

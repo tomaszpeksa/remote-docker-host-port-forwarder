@@ -312,23 +312,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 	// Changes are nonblocking wakeups, not state-bearing callbacks. Every
 	// reconciliation, including this worker, uses the Master's lifecycle gate.
 	recoveryDone := make(chan struct{})
-	go func() {
-		defer close(recoveryDone)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-m.discovery.reconcileWake:
-				if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
-					m.logger.Warn("inventory reconciliation failed", "error", err)
-				}
-			case <-m.sshMaster.Changes():
-				if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
-					m.logger.Warn("reconciliation after SSH change failed", "error", err)
-				}
-			}
-		}
-	}()
+	go func() { defer close(recoveryDone); m.runReconciliation(ctx) }()
 	discoveryDone := make(chan struct{})
 	go func() { defer close(discoveryDone); m.runDiscovery(ctx) }()
 	m.stopRecovery = func() {
@@ -583,6 +567,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
+			m.wakeReconciliation()
 			return result.Err == nil || result.Canceled
 		}
 		select {
@@ -662,10 +647,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 				m.logger.Info("debounce timer fired, reconciling",
 					"batched_events", eventCount)
 
-				if err := m.triggerReconcile(ctx); err != nil {
-					m.logger.Error("debounced reconciliation failed",
-						"error", err.Error())
-				}
+				m.wakeReconciliation()
 
 				eventCount = 0
 				debounceTimer = nil
@@ -766,6 +748,17 @@ func (m *Manager) reconcileConnection(ctx context.Context, generation uint64, re
 	if !ready {
 		return fmt.Errorf("SSH connection unavailable")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.discovery.mu.Lock()
+	captured := m.discovery.request
+	m.discovery.mu.Unlock()
+	defer func() {
+		m.discovery.mu.Lock()
+		m.discovery.attempted = max(m.discovery.attempted, captured)
+		m.discovery.mu.Unlock()
+	}()
 	return m.reconcileLocked(ctx)
 }
 

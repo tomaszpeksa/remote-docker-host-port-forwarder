@@ -123,6 +123,7 @@ func (w *eventWatchdog) Tick(ctx context.Context) error {
 
 // Manager orchestrates Docker event handling and port forward reconciliation.
 type Manager struct {
+	discovery   discoveryState
 	cfg         *config.Config
 	eventReader *docker.EventReader
 	reconciler  *reconcile.Reconciler
@@ -249,7 +250,7 @@ func NewManager(
 	dockerPing := newRemoteDockerPingRunner(cfg.Host, sshMaster.ControlPath(), logger)
 	startedAt := time.Now()
 
-	return &Manager{
+	m := &Manager{
 		cfg:         cfg,
 		eventReader: eventReader,
 		reconciler:  reconciler,
@@ -263,14 +264,16 @@ func NewManager(
 		history:   history,
 		startedAt: startedAt,
 	}
+	m.initDiscovery()
+	return m
 }
 
 // Run starts the manager's main event loop.
 //
 // It performs these operations:
 //
-//  1. Performs startup reconciliation (syncs with currently running containers)
-//  2. Subscribes to Docker events
+//  1. Starts independent startup/audit inventory and reconciliation workers
+//  2. Subscribes to Docker events with joined, generation-fenced delivery
 //  3. Handles start/die/stop events as they arrive
 //  4. Automatically restarts event stream on failures with exponential backoff
 //  5. Continues until context is canceled
@@ -302,6 +305,9 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		m.logger.Info("socket server started")
 	}
 	defer m.startPublishers(ctx)()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Changes are nonblocking wakeups, not state-bearing callbacks. Every
 	// reconciliation, including this worker, uses the Master's lifecycle gate.
@@ -312,6 +318,10 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			select {
 			case <-ctx.Done():
 				return
+			case <-m.discovery.reconcileWake:
+				if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
+					m.logger.Warn("inventory reconciliation failed", "error", err)
+				}
 			case <-m.sshMaster.Changes():
 				if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
 					m.logger.Warn("reconciliation after SSH change failed", "error", err)
@@ -319,11 +329,14 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			}
 		}
 	}()
+	discoveryDone := make(chan struct{})
+	go func() { defer close(discoveryDone); m.runDiscovery(ctx) }()
 	m.stopRecovery = func() {
 		m.stopping.Store(true)
 		cancel()
 		m.sshMaster.StopHealthMonitor()
 		<-recoveryDone
+		<-discoveryDone
 	}
 	defer m.stopRecovery()
 
@@ -343,11 +356,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		"tick_interval", "10s",
 		"idle_threshold", "30s",
 		"fatal_after", "60s")
-
-	// Perform startup reconciliation
-	if err := m.reconcileStartup(ctx); err != nil {
-		return fmt.Errorf("startup reconciliation failed: %w", err)
-	}
 
 	// Event stream restart logic with exponential backoff
 	// Spec: 1s, 2s, 4s, 8s, max 30s; max 10 consecutive failures
@@ -441,15 +449,10 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			"max_attempts", maxConsecutiveFailures,
 			"timestamp", streamStartTime.Format(time.RFC3339))
 
-		events := make(chan docker.Event, 10)
-		terminal := m.eventReader.Stream(ctx, func(ctx context.Context, event docker.Event) error {
-			select {
-			case events <- event:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})
+		m.discovery.mu.Lock()
+		generation := m.discovery.generation
+		m.discovery.mu.Unlock()
+		terminal := m.discovery.openStream(ctx, func(ctx context.Context, event docker.Event) error { return m.deliverEvent(ctx, generation, event) })
 
 		if consecutiveFailures > 0 {
 			m.logger.Warn("event stream restarted",
@@ -460,7 +463,10 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		}
 
 		// Run event loop until stream closes or errors
-		streamClosed := m.runEventLoop(ctx, events, terminal)
+		streamClosed := m.runEventLoop(ctx, terminal, generation)
+		if err := m.finishStream(generation); err != nil {
+			return err
+		}
 		streamDuration := time.Since(streamStartTime)
 
 		// DIAGNOSTIC: Log stream end with timing
@@ -512,13 +518,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			// Wait before retry
 			select {
 			case <-time.After(delay):
-				// After restart, trigger reconciliation to ensure state is correct
-				if err := m.triggerReconcile(ctx); err != nil {
-					m.logger.Warn("reconciliation after stream restart failed",
-						"error", err.Error())
-				} else {
-					m.logger.Info("reconciliation after stream restart completed")
-				}
+				m.markRepair()
 			case <-ctx.Done():
 				return nil
 			}
@@ -563,7 +563,8 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, fatalCh chan<- err
 // events together and reconciles 200ms after the last event received.
 //
 // Returns true if stream closed cleanly, false otherwise
-func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, terminal <-chan docker.StreamResult) bool {
+func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.StreamResult, generation uint64) bool {
+	events := m.discovery.events
 	// Debouncing timer - reconcile 200ms after last event
 	var debounceTimer *time.Timer
 	var eventCount int
@@ -589,6 +590,9 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 			if terminal != nil {
 				<-terminal
 			}
+			for len(events) > 0 {
+				m.retireEvent((<-events).token)
+			}
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
@@ -601,7 +605,8 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 				m.logger.Error("event stream error", "error", completed.Err)
 			}
 
-		case event, ok := <-events:
+		case accepted, ok := <-events:
+			event := accepted.event
 			if !ok {
 				// Event channel closed, stream ended
 				m.logger.Info("event channel closed")
@@ -614,7 +619,7 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 			// Handle event based on type
 			switch event.Type {
 			case "start":
-				if err := m.handleStartEvent(ctx, event); err != nil {
+				if err := m.handleStartEvent(ctx, event, generation); err != nil {
 					m.logger.Error("failed to handle start event",
 						"containerID", event.ContainerID[:12],
 						"error", err.Error())
@@ -626,7 +631,7 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 				}
 
 			case "die", "stop":
-				if err := m.handleStopEvent(ctx, event); err != nil {
+				if err := m.handleStopEvent(ctx, event, generation); err != nil {
 					m.logger.Error("failed to handle stop event",
 						"containerID", event.ContainerID[:12],
 						"error", err.Error())
@@ -642,6 +647,8 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 					"type", event.Type,
 					"containerID", event.ContainerID[:12])
 			}
+
+			m.retireEvent(accepted.token)
 
 		case <-func() <-chan time.Time {
 			if debounceTimer != nil {
@@ -673,7 +680,7 @@ func (m *Manager) runEventLoop(ctx context.Context, events <-chan docker.Event, 
 //  1. Inspect the container to get its published ports
 //  2. Update desired state with the ports
 //  3. Trigger debounced reconciliation
-func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event) error {
+func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event, generation uint64) error {
 	startTime := time.Now()
 	defer func() {
 		duration := time.Since(startTime)
@@ -696,6 +703,7 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event) erro
 	m.metrics.recordSSHCommand(time.Since(cmdStart))
 
 	if err != nil {
+		m.markRepair()
 		return fmt.Errorf("failed to inspect container ports: %w", err)
 	}
 
@@ -704,7 +712,9 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event) erro
 		"ports", ports)
 
 	// Update desired state
-	m.state.SetDesired(event.ContainerID, ports)
+	if err := m.setEventDesired(ctx, generation, event.ContainerID, ports); err != nil {
+		return err
+	}
 
 	// Note: We don't reconcile immediately anymore
 	// The runEventLoop handles debounced reconciliation
@@ -717,12 +727,14 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event) erro
 // Steps:
 //  1. Clear desired state for the container (set to empty ports)
 //  2. Trigger debounced reconciliation
-func (m *Manager) handleStopEvent(ctx context.Context, event docker.Event) error {
+func (m *Manager) handleStopEvent(ctx context.Context, event docker.Event, generation uint64) error {
 	m.logger.Info("handling container stop",
 		"containerID", event.ContainerID[:12])
 
 	// Clear desired state (empty ports = no forwards wanted)
-	m.state.SetDesired(event.ContainerID, []int{})
+	if err := m.setEventDesired(ctx, generation, event.ContainerID, []int{}); err != nil {
+		return err
+	}
 
 	// Note: We don't reconcile immediately anymore
 	// The runEventLoop handles debounced reconciliation
@@ -842,7 +854,7 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 	}
 }
 
-// reconcileStartup synchronizes with currently running containers on startup.
+// listRunning captures a complete running-container list without changing State.
 //
 // This ensures that if the tool is started while containers are already running,
 // it will establish forwards for them.
@@ -919,56 +931,6 @@ func (m *Manager) listRunning(ctx context.Context) ([]string, error) {
 
 	sort.Strings(containerIDs)
 	return containerIDs, nil
-}
-
-func (m *Manager) reconcileStartup(ctx context.Context) error {
-	containerIDs, err := m.listRunning(ctx)
-	if err != nil {
-		return err
-	}
-	controlPath := m.sshMaster.ControlPath()
-	// Inspect each container and update desired state
-	for _, containerID := range containerIDs {
-		// Check if container has test-infrastructure label (skip it)
-		infrastructure, labelErr := m.hasTestInfrastructureLabel(ctx, controlPath, containerID)
-		if labelErr != nil {
-			continue
-		}
-		if infrastructure {
-			m.logger.Debug("skipping test infrastructure container",
-				"containerID", containerID[:12])
-			continue
-		}
-
-		ports, err := docker.InspectPorts(ctx, m.cfg.Host, controlPath, containerID)
-		if err != nil {
-			m.logger.Warn("failed to inspect container during startup",
-				"containerID", containerID[:12],
-				"error", err.Error())
-			continue
-		}
-
-		if len(ports) > 0 {
-			m.logger.Info("startup: adding container to desired state",
-				"containerID", containerID[:12],
-				"ports", ports)
-			m.state.SetDesired(containerID, ports)
-		}
-	}
-
-	// Reconcile to establish forwards
-	// Note: Errors during startup reconciliation are expected (port conflicts, etc.)
-	// and should not be fatal. We log them but continue operation.
-	if err := m.triggerReconcile(ctx); err != nil {
-		m.logger.Warn("startup reconciliation encountered errors (this is normal for port conflicts)",
-			"error", err.Error())
-		// Don't return error - port conflicts are expected and non-fatal
-	}
-
-	m.logger.Info("startup reconciliation complete",
-		"containers", len(containerIDs))
-
-	return nil
 }
 
 // hasTestInfrastructureLabel checks if a container has the rdhpf.test-infrastructure label

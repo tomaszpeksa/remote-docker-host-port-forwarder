@@ -60,7 +60,7 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 					// Independently observe full inventory identity, then exercise startup.
 					psID := f.Docker("ps", "--no-trunc", "--filter", "id="+id, "--format", "{{.ID}}")
 					require.Equal(t, id, psID)
-					err = m.reconcileStartup(ctx)
+					err = startupInventoryForTest(m, ctx)
 					if success {
 						require.NoError(t, err)
 						require.Contains(t, st.GetDesired(), state.ContainerPorts{ContainerID: psID, Ports: []int{18083}})

@@ -20,7 +20,7 @@ func TestDiscoveryObservationEventInspectionDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	started := time.Now()
-	err := m.handleStartEvent(ctx, docker.Event{Type: "start", ContainerID: identityContainerID})
+	err := m.handleStartEvent(ctx, docker.Event{Type: "start", ContainerID: identityContainerID}, 0)
 	require.Less(t, time.Since(started), 6*time.Second, "EVENT_INSPECTION_HAS_OWN_BUDGET")
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.NoError(t, ctx.Err(), "caller safety deadline must not release production")
@@ -57,4 +57,15 @@ func TestDiscoveryObservationList(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Existing command/identity tests exercise the worker's production pass/merge,
+// without manufacturing inventory data or claiming native Manager.Run proof.
+func startupInventoryForTest(m *Manager, ctx context.Context) error {
+	candidate := m.inventoryPass(ctx, inventoryFence{}, "")
+	if candidate.problem != nil {
+		return candidate.problem
+	}
+	_, _, err := m.commitInventory(candidate)
+	return err
 }

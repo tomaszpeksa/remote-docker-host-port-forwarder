@@ -491,23 +491,23 @@ services:
 ### Q: What happens if my SSH connection drops?
 
 **A:** rdhpf automatically:
-1. Detects the failure (health check every 30s)
-2. Attempts to reconnect (with exponential backoff)
+1. Checks the connection every 15 seconds
+2. Attempts replacement on failure, subject to the circuit breaker's cooldown
 3. Re-establishes all forwards after reconnection
 4. Logs the recovery process
 
 ### Q: Can I forward ports from containers on different Docker hosts?
 
-**A:** You'll need separate rdhpf instances:
-```bash
-# Terminal 1: Forward from host1
-rdhpf run --host ssh://user@host1
+**A:** Only one `rdhpf run` may publish in the same actual `HOME/.rdhpf`
+directory at a time, even for different SSH targets. To change targets, stop the
+current run gracefully and wait for its shutdown to complete before starting the
+next one. Before upgrading, also stop old-version publishers using that directory:
+they do not honor the admission lock. Do not delete or replace `owner.lock` to
+bypass this restriction.
 
-# Terminal 2: Forward from host2 (will fail if ports conflict)
-rdhpf run --host ssh://user@host2
-```
-
-But be careful about port conflicts!
+This is normally one publisher per local user, not a machine-wide cross-user
+lock. See [one active publisher per status directory](user-guide.md#one-active-publisher-per-status-directory)
+for the supported ownership and migration boundaries.
 
 ---
 

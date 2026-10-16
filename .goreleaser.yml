@@ -66,21 +66,21 @@ release:
   name_template: "{{.Tag}}"
   header: |
     ## Remote Docker Host Port Forwarder {{.Tag}}
-    
+
     This release includes binaries for multiple platforms.
   footer: |
     ## Installation
-    
+
     Download the appropriate binary for your platform, extract it, and move it to a directory in your PATH.
-    
+
     ```bash
     # Linux/macOS
     tar xzf rdhpf_*.tar.gz
     sudo mv rdhpf /usr/local/bin/
     ```
-    
+
     ## Checksums
-    
+
     Verify your download with:
     ```bash
     sha256sum -c checksums.txt

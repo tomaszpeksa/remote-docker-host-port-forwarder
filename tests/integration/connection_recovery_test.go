@@ -1,66 +1,174 @@
 package integration
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
 
-// TestConnectionLossRecovery verifies the tool can auto-recover from SSH connection loss.
-//
-// Test scenario:
-// 1. Start tool and establish forwards for running containers
-// 2. Simulate SSH connection drop (kill ControlMaster process)
-// 3. Tool detects failure via health check
-// 4. Tool automatically attempts recovery
-// 5. Forwards are restored after reconnection
-// 6. Verify no container tracking data was lost
-//
-// This test requires:
-// - Real SSH infrastructure (skip if not available)
-// - Ability to kill processes
-// - Docker daemon running
+// TestConnectionLossRecovery restores actual application traffic after two
+// distinct owned mux losses. It never requests recovery or edits actual state.
 func TestConnectionLossRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
+	runTwoLossRecovery(t, func(ctx context.Context, m *ssh.Master, host string) (uint64, int, error) {
+		return recoveryMux(ctx, m, host, true)
+	})
+}
+
+func runTwoLossRecovery(t *testing.T, forceLoss func(context.Context, *ssh.Master, string) (uint64, int, error)) {
+	t.Helper()
+	if os.Getenv("RDHPF_HOSTED_RECOVERY") != "1" {
+		t.Skip("hosted-only disruptive recovery: not selected by the owned Actions harness")
 	}
-
-	// Check for SSH infrastructure
-	sshHost := getTestSSHHost(t)
-	if sshHost == "" {
-		t.Skip("TEST_SSH_HOST not set, skipping SSH integration test")
+	require.False(t, testing.Short(), "selected hosted recovery must execute fully")
+	require.Equal(t, "true", os.Getenv("GITHUB_ACTIONS"), "selected recovery requires the owned Actions harness")
+	require.NotEmpty(t, os.Getenv("SSH_TEST_HOST"), "selected recovery requires its configured harness")
+	host, token := recoveryAlias(t, getTestSSHHost(t))
+	owner := admitPublisher(t, host)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	ports := []int{18181, 18182}
+	contents := make(map[int]string)
+	ownedIDs := make([]string, 0, 2)
+	for i, port := range ports {
+		id, content := recoveryBackend(t, ctx, host, token, i, port)
+		ownedIDs = append(ownedIDs, id)
+		contents[port] = content
 	}
-
-	t.Log("This test will be fully implemented after health monitoring is added (T061)")
-	t.Skip("Health monitoring and auto-recovery not yet implemented")
-
-	// Expected implementation:
-	//
-	// 1. Create and open SSH master
-	// sshMaster, err := ssh.NewMaster(sshHost, logger)
-	// assert.NoError(t, err)
-	// err = sshMaster.Open(ctx)
-	// assert.NoError(t, err)
-	//
-	// 2. Start health monitor
-	// healthCtx, healthCancel := context.WithCancel(ctx)
-	// defer healthCancel()
-	// go sshMaster.StartHealthMonitor(healthCtx, 1*time.Second)
-	//
-	// 3. Create some forwards
-	// ... establish forwards for test containers ...
-	//
-	// 4. Kill the SSH master process
-	// pid := sshMaster.GetPID()
-	// syscall.Kill(pid, syscall.SIGKILL)
-	//
-	// 5. Wait for health monitor to detect and recover
-	// time.Sleep(3 * time.Second)
-	//
-	// 6. Verify connection is restored
-	// err = sshMaster.Check()
-	// assert.NoError(t, err, "SSH should be recovered")
-	//
-	// 7. Verify forwards still work
-	// ... test port connectivity ...
+	var checks atomic.Uint64
+	observer := recoveryObserver{Handler: slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}), checks: &checks, stream: make(chan struct{}), once: &sync.Once{}}
+	logger := slog.New(observer)
+	master, err := newOwnedMaster(t, host, logger)
+	require.NoError(t, err)
+	_, err = os.Lstat(master.ControlPath())
+	require.True(t, os.IsNotExist(err), "test mux endpoint must be unused")
+	t.Cleanup(func() { require.NoError(t, master.Close()) })
+	require.NoError(t, master.Open(ctx)) // exercises authenticated kernel/mux association
+	st, history := state.NewState(), state.NewHistory()
+	mgr := manager.NewManager(&config.Config{Host: host}, docker.NewEventReader(host, master.ControlPath(), logger), reconcile.NewReconciler(st, history, logger), master, st, history, logger)
+	managerCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var runErr error
+	go func() { runErr = mgr.Run(managerCtx, owner); close(done) }()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-done:
+			require.NoError(t, runErr)
+		case <-time.After(15 * time.Second):
+			t.Error("owned Manager did not finish cleanup")
+		}
+	})
+	select {
+	case <-observer.stream:
+	case <-done:
+		t.Fatalf("Manager exited: %v", runErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	transport := &http.Transport{DisableKeepAlives: true}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	t.Cleanup(transport.CloseIdleConnections)
+	assertHTTP := func() {
+		bounded, finish := context.WithTimeout(ctx, 60*time.Second)
+		defer finish()
+		recoveryAwait(t, bounded, done, "HTTP content on every desired port", func() error {
+			for _, port := range ports {
+				if err := recoveryHTTP(client, port, contents[port]); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		for _, port := range ports {
+			require.NoError(t, recoveryHTTP(client, port, contents[port]))
+			t.Logf("fresh HTTP200 content verified port=%d body=%q", port, contents[port])
+		}
+	}
+	assertHTTP()
+	// Startup inventory currently uses short IDs; preserve that contract, not
+	// the deferred canonical-ID/resync policy. Each requested owner must be ours.
+	desired := st.GetDesired()
+	require.Len(t, desired, 2)
+	for _, entry := range desired {
+		found := false
+		for _, id := range ownedIDs {
+			if strings.HasPrefix(id, entry.ContainerID) {
+				found = true
+			}
+		}
+		require.True(t, found, "desired owner must be one of the two owned backends")
+	}
+	created := make(map[int]time.Time)
+	for _, forward := range st.GetActual() {
+		created[forward.Port] = forward.CreatedAt
+	}
+	require.Len(t, created, 2)
+	generation, pid, err := recoveryMux(ctx, master, host, false)
+	require.NoError(t, err)
+	t.Logf("owned association ready host=%s path=%s generation=%d pid=%d", host, master.ControlPath(), generation, pid)
+	waitMonitor := func() {
+		previous := checks.Load()
+		bounded, finish := context.WithTimeout(ctx, 25*time.Second)
+		defer finish()
+		recoveryAwait(t, bounded, done, "continued automatic monitor check", func() error {
+			if checks.Load() <= previous {
+				return fmt.Errorf("no new health check after %d", previous)
+			}
+			return nil
+		})
+		t.Logf("automatic monitor continued checks=%d", checks.Load())
+	}
+	for loss := 1; loss <= 2; loss++ {
+		lostGeneration, lostPID, err := forceLoss(ctx, master, host)
+		require.NoError(t, err)
+		require.Equal(t, generation, lostGeneration)
+		require.Equal(t, pid, lostPID)
+		t.Logf("forced owned loss=%d acknowledged under gate path=%s generation=%d pid=%d", loss, master.ControlPath(), lostGeneration, lostPID)
+		recovered, finish := context.WithTimeout(ctx, 60*time.Second)
+		recoveryAwait(t, recovered, done, "distinct automatically recovered master", func() error {
+			generation, pid, err = recoveryMux(recovered, master, host, false)
+			if err != nil {
+				return err
+			}
+			if generation <= lostGeneration || pid == lostPID {
+				return fmt.Errorf("old master still observed: generation=%d pid=%d", generation, pid)
+			}
+			return nil
+		})
+		finish()
+		assertHTTP()
+		// Pings may add unrelated empty desired entries; the two original desired
+		// container endpoints must remain unchanged throughout recovery.
+		current := st.GetDesired()
+		for _, original := range desired {
+			require.Contains(t, current, original)
+		}
+		for _, forward := range st.GetActual() {
+			if before, ok := created[forward.Port]; ok {
+				require.Equal(t, before, forward.CreatedAt)
+			}
+		}
+		require.Empty(t, history.GetAll(), "reconnect must not create stop history")
+		waitMonitor()
+	}
+	waitMonitor() // another full production health interval after the second loss
+	assertHTTP()
+	t.Log("TWO_LOSS_HTTP_RECOVERY_PROVED: both ports, distinct masters, desired continuity and monitoring")
 }
 
 // TestHealthMonitorPeriodic verifies health checks run at the configured interval

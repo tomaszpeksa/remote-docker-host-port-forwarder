@@ -77,9 +77,16 @@ Press Ctrl+C to stop gracefully. The tool responds to SIGINT and SIGTERM signals
 kill <rdhpf_pid>
 ```
 
-Shutdown completes within 2 seconds, releasing all ports and cleaning up SSH connections. Containers continue running (rdhpf never affects container lifecycle).
+Shutdown stops automatic recovery and retires the owned SSH child before releasing
+publisher ownership. Individual checks and termination attempts have time limits,
+but shutdown has **no total deadline** and is not guaranteed to finish within two
+seconds. If child retirement cannot be proved, rdhpf retains the admission lock
+and retries cleanup; see [shutdown awaiting owned-child retirement](troubleshooting.md#shutdown-awaiting-owned-child-retirement).
+Containers continue running (rdhpf never affects container lifecycle).
 
-**Important:** Do NOT use `kill -9` as it bypasses cleanup.
+**Important:** Do NOT use `kill -9` as a cleanup shortcut. It bypasses cleanup and
+may leave the SSH child, its forwards and its private directory behind. A new
+instance does not adopt or sweep those resources.
 
 ### Configuration basics
 
@@ -102,7 +109,7 @@ Shutdown completes within 2 seconds, releasing all ports and cleaning up SSH con
 
 ### SSH ControlMaster multiplexing
 
-- A single persistent SSH master session is created (`ControlMaster=auto`, `ControlPersist`)
+- A foreground SSH child is directly owned (`ControlMaster=yes`, `ForkAfterAuthentication=no`, `ControlPersist=no`)
 - Keep-alives maintain connectivity; health monitor recreates session on failure
 
 ### State and reconciliation
@@ -146,15 +153,28 @@ rdhpf run --host ssh://db.example.com
 psql -h 127.0.0.1 -p 5432 -U myuser mydb
 ```
 
-### Multiple simultaneous projects
+### One active publisher per status directory
 
-Run separate rdhpf instances for different hosts. Avoid port conflicts by ensuring containers on different hosts use different ports:
-```bash
-# Terminal A
-rdhpf run --host ssh://user@host1
-# Terminal B
-rdhpf run --host ssh://user@host2
-```
+**Breaking change for concurrent runs:** Only one `rdhpf run` may use the same
+actual `HOME/.rdhpf` directory at a time, even for different SSH targets. A duplicate
+fails before SSH startup or status changes. Directory aliases share admission. This is normally one instance per
+local user, not machine-wide cross-user exclusion. Distinct directories do not
+share admission, but their local forwarding ports can still conflict.
+
+The persistent `HOME/.rdhpf/owner.lock` must not be deleted or replaced. Ownership
+requires local Linux/macOS storage; network/shared/FUSE filesystems are outside
+this contract. **Before upgrading, stop all old-version publishers using that
+directory and wait for their shutdown to complete**: they do not honor the lock
+and cannot be fenced by the new version. Status filenames, target selection and
+output schemas are unchanged.
+
+SSH uses a short private directory per Master, with one stable socket path across
+connection recovery. Other instances and cleanup tools must leave active
+namespaces (including ancestor paths and lock files) alone. Permissions and
+random names do not protect against malicious same-UID namespace replacement.
+Normal cleanup removes the owned SSH directory; forced parent termination may
+leave it and an SSH child behind. Recovery from an SSH-child crash while the
+parent remains alive is separate and automatic.
 
 ## Configuration Reference
 

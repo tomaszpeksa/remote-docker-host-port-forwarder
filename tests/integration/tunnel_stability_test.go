@@ -74,7 +74,7 @@ func TestManager_LongRunningTunnelStability(t *testing.T) {
 	// ===== STEP 4: Get Initial SSH Master PID =====
 	t.Log("Step 4: Recording initial SSH ControlMaster PID...")
 
-	initialPID := getSSHMasterPID(t, sshHost)
+	initialPID := getSSHMasterPID(t, sshHost, mgr.master.ControlPath())
 	require.NotEqual(t, -1, initialPID, "Should detect SSH ControlMaster PID")
 	t.Logf("  Initial SSH ControlMaster PID: %d", initialPID)
 
@@ -141,7 +141,7 @@ testLoop:
 			}
 
 			// Check SSH ControlMaster PID once per tick (not per port)
-			currentPID := getSSHMasterPID(t, sshHost)
+			currentPID := getSSHMasterPID(t, sshHost, mgr.master.ControlPath())
 			if currentPID != initialPID && currentPID != -1 {
 				reconnection := ReconnectionEvent{
 					Time:        time.Now(),
@@ -304,7 +304,7 @@ func TestManager_TunnelStabilityUnderLoad(t *testing.T) {
 	// ===== STEP 4: Get Initial SSH Master PID =====
 	t.Log("Step 4: Recording initial SSH ControlMaster PID...")
 
-	initialPID := getSSHMasterPID(t, sshHost)
+	initialPID := getSSHMasterPID(t, sshHost, mgr.master.ControlPath())
 	require.NotEqual(t, -1, initialPID, "Should detect SSH ControlMaster PID")
 	t.Logf("  Initial SSH ControlMaster PID: %d", initialPID)
 
@@ -331,7 +331,7 @@ func TestManager_TunnelStabilityUnderLoad(t *testing.T) {
 	}()
 
 	// Monitor SSH PID during load
-	pidChanges := monitorSSHPIDChanges(t, sshHost, initialPID, loadTestDuration)
+	pidChanges := monitorSSHPIDChanges(t, sshHost, mgr.master.ControlPath(), initialPID, loadTestDuration)
 
 	// Wait for load generation to complete
 	loadStats := <-loadDone

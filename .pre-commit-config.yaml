@@ -23,6 +23,10 @@ repos:
       - id: go-fmt
         args: [-s]
       - id: go-vet
+        entry: go vet
+        language: system
+        args: [./...]
+        pass_filenames: false
       - id: go-mod-tidy
 
   - repo: local
@@ -44,16 +48,17 @@ repos:
         verbose: true
 
   - repo: https://github.com/golangci/golangci-lint
-    rev: v1.55.2
+    rev: v1.62.2
     hooks:
       - id: golangci-lint
         args: [--timeout=5m]
 
-  - repo: https://github.com/markdownlint/markdownlint
-    rev: v0.12.0
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.12.1
     hooks:
-      - id: markdownlint
-        args: [--git-recurse, --config, .markdownlint.yml]
+      - id: markdownlint-cli2
+        files: \.(md|mdown|markdown)$
+        pass_filenames: true
 
 # Global settings
 default_install_hook_types: [pre-commit, pre-push]

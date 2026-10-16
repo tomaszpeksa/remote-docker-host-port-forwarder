@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/instancepath"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
@@ -39,10 +41,10 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "rdhpf",
 	Short: "Remote Docker Host Port Forwarder",
-	Long: `rdhpf automatically forwards published container ports from a remote Docker host 
+	Long: `rdhpf automatically forwards published container ports from a remote Docker host
 to your local machine via SSH.
 
-When a container starts with published ports, rdhpf detects it and establishes 
+When a container starts with published ports, rdhpf detects it and establishes
 SSH port forwards so you can access the services on localhost.`,
 	SilenceUsage: true,
 }
@@ -68,7 +70,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show status of active port forwards",
 	Long: `Display the current status of all active port forwards.
-	
+
 This command queries the SSH ControlMaster to determine which forwards
 are currently active and displays them in the requested format.`,
 	RunE: runStatus,
@@ -167,7 +169,38 @@ func runMain(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// Keep the owning run frame (and its admission defer) alive until the retained
+// child's completion is proved. This is not a background supervisor or deadline.
+func closeSSHMaster(closeMaster func() error, logger *slog.Logger) {
+	warned := false
+	for {
+		err := closeMaster()
+		if !errors.Is(err, ssh.ErrRetirementUncertain) {
+			if err != nil {
+				logger.Warn("failed to close SSH master", "error", err)
+			}
+			return
+		}
+		if !warned {
+			logger.Warn("waiting for owned SSH retirement; retaining publisher ownership", "error", err)
+			warned = true
+		}
+		// Close already uses bounded retirement waits. Avoid spinning if Wait
+		// returned without proof; cancellation must not abandon this obligation.
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	owner, err := instancepath.Acquire(cfg.Host)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := owner.Close(); err != nil {
+			logger.Warn("publisher ownership close failed", "error", err)
+		}
+	}()
 	// 1. Create SSH Master
 	logger.Info("establishing SSH ControlMaster connection")
 	sshMaster, err := ssh.NewMaster(cfg.Host, logger)
@@ -175,23 +208,19 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("failed to create SSH master: %w", err)
 	}
 
+	// Own cleanup before startup can create a child, including failed Open.
+	defer func() {
+		logger.Info("closing SSH ControlMaster connection")
+		closeSSHMaster(sshMaster.Close, logger)
+	}()
 	if err := sshMaster.Open(ctx); err != nil {
 		return fmt.Errorf("failed to open SSH master: %w", err)
 	}
-	defer func() {
-		logger.Info("closing SSH ControlMaster connection")
-		if err := sshMaster.Close(); err != nil {
-			logger.Warn("failed to close SSH master", "error", err.Error())
-		}
-	}()
 
 	logger.Info("SSH ControlMaster established")
 
-	// 2. Derive control path for other operations
-	controlPath, err := ssh.DeriveControlPath(cfg.Host)
-	if err != nil {
-		return fmt.Errorf("failed to derive control path: %w", err)
-	}
+	// 2. Every operation uses this Master's stable private endpoint.
+	controlPath := sshMaster.ControlPath()
 
 	// 3. Create Docker event reader
 	eventReader := docker.NewEventReader(cfg.Host, controlPath, logger)
@@ -216,7 +245,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	// 7. Run manager (blocks until context canceled)
 	logger.Info("starting manager")
-	if err := mgr.Run(ctx); err != nil {
+	if err := mgr.Run(ctx, owner); err != nil {
 		// context.Canceled is expected during graceful shutdown
 		if err != context.Canceled {
 			return fmt.Errorf("manager error: %w", err)
@@ -377,6 +406,15 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	return sshMaster.WithConnection(cleanupCtx, func(_ uint64, ready bool) error {
+		if !ready {
+			return fmt.Errorf("SSH connection unavailable during cleanup")
+		}
+		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, host, sshMaster.ControlPath(), logger)
+	})
+}
+
+func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, host, controlPath string, logger *slog.Logger) error {
 	logger.Info("removing all active forwards")
 
 	// Clear all desired state (this will make reconciler want to remove everything)
@@ -397,7 +435,7 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 		"count", len(toRemove))
 
 	// Apply removal actions
-	if err := reconciler.Apply(cleanupCtx, host, toRemove); err != nil {
+	if err := reconciler.Apply(cleanupCtx, host, controlPath, toRemove); err != nil {
 		return fmt.Errorf("failed to remove forwards: %w", err)
 	}
 

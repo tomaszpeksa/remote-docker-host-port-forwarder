@@ -7,7 +7,6 @@ import (
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
-	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 )
 
 // TestDockerEventsStreamPersistence verifies that the docker events stream
@@ -35,7 +34,7 @@ func TestDockerEventsStreamPersistence(t *testing.T) {
 
 	// Setup SSH ControlMaster
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(sshHost, logger)
+	master, err := newOwnedMaster(t, sshHost, logger)
 	if err != nil {
 		t.Fatalf("Failed to create SSH master: %v", err)
 	}
@@ -47,10 +46,7 @@ func TestDockerEventsStreamPersistence(t *testing.T) {
 	defer master.Close()
 
 	// Get control path
-	controlPath, err := ssh.DeriveControlPath(sshHost)
-	if err != nil {
-		t.Fatalf("Failed to derive control path: %v", err)
-	}
+	controlPath := master.ControlPath()
 
 	// Start docker events stream
 	t.Log("Starting docker events stream via SSH ControlMaster...")
@@ -103,7 +99,7 @@ func TestDockerEventsStreamReceivesEvents(t *testing.T) {
 
 	// Setup SSH ControlMaster
 	logger := logging.NewLogger("debug")
-	master, err := ssh.NewMaster(sshHost, logger)
+	master, err := newOwnedMaster(t, sshHost, logger)
 	if err != nil {
 		t.Fatalf("Failed to create SSH master: %v", err)
 	}
@@ -115,10 +111,7 @@ func TestDockerEventsStreamReceivesEvents(t *testing.T) {
 	defer master.Close()
 
 	// Get control path
-	controlPath, err := ssh.DeriveControlPath(sshHost)
-	if err != nil {
-		t.Fatalf("Failed to derive control path: %v", err)
-	}
+	controlPath := master.ControlPath()
 
 	// Start docker events stream
 	t.Log("Starting docker events stream...")

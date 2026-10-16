@@ -22,6 +22,10 @@ jobs:
   integration-test:
     name: Run Integration Tests
     runs-on: ubuntu-latest
+    # Phase budgets total 26m; leave setup, evidence upload and cleanup margin.
+    timeout-minutes: 35
+    env:
+      RDHPF_HOSTED_RECOVERY: '1'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,9 +43,18 @@ jobs:
         run: |
           command -v jq
           mkdir -p test-evidence
-          { git rev-parse HEAD HEAD^{tree}; go version; } > test-evidence/source.txt
+          {
+            git rev-parse HEAD HEAD^{tree}
+            go version
+            uname -a
+            ssh_executable=$(command -v ssh)
+            printf 'ssh_executable=%s\n' "$ssh_executable"
+            printf 'ssh_resolved=%s\n' "$(readlink -f "$ssh_executable")"
+            sha256sum "$ssh_executable"
+            ssh -V 2>&1
+          } > test-evidence/source.txt
           printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' > test-evidence/plan.txt
-          go test -json -list . ./tests/integration/ > test-evidence/list.jsonl 2> test-evidence/list.stderr
+          go test -tags=rdhpf_integration -json -list . ./tests/integration/ > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
         run: |
@@ -54,7 +67,7 @@ jobs:
           docker build --no-cache -t rdhpf-sshd-stub \
             -f docker/sshd-stub-dind/Dockerfile \
             docker/sshd-stub-dind/
-      
+
       - name: Generate SSH test key
         run: |
           echo "Generating SSH key for tests..."
@@ -62,7 +75,7 @@ jobs:
           ssh-keygen -t ed25519 -f $HOME/.ssh/id_rdhpf_test -N "" -C "rdhpf-ci-test"
           chmod 600 $HOME/.ssh/id_rdhpf_test
           chmod 644 $HOME/.ssh/id_rdhpf_test.pub
-      
+
       - name: Start SSH test container with Docker socket mount
         run: |
           echo "Starting SSH container with Docker socket mount..."
@@ -71,22 +84,22 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             --label rdhpf.test-infrastructure=true \
             rdhpf-sshd-stub
-          
+
           echo "Waiting for Docker CLI access via socket..."
           sleep 2
-          
+
           echo "Verifying Docker access..."
           if ! docker exec rdhpf-sshd-stub docker info >/dev/null 2>&1; then
             echo "ERROR: Docker socket access failed"
             docker logs rdhpf-sshd-stub
             exit 1
           fi
-          
+
           echo "✓ Docker CLI ready (using host daemon via socket mount)"
-          
+
           echo "Waiting for SSH server to be ready..."
           sleep 2
-          
+
           echo "Configuring SSH key authentication in container..."
           docker cp $HOME/.ssh/id_rdhpf_test.pub rdhpf-sshd-stub:/tmp/pubkey
           docker exec rdhpf-sshd-stub sh -c "
@@ -94,21 +107,21 @@ jobs:
             chmod 600 /home/testuser/.ssh/authorized_keys && \
             chown testuser:testuser /home/testuser/.ssh/authorized_keys
           "
-          
+
           echo "Testing SSH connection..."
           ssh -i $HOME/.ssh/id_rdhpf_test \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR \
             -p 2222 testuser@localhost echo "✓ SSH connection successful"
-          
+
           echo "Testing Docker access over SSH..."
           ssh -i $HOME/.ssh/id_rdhpf_test \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR \
             -p 2222 testuser@localhost docker info
-          
+
           echo "✓ SSH and Docker both working"
 
       - name: Phase 1 - Run SSH Master integration tests
@@ -118,7 +131,7 @@ jobs:
           echo "=== Phase 1: SSH Master Tests ==="
           echo "Running SSH ControlMaster tests (8 tests, ~30s)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
+
           # Configure SSH for tests
           mkdir -p $HOME/.ssh
           cat > $HOME/.ssh/config <<EOF
@@ -130,16 +143,16 @@ jobs:
             LogLevel ERROR
           EOF
           chmod 600 $HOME/.ssh/config
-          
+
           set +e
-          go test -json -count=1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/ssh.coverage -run 'TestSSHMaster' ./tests/integration/ 2> test-evidence/ssh.stderr | tee test-evidence/ssh.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/ssh.coverage -run 'TestSSHMaster' ./tests/integration/ 2> test-evidence/ssh.stderr | tee test-evidence/ssh.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/ssh.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
-          
+
           echo "✓ Phase 1 complete: SSH Master tests passed"
-      
+
       - name: Phase 2 - Run stream persistence tests
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
@@ -147,16 +160,16 @@ jobs:
           echo "=== Phase 2: Stream Persistence Tests ==="
           echo "Testing docker events stream stays open (critical bug detection)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
+
           set +e
-          go test -json -count=1 -timeout=5m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/stream.coverage -run 'TestDockerEventsStream' ./tests/integration/ 2> test-evidence/stream.stderr | tee test-evidence/stream.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=5m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/stream.coverage -run 'TestDockerEventsStream' ./tests/integration/ 2> test-evidence/stream.stderr | tee test-evidence/stream.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/stream.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
-          
+
           echo "✓ Phase 2 complete: Stream persistence tests passed"
-      
+
       - name: Phase 2b - Run E2E container lifecycle test
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
@@ -164,31 +177,33 @@ jobs:
           echo "=== Phase 2b: E2E Container Test ==="
           echo "Running single-container port forwarding test (~45s)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
-          
+
           set +e
-          go test -json -count=1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/one-port.coverage -run '^TestManager_ContainerWithOnePort$' ./tests/integration/ 2> test-evidence/one-port.stderr | tee test-evidence/one-port.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/one-port.coverage -run '^TestManager_ContainerWithOnePort$' ./tests/integration/ 2> test-evidence/one-port.stderr | tee test-evidence/one-port.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/one-port.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
-          
+
           echo "✓ Phase 2b complete: E2E container test passed"
-      
+
       - name: Phase 3 - Run all integration tests
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           echo "=== Phase 3: All Integration Tests ==="
-          echo "Running complete integration test suite (~3-5m)"
+          echo "Running complete integration test suite (15m test budget)"
           echo "SSH_TEST_HOST=$SSH_TEST_HOST"
 
           set +e
-          go test -json -count=1 -timeout=10m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/all.coverage ./tests/integration/... 2> test-evidence/all.stderr | tee test-evidence/all.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=15m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/all.coverage ./tests/integration/... 2> test-evidence/all.stderr | tee test-evidence/all.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/all.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
           if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
-          
+
+          # A missing selector must not silently turn mandatory hosted proof into skips.
+          jq -e -s 'any(.[]; .Action == "pass" and .Test == "TestConnectionLossRecovery") and any(.[]; .Action == "pass" and .Test == "TestOwnedChildHardLossRecovery")' test-evidence/all.jsonl || exit "$?"
           echo "✓ Phase 3 complete: All integration tests passed"
 
       - name: Inventory executed, excluded and unrun tests
@@ -220,10 +235,10 @@ jobs:
         run: |
           echo "=== Docker containers ==="
           docker ps -a
-          
+
           echo "=== SSH Container Logs ==="
           docker logs rdhpf-sshd-stub || true
-          
+
           echo "=== Network connections ==="
           sudo netstat -tlnp || ss -tlnp || true
 
@@ -233,7 +248,7 @@ jobs:
           # Stop and remove SSH test container
           docker stop rdhpf-sshd-stub || true
           docker rm rdhpf-sshd-stub || true
-          
+
           # Clean up SSH keys
           rm -f $HOME/.ssh/id_rdhpf_test $HOME/.ssh/id_rdhpf_test.pub
           rm -f $HOME/.ssh/config

@@ -3,10 +3,12 @@ package socket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
@@ -23,23 +25,40 @@ type Server struct {
 	pid        int
 	startedAt  time.Time
 	logger     *slog.Logger
+	closeOnce  sync.Once
+	closeErr   error
 }
 
-// NewServer creates a new socket server for the given host
+// NewServer resolves the legacy address wrapper. The caller must own publisher
+// admission (or an isolated test namespace) through Start completion and Close.
 func NewServer(host string, stateManager *state.State, history *state.History, startedAt time.Time, logger *slog.Logger) (*Server, error) {
 	socketPath, err := GetSocketPath(host)
 	if err != nil {
 		return nil, err
 	}
 
-	// Clean up any stale socket
-	os.Remove(socketPath)
+	return NewServerAtPath(host, socketPath, stateManager, history, startedAt, logger)
+}
 
+// NewServerAtPath requires publisher admission for this frozen path through
+// Start completion and Close. Only Close owns pathname removal after binding.
+func NewServerAtPath(host, socketPath string, stateManager *state.State, history *state.History, startedAt time.Time, logger *slog.Logger) (*Server, error) {
+	if info, err := os.Lstat(socketPath); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("unexpected status socket entry")
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket: %w", err)
 	}
 
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 	return &Server{
 		listener:   listener,
 		socketPath: socketPath,
@@ -56,15 +75,23 @@ func NewServer(host string, stateManager *state.State, history *state.History, s
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.Debug("socket server listening", "path", s.socketPath)
 
-	// Close listener when context is cancelled
+	stop, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		s.listener.Close()
+		defer close(stopped)
+		select {
+		case <-ctx.Done():
+			_ = s.listener.Close()
+		case <-stop:
+		}
 	}()
+	defer func() { close(stop); <-stopped }()
 
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			// Check if we're shutting down
 			select {
 			case <-ctx.Done():
@@ -104,13 +131,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 // Close stops the server and removes the socket file
 func (s *Server) Close() error {
-	if err := s.listener.Close(); err != nil {
-		return err
-	}
-
-	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove socket: %w", err)
-	}
-
-	return nil
+	s.closeOnce.Do(func() {
+		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			s.closeErr = err
+			return
+		}
+		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+			s.closeErr = fmt.Errorf("failed to remove socket: %w", err)
+		}
+	})
+	return s.closeErr
 }

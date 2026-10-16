@@ -2,497 +2,521 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-// circuitState represents the state of the circuit breaker
 type circuitState int
 
 const (
-	circuitClosed   circuitState = iota // Normal operation
-	circuitOpen                         // Fast-fail mode
-	circuitHalfOpen                     // Testing recovery
+	circuitClosed circuitState = iota
+	circuitOpen
+	circuitHalfOpen
 )
 
-// Master manages an SSH ControlMaster connection
-type Master struct {
-	host        string
-	controlPath string
-	cmd         *exec.Cmd
-	logger      *slog.Logger
+const (
+	masterStartupTimeout = 10 * time.Second
+	masterCheckTimeout   = 2 * time.Second
+	masterRetireTimeout  = time.Second
+)
 
-	// Circuit breaker fields
-	circuitMu           sync.RWMutex
+// ErrRetirementUncertain means the owner must retain cleanup and admission
+// responsibility: completion of the retained child has not been established.
+var ErrRetirementUncertain = errors.New("owned SSH retirement uncertain; replacement prohibited")
+
+type masterLifetime struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	finished  sync.Once
+	closed    chan struct{}
+}
+
+func newMasterLifetime() *masterLifetime {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &masterLifetime{ctx: ctx, cancel: cancel, closed: make(chan struct{})}
+}
+
+type masterConnection struct {
+	cmd     *exec.Cmd
+	done    chan struct{}
+	waitErr error // published by closing done; exactly one goroutine calls Wait
+	socket  os.FileInfo
+	retired bool
+}
+
+type healthMonitor struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// Master owns one foreground SSH child. The lifecycle gate also protects entire
+// Manager forwarding transactions, not just individual connection commands.
+// Forced parent termination can leave the child alive; normal Close owns reaping.
+type Master struct {
+	host                string
+	controlPath         string
+	namespace           *masterNamespace
+	logger              *slog.Logger
+	mu                  sync.Mutex
+	cmd                 *exec.Cmd // last started command, retained after its Wait for diagnostics
+	connection          *masterConnection
+	ready               bool
+	generation          uint64 // advances only after proven retirement
+	lifetime            atomic.Pointer[masterLifetime]
+	changes             chan struct{}
 	circuitState        circuitState
 	consecutiveFailures int
 	lastFailureTime     time.Time
-
-	// Health monitoring
-	healthMonitorCancel context.CancelFunc
 	healthMonitorMu     sync.Mutex
-
-	// Recovery callback
-	onRecovery func()
+	monitor             *healthMonitor
 }
 
-// NewMaster creates a new SSH ControlMaster manager.
-//
-// Parameters:
-//   - host: SSH connection string in ssh://user@host format
-//   - logger: Structured logger for operation logging
-//
-// Returns:
-//   - *Master instance
-//   - Error if host format is invalid
-//
-// Example usage:
-//
-//	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-//	master, err := NewMaster("ssh://user@example.com", logger)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
+// NewMaster allocates a private namespace without starting SSH. Callers must
+// register Close immediately, including when Open is never called or fails.
 func NewMaster(host string, logger *slog.Logger) (*Master, error) {
 	if !strings.HasPrefix(host, "ssh://") {
 		return nil, fmt.Errorf("host must be in ssh://user@host format, got: %s", host)
 	}
-
-	// Derive control path
-	controlPath, err := DeriveControlPath(host)
+	if strings.TrimPrefix(host, "ssh://") == "" {
+		return nil, fmt.Errorf("host cannot be empty after ssh:// prefix")
+	}
+	namespace, err := newMasterNamespace()
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive control path: %w", err)
+		return nil, fmt.Errorf("failed to allocate SSH namespace: %w", err)
 	}
-
-	return &Master{
-		host:                host,
-		controlPath:         controlPath,
-		logger:              logger,
-		circuitState:        circuitClosed,
-		consecutiveFailures: 0,
-	}, nil
+	m := &Master{host: host, controlPath: namespace.path, namespace: namespace, logger: logger, changes: make(chan struct{}, 1)}
+	m.lifetime.Store(newMasterLifetime())
+	return m, nil
 }
 
-// SetRecoveryCallback sets a callback function to be called after successful recovery.
-// This allows the manager to trigger reconciliation after SSH reconnects.
-func (m *Master) SetRecoveryCallback(callback func()) {
-	m.onRecovery = callback
+// ControlPath returns the configured mux endpoint, not proof of its ownership.
+func (m *Master) ControlPath() string { return m.controlPath }
+
+// Changes coalesces notifications. Consumers must observe generation under
+// WithConnection, rather than infer state or ordering from a notification.
+func (m *Master) Changes() <-chan struct{} { return m.changes }
+func (m *Master) notify() {
+	select {
+	case m.changes <- struct{}{}:
+	default:
+	}
 }
 
-// ControlPath returns the path to the control socket for this SSH connection.
-func (m *Master) ControlPath() string {
-	return m.controlPath
+// WithConnection serializes state invalidation and complete Diff/Apply cycles
+// with replacement/Close. The operation must not re-enter Master. Unavailable
+// connections still expose proven retirement, but must not execute forwards.
+func (m *Master) WithConnection(ctx context.Context, operation func(uint64, bool) error) error {
+	life := m.lifetime.Load()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.operationAllowed(ctx, life); err != nil {
+		return err
+	}
+	ready := m.ready && m.checkConnection(ctx) == nil
+	if err := m.operationAllowed(ctx, life); err != nil {
+		return err
+	}
+	return operation(m.generation, ready)
 }
 
-// Open establishes the SSH ControlMaster connection.
-// It starts the SSH process in background mode and waits for the control
-// socket to appear.
-//
-// The SSH command uses these options:
-//   - ControlMaster=auto: Create master if none exists
-//   - ControlPersist=10m: Keep connection alive for 10 minutes after last use
-//   - ServerAliveInterval=10: Send keepalive every 10 seconds
-//   - ServerAliveCountMax=3: Disconnect after 3 failed keepalives
-//   - ExitOnForwardFailure=yes: Exit if port forwarding fails
-//   - StrictHostKeyChecking=yes: Require known host key
-//
-// Example usage:
-//
-//	ctx := context.Background()
-//	if err := master.Open(ctx); err != nil {
-//	    log.Fatal(err)
-//	}
-func (m *Master) Open(ctx context.Context) error {
-	// Parse host and port from SSH URL
-	sshHost, port, err := ParseHost(m.host)
-	if err != nil {
-		return fmt.Errorf("failed to parse SSH host: %w", err)
+func (m *Master) operationAllowed(ctx context.Context, life *masterLifetime) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-
-	// Build SSH command
-	args := []string{
-		"-MNf", // Master mode, no command, background
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPersist=10m",
-		"-o", fmt.Sprintf("ControlPath=%s", m.controlPath),
-		"-o", "ServerAliveInterval=15", // Every 15s (was 10s)
-		"-o", "ServerAliveCountMax=2", // Fail after 30s (was 40s with CountMax=3)
-		"-o", "TCPKeepAlive=yes", // Enable TCP-level keepalive
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=/dev/null",
+	if life != m.lifetime.Load() || life.ctx.Err() != nil {
+		return fmt.Errorf("SSH lifecycle stopped: %w", context.Canceled)
 	}
-
-	// Add identity file if SSH_TEST_KEY_PATH is set (for integration tests)
-	if keyPath := os.Getenv("SSH_TEST_KEY_PATH"); keyPath != "" {
-		args = append(args, "-i", keyPath)
-	}
-
-	// Add port if specified
-	if port != "" {
-		args = append(args, "-p", port)
-	}
-
-	args = append(args, sshHost)
-
-	m.logger.Debug("starting SSH ControlMaster",
-		"host", sshHost,
-		"controlPath", m.controlPath)
-
-	// #nosec G204 - SSH command with validated host format (checked in NewMaster)
-	m.cmd = exec.CommandContext(ctx, "ssh", args...)
-
-	// Capture stderr for debugging
-	m.cmd.Stderr = os.Stderr
-
-	// Start the SSH process
-	if err := m.cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start SSH ControlMaster: %w", err)
-	}
-
-	// Wait for control socket to appear
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(m.controlPath); err == nil {
-			m.logger.Info("SSH ControlMaster established",
-				"host", sshHost,
-				"controlPath", m.controlPath)
-			return nil
-		}
-
-		// Check if context was canceled
-		select {
-		case <-ctx.Done():
-			_ = m.cmd.Process.Kill()
-			return fmt.Errorf("context canceled while waiting for control socket")
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-
-	// Timeout waiting for socket
-	_ = m.cmd.Process.Kill()
-	return fmt.Errorf("timeout waiting for control socket at %s", m.controlPath)
-}
-
-// Close terminates the SSH ControlMaster connection and cleans up
-// the control socket.
-//
-// Steps performed:
-//  1. Stop health monitor if running
-//  2. Send SSH "-O exit" to master
-//  3. Wait for process termination (1s timeout)
-//  4. If still alive: send SIGTERM
-//  5. Remove control socket file
-//
-// Example usage:
-//
-//	defer master.Close()
-func (m *Master) Close() error {
-	sshHost, port, err := ParseHost(m.host)
-	if err != nil {
-		return fmt.Errorf("failed to parse SSH host: %w", err)
-	}
-
-	m.logger.Debug("closing SSH ControlMaster",
-		"host", sshHost,
-		"controlPath", m.controlPath)
-
-	// Stop health monitor if running
-	m.StopHealthMonitor()
-
-	// Execute SSH exit command
-	args := []string{"-S", m.controlPath, "-O", "exit"}
-	if port != "" {
-		args = append(args, "-p", port)
-	}
-	args = append(args, sshHost)
-
-	// #nosec G204 - SSH command with validated host format (checked in NewMaster)
-	cmd := exec.Command("ssh", args...)
-
-	if err := cmd.Run(); err != nil {
-		m.logger.Warn("failed to cleanly exit SSH ControlMaster",
-			"error", err.Error())
-
-		// If SSH exit failed and we have a process handle, try SIGTERM
-		if m.cmd != nil && m.cmd.Process != nil {
-			m.logger.Debug("attempting SIGTERM on SSH process",
-				"pid", m.cmd.Process.Pid)
-
-			// Give it a moment to exit cleanly
-			time.Sleep(1 * time.Second)
-
-			// Check if process still exists
-			if err := m.cmd.Process.Signal(syscall.Signal(0)); err == nil {
-				// Process still exists, send SIGTERM
-				m.logger.Warn("sending SIGTERM to orphaned SSH process",
-					"pid", m.cmd.Process.Pid)
-				_ = m.cmd.Process.Signal(syscall.SIGTERM)
-			}
-		}
-	}
-
-	// Clean up control socket file
-	if err := os.Remove(m.controlPath); err != nil && !os.IsNotExist(err) {
-		m.logger.Warn("failed to remove control socket",
-			"path", m.controlPath,
-			"error", err.Error())
-	}
-
-	m.logger.Info("SSH ControlMaster closed",
-		"host", sshHost)
-
 	return nil
 }
 
-// Check verifies that the SSH ControlMaster connection is alive.
-//
-// Returns:
-//   - nil if connection is healthy
-//   - error if connection check fails
-//
-// Example usage:
-//
-//	if err := master.Check(); err != nil {
-//	    log.Printf("Connection unhealthy: %v", err)
-//	}
-func (m *Master) Check() error {
+// Open explicitly starts a lifecycle, including reuse after a completed Close.
+// After readiness, the child no longer depends on this operation's context.
+func (m *Master) Open(ctx context.Context) error {
+	m.mu.Lock()
+	life := m.lifetime.Load()
+	if life.ctx.Err() != nil {
+		select {
+		case <-life.closed:
+			life = newMasterLifetime()
+			m.lifetime.Store(life)
+		default:
+			m.mu.Unlock()
+			return fmt.Errorf("SSH close still in progress")
+		}
+	}
+	err := m.operationAllowed(ctx, life)
+	if err == nil && m.connection != nil {
+		err = fmt.Errorf("SSH connection already owned")
+	}
+	if err == nil {
+		err = m.openConnection(ctx, life)
+		if err == nil {
+			m.consecutiveFailures = 0
+			m.circuitState = circuitClosed
+		}
+	}
+	m.mu.Unlock()
+	m.notify()
+	return err
+}
+
+func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error {
+	if err := m.namespace.open(); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(m.controlPath); err == nil {
+		return fmt.Errorf("refusing occupied SSH control path %s", m.controlPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	sshHost, port, err := ParseHost(m.host)
 	if err != nil {
-		return fmt.Errorf("failed to parse SSH host: %w", err)
+		return err
 	}
-
-	// DIAGNOSTIC: Check socket file status before SSH check
-	socketInfo, err := os.Stat(m.controlPath)
-	socketExists := err == nil
-
-	m.logger.Debug("DIAGNOSTIC: SSH ControlMaster health check starting",
-		"host", sshHost,
-		"controlPath", m.controlPath,
-		"socket_exists", socketExists,
-		"socket_size", func() int64 {
-			if socketInfo != nil {
-				return socketInfo.Size()
+	args := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
+		"-o", "ControlPath=" + m.controlPath, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
+		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null"}
+	if key := os.Getenv("SSH_TEST_KEY_PATH"); key != "" {
+		args = append(args, "-i", key)
+	}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, sshHost)
+	// The retained child, not a context watcher or a daemon launcher, owns SSH.
+	// #nosec G204 - Existing SSH host/input policy; arguments remain separate.
+	cmd := exec.Command("ssh", args...)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start SSH ControlMaster: %w", err)
+	}
+	c := &masterConnection{cmd: cmd, done: make(chan struct{})}
+	m.cmd = cmd
+	m.connection = c
+	m.ready = false
+	go func() { c.waitErr = cmd.Wait(); close(c.done) }()
+	startup, cancel := context.WithTimeout(ctx, masterStartupTimeout)
+	stop := context.AfterFunc(life.ctx, cancel)
+	defer cancel()
+	defer stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := startup.Err(); err != nil {
+			return errors.Join(err, m.retireConnection())
+		}
+		select {
+		case <-c.done:
+			return errors.Join(fmt.Errorf("SSH exited during startup: %v", c.waitErr), m.retireConnection())
+		default:
+		}
+		if _, err := os.Lstat(m.controlPath); err == nil {
+			if err := m.checkConnection(startup); err != nil {
+				return errors.Join(fmt.Errorf("SSH startup association: %w", err), m.retireConnection())
 			}
-			return 0
-		}(),
-		"socket_mode", func() string {
-			if socketInfo != nil {
-				return socketInfo.Mode().String()
+			if err := startup.Err(); err != nil {
+				return errors.Join(err, m.retireConnection())
 			}
-			return "n/a"
-		}())
+			m.ready = true
+			m.logger.Info("SSH ControlMaster established", "controlPath", m.controlPath, "pid", cmd.Process.Pid)
+			return nil
+		} else if !os.IsNotExist(err) {
+			return errors.Join(err, m.retireConnection())
+		}
+		select {
+		case <-startup.Done():
+		case <-c.done:
+		case <-ticker.C:
+		}
+	}
+}
 
+var masterPIDPattern = regexp.MustCompile(`(?m)^Master running \(pid=([0-9]+)\)\r?$`)
+
+// associate verifies the kernel peer identity against a still-owned, unreaped
+// child, and checks that the pathname did not change during connection. Never
+// trust a mux-reported PID as authority to signal or unlink anything.
+func (m *Master) associate(ctx context.Context) error {
+	if err := m.namespace.verify(); err != nil {
+		return err
+	}
+	c := m.connection
+	if c == nil {
+		return fmt.Errorf("no owned SSH child")
+	}
+	select {
+	case <-c.done:
+		return fmt.Errorf("owned SSH child exited")
+	default:
+	}
+	before, err := os.Lstat(m.controlPath)
+	if err != nil {
+		return err
+	}
+	if before.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("SSH endpoint is not a socket")
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", m.controlPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	pid, err := unixPeerPID(conn.(*net.UnixConn))
+	if err != nil {
+		return err
+	}
+	after, err := os.Lstat(m.controlPath)
+	if err != nil {
+		return err
+	}
+	if pid != c.cmd.Process.Pid || !os.SameFile(before, after) || (c.socket != nil && !os.SameFile(c.socket, after)) {
+		return fmt.Errorf("SSH endpoint does not belong to the owned child")
+	}
+	// Process.Signal uses the retained handle's done state as well as the
+	// kernel process. This also rejects the interval between Wait reaping the
+	// child and publishing done; a reused numeric PID is not ownership.
+	if err := c.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return fmt.Errorf("owned SSH child no longer live: %w", err)
+	}
+	select {
+	case <-c.done:
+		return fmt.Errorf("owned SSH child exited during association")
+	default:
+	}
+	c.socket = after
+	return nil
+}
+
+func (m *Master) checkConnection(ctx context.Context) error {
+	check, cancel := context.WithTimeout(ctx, masterCheckTimeout)
+	defer cancel()
+	if err := m.associate(check); err != nil {
+		return err
+	}
+	host, port, err := ParseHost(m.host)
+	if err != nil {
+		return err
+	}
 	args := []string{"-S", m.controlPath, "-O", "check"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, sshHost)
-
-	// #nosec G204 - SSH command with validated host format (checked in NewMaster)
-	cmd := exec.Command("ssh", args...)
-
-	if err := cmd.Run(); err != nil {
-		m.logger.Debug("DIAGNOSTIC: SSH ControlMaster check failed",
-			"host", sshHost,
-			"error", err.Error(),
-			"socket_exists", socketExists)
-		return fmt.Errorf("SSH ControlMaster check failed: %w", err)
+	args = append(args, host)
+	// #nosec G204 - Existing SSH host/input policy; arguments remain separate.
+	output, err := exec.CommandContext(check, "ssh", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("SSH check: %w", err)
 	}
-
-	m.logger.Debug("SSH ControlMaster is healthy",
-		"host", sshHost)
-
-	return nil
+	match := masterPIDPattern.FindSubmatch(output)
+	if len(match) != 2 {
+		return fmt.Errorf("SSH check did not report a master PID")
+	}
+	pid, err := strconv.Atoi(string(match[1]))
+	if err != nil || pid != m.connection.cmd.Process.Pid {
+		return fmt.Errorf("SSH check reported a different master")
+	}
+	return m.associate(check)
 }
 
-// EnsureAlive verifies the SSH ControlMaster connection is healthy and
-// recreates it if necessary.
-//
-// This method:
-//  1. Checks the connection health
-//  2. If unhealthy, closes the old connection (ignoring errors)
-//  3. Opens a new connection
-//
-// Example usage:
-//
-//	ctx := context.Background()
-//	if err := master.EnsureAlive(ctx); err != nil {
-//	    log.Fatal(err)
-//	}
-func (m *Master) EnsureAlive(ctx context.Context) error {
-	// Check circuit breaker state
-	m.circuitMu.RLock()
-	state := m.circuitState
-	m.circuitMu.RUnlock()
-
-	if state == circuitOpen {
-		// Circuit is open, check if cooldown period has passed
-		m.circuitMu.RLock()
-		cooldownPassed := time.Since(m.lastFailureTime) > 60*time.Second
-		m.circuitMu.RUnlock()
-
-		if !cooldownPassed {
-			return fmt.Errorf("circuit breaker open: too many consecutive failures")
-		}
-
-		// Cooldown passed, transition to half-open for one retry
-		m.circuitMu.Lock()
-		m.circuitState = circuitHalfOpen
-		m.circuitMu.Unlock()
-		m.logger.Info("circuit breaker transitioning to half-open state")
+// Check verifies both ownership and mux responsiveness, with a local 2s bound.
+func (m *Master) Check() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.ready {
+		return fmt.Errorf("SSH connection unavailable")
 	}
+	return m.checkConnection(context.Background())
+}
 
-	// Check if connection is alive
-	if err := m.Check(); err != nil {
-		sshHost, _, parseErr := ParseHost(m.host)
-		if parseErr != nil {
-			return fmt.Errorf("failed to parse SSH host: %w", parseErr)
-		}
-
-		m.logger.Warn("SSH ControlMaster is dead, recreating",
-			"host", sshHost,
-			"error", err.Error())
-
-		// Remove stale socket file before attempting Close/Open
-		// This ensures we don't have leftover socket preventing recreation
-		if _, statErr := os.Stat(m.controlPath); statErr == nil {
-			m.logger.Info("Removing stale control socket before recreation",
-				"path", m.controlPath)
-			if removeErr := os.Remove(m.controlPath); removeErr != nil {
-				m.logger.Warn("Failed to remove stale socket",
-					"path", m.controlPath,
-					"error", removeErr.Error())
+// retireConnection runs under the lifecycle gate. Only the retained child
+// handle is signaled. Completion precedes generation advance/socket cleanup.
+func (m *Master) retireConnection() error {
+	c := m.connection
+	if c == nil {
+		return nil
+	}
+	m.ready = false
+	select {
+	case <-c.done:
+	default:
+		_ = c.cmd.Process.Signal(syscall.SIGTERM)
+		timer := time.NewTimer(masterRetireTimeout)
+		select {
+		case <-c.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			_ = c.cmd.Process.Kill()
+			timer.Reset(masterRetireTimeout)
+			select {
+			case <-c.done:
+				if !timer.Stop() {
+					<-timer.C
+				}
+			case <-timer.C:
+				return ErrRetirementUncertain
 			}
 		}
-
-		// Close old connection (ignore errors)
-		_ = m.Close()
-
-		// Open new connection
-		if err := m.Open(ctx); err != nil {
-			m.recordFailure()
-			return fmt.Errorf("failed to recreate SSH ControlMaster: %w", err)
-		}
-
-		m.logger.Info("SSH ControlMaster recreated successfully",
-			"host", sshHost)
-
-		// Reset circuit breaker on success
-		m.recordSuccess()
-
-		// Call recovery callback if set
-		if m.onRecovery != nil {
-			m.onRecovery()
-		}
 	}
-
+	if c.cmd.ProcessState == nil {
+		return errors.Join(ErrRetirementUncertain, fmt.Errorf("owned SSH Wait did not establish retirement: %v", c.waitErr))
+	}
+	if !c.retired {
+		m.generation++
+		c.retired = true
+	}
+	if err := m.namespace.reclaim(); err != nil {
+		return err
+	}
+	m.connection = nil
 	return nil
 }
 
-// recordFailure tracks connection failures for circuit breaker
-func (m *Master) recordFailure() {
-	m.circuitMu.Lock()
-	defer m.circuitMu.Unlock()
-
-	m.consecutiveFailures++
-	m.lastFailureTime = time.Now()
-
-	if m.consecutiveFailures >= 5 {
-		if m.circuitState != circuitOpen {
-			m.logger.Warn("circuit breaker opening",
-				"consecutive_failures", m.consecutiveFailures)
+// EnsureAlive checks/replaces one connection atomically. It never stops the
+// monitor. Queued work from a canceled lifecycle cannot affect a later Open.
+func (m *Master) EnsureAlive(ctx context.Context) error {
+	life := m.lifetime.Load()
+	m.mu.Lock()
+	previousGeneration, previousConnection := m.generation, m.connection
+	err := m.operationAllowed(ctx, life)
+	if err == nil {
+		err = m.ensureAlive(ctx, life)
+	}
+	changed := previousGeneration != m.generation || previousConnection != m.connection
+	m.mu.Unlock()
+	if changed {
+		m.notify()
+	}
+	return err
+}
+func (m *Master) ensureAlive(ctx context.Context, life *masterLifetime) error {
+	if m.circuitState == circuitOpen {
+		if time.Since(m.lastFailureTime) <= 60*time.Second {
+			return fmt.Errorf("circuit breaker open: too many consecutive failures")
+		}
+		m.circuitState = circuitHalfOpen
+	}
+	if m.ready && m.checkConnection(ctx) == nil {
+		return nil
+	}
+	// Incidental cancellation is not evidence that a successful connection
+	// failed. Only the check's own deadline may initiate retirement here.
+	if err := m.operationAllowed(ctx, life); err != nil {
+		return err
+	}
+	if err := m.retireConnection(); err != nil {
+		return err
+	}
+	if err := m.operationAllowed(ctx, life); err != nil {
+		return err
+	}
+	if err := m.openConnection(ctx, life); err != nil {
+		m.consecutiveFailures++
+		m.lastFailureTime = time.Now()
+		if m.consecutiveFailures >= 5 {
 			m.circuitState = circuitOpen
 		}
+		return fmt.Errorf("failed to recreate SSH ControlMaster: %w", err)
 	}
-}
-
-// recordSuccess resets circuit breaker after successful operation
-func (m *Master) recordSuccess() {
-	m.circuitMu.Lock()
-	defer m.circuitMu.Unlock()
-
-	if m.consecutiveFailures > 0 || m.circuitState != circuitClosed {
-		m.logger.Info("circuit breaker closing",
-			"previous_failures", m.consecutiveFailures)
-	}
-
 	m.consecutiveFailures = 0
 	m.circuitState = circuitClosed
+	m.logger.Info("SSH ControlMaster recreated successfully")
+	return nil
 }
 
-// StartHealthMonitor starts a background goroutine that periodically checks
-// SSH ControlMaster health and attempts recovery on failures.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - interval: Time between health checks (e.g., 30*time.Second)
-//
-// The monitor will:
-//  1. Check connection health at specified interval
-//  2. On failure: attempt recovery via EnsureAlive()
-//  3. Use exponential backoff on repeated failures
-//  4. Log all health check and recovery actions
-//  5. Stop when context is canceled
-//
-// Example usage:
-//
-//	ctx, cancel := context.WithCancel(context.Background())
-//	defer cancel()
-//	master.StartHealthMonitor(ctx, 30*time.Second)
+// Close fences automatic work before joining or waiting for the gate. No join
+// holds a lock needed by the monitor. Explicit Open is allowed after completion.
+func (m *Master) Close() error {
+	life := m.lifetime.Load()
+	life.closeOnce.Do(func() {
+		life.cancel()
+		m.StopHealthMonitor()
+	})
+	m.mu.Lock()
+	if life != m.lifetime.Load() {
+		m.mu.Unlock()
+		return nil // a concurrent explicit Open already began a newer lifecycle
+	}
+	err := m.retireConnection()
+	if err == nil {
+		err = m.namespace.close()
+	}
+	if err == nil {
+		life.finished.Do(func() { close(life.closed) })
+	}
+	m.mu.Unlock()
+	m.notify()
+	return err
+}
+
+// StartHealthMonitor starts at most one monitor for the current lifecycle.
 func (m *Master) StartHealthMonitor(ctx context.Context, interval time.Duration) {
+	life := m.lifetime.Load()
 	m.healthMonitorMu.Lock()
 	defer m.healthMonitorMu.Unlock()
-
-	// Create cancelable context for health monitor
+	if life.ctx.Err() != nil {
+		return
+	}
+	if m.monitor != nil {
+		select {
+		case <-m.monitor.done:
+		default:
+			return
+		}
+	}
 	healthCtx, cancel := context.WithCancel(ctx)
-	m.healthMonitorCancel = cancel
-
+	stop := context.AfterFunc(life.ctx, cancel)
+	monitor := &healthMonitor{cancel: cancel, done: make(chan struct{})}
+	m.monitor = monitor
 	go func() {
+		defer close(monitor.done)
+		defer stop()
+		defer cancel()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-
-		m.logger.Info("SSH health monitor started",
-			"interval", interval)
-
 		for {
 			select {
 			case <-healthCtx.Done():
-				m.logger.Info("SSH health monitor stopped")
 				return
-
 			case <-ticker.C:
-				checkStart := time.Now()
-				m.logger.Debug("DIAGNOSTIC: Performing SSH health check",
-					"time", checkStart.Format(time.RFC3339))
-
 				if err := m.EnsureAlive(healthCtx); err != nil {
-					m.logger.Warn("DIAGNOSTIC: SSH health check failed",
-						"error", err.Error(),
-						"check_duration_ms", time.Since(checkStart).Milliseconds())
+					m.logger.Warn("SSH health check failed", "error", err)
 				} else {
-					m.logger.Debug("DIAGNOSTIC: SSH health check passed",
-						"check_duration_ms", time.Since(checkStart).Milliseconds())
+					m.logger.Debug("SSH health check passed")
 				}
 			}
 		}
 	}()
 }
 
-// StopHealthMonitor stops the background health monitoring goroutine.
+// StopHealthMonitor cancels and joins monitoring without closing the connection.
 func (m *Master) StopHealthMonitor() {
 	m.healthMonitorMu.Lock()
-	defer m.healthMonitorMu.Unlock()
-
-	if m.healthMonitorCancel != nil {
-		m.healthMonitorCancel()
-		m.healthMonitorCancel = nil
+	monitor := m.monitor
+	if monitor != nil {
+		monitor.cancel()
 	}
+	m.healthMonitorMu.Unlock()
+	if monitor == nil {
+		return
+	}
+	<-monitor.done
+	m.healthMonitorMu.Lock()
+	if m.monitor == monitor {
+		m.monitor = nil
+	}
+	m.healthMonitorMu.Unlock()
 }

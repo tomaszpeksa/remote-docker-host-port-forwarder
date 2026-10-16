@@ -80,12 +80,12 @@ jobs:
           if [ "${{ matrix.os }}" = "windows" ]; then
             OUTPUT_NAME="${OUTPUT_NAME}.exe"
           fi
-          
+
           CGO_ENABLED=0 go build \
             -ldflags "-X main.version=${VERSION} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o "${OUTPUT_NAME}" \
             ./cmd/rdhpf
-          
+
           # Create compressed archive
           if [ "${{ matrix.os }}" = "windows" ]; then
             zip "${OUTPUT_NAME%.exe}.zip" "${OUTPUT_NAME}"
@@ -94,10 +94,10 @@ jobs:
             tar czf "${OUTPUT_NAME}.tar.gz" "${OUTPUT_NAME}"
             ARCHIVE="${OUTPUT_NAME}.tar.gz"
           fi
-          
+
           # Generate SHA256 checksum
           sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
-          
+
           echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
           echo "CHECKSUM=${ARCHIVE}.sha256" >> $GITHUB_ENV
 

@@ -190,6 +190,15 @@ For an already configured isolated host, set `SSH_TEST_HOST=ssh://user@host:port
 and run `make test-integration`. SSH authentication uses your SSH configuration
 or the optional `SSH_TEST_KEY_PATH` for fixture commands.
 
+The two disruptive SSH recovery scenarios are hosted-only. In these local entry
+points, the graceful-loss scenario produces a named skip; the hard-loss scenario
+is excluded from the build without the `rdhpf_integration` tag. Neither runs
+against a local host. Only the disposable Actions job selects `RDHPF_HOSTED_RECOVERY=1`
+and the tag; selection retains strict runner/target/key checks before changing SSH
+configuration, acquiring publisher ownership or creating backends, and requires
+both scenarios to pass. Do not set this variable for a local host. This exclusion
+does not change the requested-infrastructure preflight below.
+
 A nonempty `SSH_TEST_HOST` explicitly requests integration: unavailable SSH/Docker
 fails preflight within 10 seconds, rather than reporting success without tests.
 Selecting the package (or a build tag) alone does not request infrastructure;
@@ -283,7 +292,7 @@ func TestForwardValidation(t *testing.T) {
         },
         // ... more cases
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             _, err := NewForward(tt.local, tt.remote, tt.port)
@@ -317,11 +326,11 @@ func (m *Manager) Start() error {
     if err := m.connectSSH(); err != nil {
         return fmt.Errorf("failed to connect SSH: %w", err)
     }
-    
+
     if err := m.setupForwards(); err != nil {
         return fmt.Errorf("failed to setup forwards: %w", err)
     }
-    
+
     return nil
 }
 ```
@@ -424,13 +433,13 @@ Releases are automated via GitHub Actions when a tag is pushed.
 1. **Update CHANGELOG.md**:
    ```markdown
    ## [1.0.0] - 2024-01-15
-   
+
    ### Added
    - Feature X
-   
+
    ### Changed
    - Improvement Y
-   
+
    ### Fixed
    - Bug Z
    ```

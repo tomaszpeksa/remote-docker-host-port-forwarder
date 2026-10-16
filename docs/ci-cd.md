@@ -115,6 +115,31 @@ real OpenSSH command; only separate Master/HTTP scenarios establish real lifecyc
 and recovery behavior. Local/preconfigured-host runs do not execute this disruptive
 hosted matrix. Missing evidence or skips cannot satisfy these mandatory scenarios.
 
+The production launch inventory is explicit (all invoke SSH with BatchMode=yes):
+
+| Source | Actual launch methods |
+|---|---|
+| `internal/ssh/master.go` | `openConnection`, `checkConnection` |
+| `internal/ssh/forward.go` | `AddForward`, `CancelForward` |
+| `internal/docker/events.go` | `EventReader.Stream` |
+| `internal/docker/inspect.go` | `InspectPorts`, `inspectPortsFromLabels` |
+| `internal/manager/manager.go` | `reconcileStartup`, `hasTestInfrastructureLabel`, `validateDockerConnectivity`, `remoteDockerPingRunner.Ping` |
+
+The eleven launch sites have actual argv and individual native BatchMode-removal
+controls. A generic AST launch guard is deferred; this inventory is not a guarantee
+about arbitrary future launch sites. The ping cases also require a real event on
+the application's remote stream and no residual ping container, despite hostile
+local Docker endpoint settings. The unchanged production `alpine:latest` ping
+image is warmed on the owned daemon and its actual digest recorded separately
+from the pinned fixture images. Normal real inspection and label fallback cover
+full IDs, short IDs and names with Docker options before `--`.
+
+Actual-method shell regressions execute both remote shell layers using owned fake
+SSH/Docker executables and real `/bin/sh`. Container operands and enclosing scripts
+are independently quoted; NUL is refused before launch. Marker-only mutations
+prove both boundaries are sensitive. This does not impose a strict hex-ID policy
+or repair separate malformed-event/short-ID display behavior.
+
 A separate bounded diagnostic step preserves source diffs/hashes and expected red
 outcomes for the accepted-A Master overlay and each individual BatchMode removal.
 These are not frozen-candidate passes: each must fail its named scenario for the
@@ -201,7 +226,8 @@ For integration tests:
 # Explicitly request tests against an isolated, configured SSH/Docker host
 export SSH_TEST_HOST=ssh://your-username@your-ssh-host:22
 
-# Optional identity for fixture commands; configure SSH for the same host/key
+# Optional fixture-command identity only; the application ignores this variable.
+# Configure OpenSSH IdentityFile (or an agent) for application authentication.
 export SSH_TEST_KEY_PATH=/path/to/test-key
 ```
 

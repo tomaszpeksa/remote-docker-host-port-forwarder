@@ -89,7 +89,7 @@ jobs:
             sha256sum "$ssh_executable"
             ssh -V 2>&1
           } > test-evidence/source.txt
-          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback)' > test-evidence/plan.txt
+          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' > test-evidence/plan.txt
           go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
@@ -104,6 +104,9 @@ jobs:
           cp .itests/provenance.txt test-evidence/fixture-provenance.txt
           cp .itests/host-key.pub test-evidence/host-key.pub
           id=$(cat .itests/container-id)
+          # Warm the unchanged production ping image only on the owned daemon.
+          docker exec "$id" docker pull alpine:latest > test-evidence/ping-image-pull.txt
+          docker exec "$id" docker image inspect alpine:latest --format '{{json .RepoDigests}}' > test-evidence/ping-image-digests.txt
           docker exec "$id" sh -ec 'sha256sum /etc/apk/keys/*; apk policy openssh-server docker-cli; /usr/sbin/sshd -T' > test-evidence/fixture-policy.txt
           # Actual account config is used by real application SSH. Save exact
           # previous bytes privately; never upload this backup or private keys.
@@ -196,7 +199,7 @@ jobs:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           set +e
-          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run 'Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback)' ./internal/manager ./internal/docker ./internal/ssh 2> test-evidence/trust-internal.stderr | tee test-evidence/trust-internal.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run 'Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' ./internal/manager ./internal/docker ./internal/ssh 2> test-evidence/trust-internal.stderr | tee test-evidence/trust-internal.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/trust-internal.exit
           if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi

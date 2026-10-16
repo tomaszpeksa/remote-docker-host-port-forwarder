@@ -233,3 +233,21 @@ func TestDockerMissingMuxTrust(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectNamedLabelFallback(t *testing.T) {
+	f := sshfixture.New(t)
+	f.Configure("yes", f.PublicKey, "", f.Key, "no")
+	id := f.Backend(sshfixture.Alpine, 0, "rdhpf.forward.18090=80")
+	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
+	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", f.Alias + "-0"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			ports, err := docker.InspectPorts(ctx, f.Host, filepath.Join(f.Dir, "missing-mux"), tc.operand)
+			require.NoError(t, err)
+			require.NoError(t, ctx.Err())
+			require.Equal(t, []int{18090}, ports)
+			f.NoPrompt()
+		})
+	}
+}

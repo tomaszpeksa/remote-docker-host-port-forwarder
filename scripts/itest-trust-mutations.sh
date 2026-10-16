@@ -75,7 +75,8 @@ labels|internal/docker/inspect.go|inspectPortsFromLabels|./internal/docker|^Test
 events|internal/docker/events.go|Stream|./tests/integration|^TestDockerMissingMuxTrust$/^events$/^encrypted$|TestDockerMissingMuxTrust/events/encrypted
 startup|internal/manager/manager.go|reconcileStartup|./internal/manager|^TestManagerMissingMuxTrust$/^startup$/^encrypted$|TestManagerMissingMuxTrust/startup/encrypted
 infrastructure|internal/manager/manager.go|hasTestInfrastructureLabel|./internal/manager|^TestManagerMissingMuxTrust$/^label$/^encrypted$|TestManagerMissingMuxTrust/label/encrypted
+ping|internal/manager/manager.go|Ping|./internal/manager|^TestManagerMissingMuxTrust$/^ping$/^encrypted$|TestManagerMissingMuxTrust/ping/encrypted
 connectivity|internal/manager/manager.go|validateDockerConnectivity|./internal/manager|^TestManagerMissingMuxTrust$/^connectivity$/^encrypted$|TestManagerMissingMuxTrust/connectivity/encrypted
 CASES
 git diff --exit-code
-printf 'All thirteen source-bound red controls observed; candidate source restored.\n' > "$evidence/result.txt"
+printf 'All fourteen source-bound red controls observed; candidate source restored.\n' > "$evidence/result.txt"

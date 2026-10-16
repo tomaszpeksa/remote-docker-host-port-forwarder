@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING CHANGE:** Event-health pings use the application's SSH target and
+  noninteractive trust policy, not local Docker host/context/TLS settings. The
+  ping command, image, tick intervals and error/cancellation policy are unchanged.
+- **BREAKING CHANGE:** The application ignores `SSH_TEST_KEY_PATH`; configure
+  OpenSSH `IdentityFile` or an agent instead. Test-only fixture usage remains.
+- Quote container operands through both remote shell layers and place Docker
+  options before `--`; reject NUL without restricting names or short IDs.
+
 - **BREAKING CHANGE:** Only one `rdhpf run` may publish in the same actual
   `HOME/.rdhpf` directory, even for different SSH targets. Stop all old-version
   publishers before upgrading; they do not honor the new admission lock. This is

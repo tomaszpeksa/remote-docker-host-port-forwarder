@@ -4,6 +4,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/config"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
@@ -19,7 +21,7 @@ import (
 )
 
 func TestManagerMissingMuxTrust(t *testing.T) {
-	for _, operation := range []string{"startup", "label", "connectivity"} {
+	for _, operation := range []string{"startup", "label", "connectivity", "ping"} {
 		for _, scenario := range []string{"matching", "mismatch", "unknown", "accept-new", "encrypted", "password"} {
 			t.Run(operation+"/"+scenario, func(t *testing.T) {
 				f := sshfixture.New(t)
@@ -71,8 +73,12 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 				case "label":
 					// This real container is known to carry true; false alone would not prove auth failure.
 					require.True(t, m.hasTestInfrastructureLabel(ctx, master.ControlPath(), f.Container) == success)
-				case "connectivity":
-					err = m.validateDockerConnectivity(ctx, master.ControlPath())
+				case "ping", "connectivity":
+					if operation == "ping" {
+						err = m.watchdog.dockerPing.Ping(ctx)
+					} else {
+						err = m.validateDockerConnectivity(ctx, master.ControlPath())
+					}
 					if success {
 						require.NoError(t, err)
 					} else {
@@ -89,4 +95,66 @@ func TestManagerMissingMuxTrust(t *testing.T) {
 			})
 		}
 	}
+}
+
+// This separately proves the real ping reaches the same remote event stream,
+// rather than treating authentication success or a fake-shell capture as traffic.
+func TestRemoteDockerPingOwnedEvent(t *testing.T) {
+	f := sshfixture.New(t)
+	f.Configure("yes", f.PublicKey, "", f.Key, "no")
+	master, err := ssh.NewMaster(f.Host, slog.Default())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, master.Close()) }()
+	m := NewManager(&config.Config{Host: f.Host}, nil, nil, master, nil, nil, slog.Default())
+	backend := f.Backend(sshfixture.Nginx, 18089)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	events, errs := docker.NewEventReader(f.Host, master.ControlPath(), slog.Default()).Stream(ctx)
+	defer func() {
+		cancel()
+		for range events {
+		}
+		for range errs {
+		}
+	}()
+	// Allow initial SSH setup, then require an actual owned event before probing.
+	time.Sleep(time.Second)
+	f.Docker("stop", "--time", "0", backend)
+	waitStart := func(ids map[string]bool, kind string) {
+		for {
+			select {
+			case event, ok := <-events:
+				require.True(t, ok, "application event stream closed")
+				if ids[event.ContainerID] && event.Type == kind {
+					t.Logf("application stream observed %s container=%s", kind, event.ContainerID)
+					return
+				}
+			case err, ok := <-errs:
+				require.True(t, ok, "application error stream closed")
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("application event not observed: ", ctx.Err())
+			}
+		}
+	}
+	waitStart(map[string]bool{backend: true}, "stop")
+	since := time.Now().UTC().Format(time.RFC3339Nano)
+	require.True(t, t.Run("ApplicationTarget", func(t *testing.T) {
+		t.Setenv("DOCKER_HOST", "ssh://unrelated.invalid:1")
+		t.Setenv("DOCKER_CONTEXT", "unrelated-context")
+		t.Setenv("DOCKER_TLS_VERIFY", "1")
+		t.Setenv("DOCKER_CERT_PATH", "/unrelated-certificates")
+		require.NoError(t, m.watchdog.dockerPing.Ping(ctx))
+	}))
+	ids := strings.Fields(f.Docker("events", "--since", since, "--until", fmt.Sprint(time.Now().Unix()+1), "--filter", "label=rdhpf.health-check=true", "--format", "{{.Actor.ID}}"))
+	require.NotEmpty(t, ids, "native daemon recorded no health-ping events")
+	wanted := make(map[string]bool)
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	require.Len(t, wanted, 1, "exactly one owned test ping expected")
+	waitStart(wanted, "start")
+	require.Empty(t, f.Docker("ps", "-a", "--filter", "label=rdhpf.health-check=true", "-q"), "ping container must be removed by --rm")
+	require.NoError(t, ctx.Err())
+	f.NoPrompt()
 }

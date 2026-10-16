@@ -75,6 +75,25 @@ Verify:
 rdhpf status --host ssh://user@remote-host
 ```
 
+### Event health probe target
+
+The event watchdog now sends its Docker ping through the configured application
+`--host` and owned SSH control path, with inherited OpenSSH trust and
+`BatchMode=yes`, including missing-mux fallback. Local `DOCKER_HOST`,
+`DOCKER_CONTEXT` and Docker TLS/socket settings no longer select the ping daemon;
+the remote Docker environment is the same one used for discovery and events.
+
+The command remains `docker run --rm --name rdhpf-ping-<unique> --label
+rdhpf.health-check=true alpine:latest echo works`. Ten-second ticks, the
+30-second idle ping threshold, 60-second stale-event threshold, event resets,
+cancellation and ignored ping errors are unchanged. The ping is synchronous and
+can delay ticks; this is not a hard 60-second outage deadline or a redesign of
+watchdog timing/fatal handling.
+
+The application no longer reads `SSH_TEST_KEY_PATH`. Configure authentication
+with OpenSSH `IdentityFile` or an agent; the variable remains optional only for
+test-fixture commands, not shipped application policy.
+
 ### Stopping the tool
 
 Press Ctrl+C to stop gracefully. The tool responds to SIGINT and SIGTERM signals.

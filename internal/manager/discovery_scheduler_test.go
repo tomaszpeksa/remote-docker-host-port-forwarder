@@ -3,6 +3,8 @@ package manager
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -120,5 +122,34 @@ func TestManagerDiscoveryAcceptance(t *testing.T) {
 		m.retireEvent(accepted.token)
 		m.retireEvent(&eventReservation{generation: 0})
 		require.Equal(t, 2, m.discovery.pending, "OLD_ACK_CANNOT_RETIRE_NEW")
+	})
+}
+
+// A stopped object can remain inspectable. A delayed accepted start may therefore
+// restore desired temporarily; the quiet-stream audit, not another event, repairs it.
+func TestManagerDiscoveryDelayedStartAudit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := inventoryManager(t)
+		require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("HOME"), "ssh"), []byte("#!/bin/sh\nprintf '%s' '{\"80/tcp\":[{\"HostPort\":\"1001\"}]}'\n"), 0700))
+		t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "")
+		var lists atomic.Int64
+		m.discovery.list = func(context.Context) ([]string, error) { lists.Add(1); return nil, nil }
+		ctx, cancel := context.WithCancel(context.Background())
+		inventoryDone, eventsDone := make(chan struct{}), make(chan struct{})
+		terminal := make(chan docker.StreamResult, 1)
+		go func() { m.runDiscovery(ctx); close(inventoryDone) }()
+		go func() { m.runEventLoop(ctx, terminal, 0); close(eventsDone) }()
+		defer func() { cancel(); terminal <- docker.StreamResult{Canceled: true}; <-eventsDone; <-inventoryDone }()
+		synctest.Wait()
+		require.Equal(t, int64(1), lists.Load())
+		require.NoError(t, m.deliverEvent(ctx, 0, docker.Event{Type: "stop", ContainerID: discoveryA}))
+		require.NoError(t, m.deliverEvent(ctx, 0, docker.Event{Type: "start", ContainerID: discoveryA}))
+		synctest.Wait()
+		require.Contains(t, m.state.GetDesired(), state.ContainerPorts{ContainerID: discoveryA, Ports: []int{1001}}, "DELAYED_INSPECTABLE_START")
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		require.Contains(t, m.state.GetDesired(), state.ContainerPorts{ContainerID: discoveryA, Ports: []int{}}, "DELAYED_START_AUDIT_REPAIR")
+		require.Equal(t, int64(2), lists.Load())
+		require.Empty(t, m.state.GetActual(), "discovery must not invent actual forwarding")
 	})
 }

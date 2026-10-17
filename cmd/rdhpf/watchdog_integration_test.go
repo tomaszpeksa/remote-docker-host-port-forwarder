@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"debug/buildinfo"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -38,6 +39,24 @@ func (b *watchdogCLILog) Write(p []byte) (int, error) {
 	return b.buffer.Write(p)
 }
 func (b *watchdogCLILog) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buffer.String() }
+
+func watchdogCLITimestamp(text, key string) (time.Time, error) {
+	pattern := regexp.MustCompile(regexp.QuoteMeta(key) + `=([^\s]+)`)
+	match := pattern.FindStringSubmatch(text)
+	if len(match) != 2 {
+		return time.Time{}, fmt.Errorf("missing %s", key)
+	}
+	return time.Parse(time.RFC3339Nano, strings.Trim(match[1], "\"\n\r"))
+}
+
+func TestWatchdogCLITimestampAtLineEnd(t *testing.T) {
+	text := "selected_at=2026-10-17T10:13:53.242Z last_successful_event=2026-10-17T10:12:43.461Z\ntime=2026-10-17T10:13:53.243Z level=INFO\n"
+	for key, expected := range map[string]string{"selected_at": "2026-10-17T10:13:53.242Z", "last_successful_event": "2026-10-17T10:12:43.461Z"} {
+		value, err := watchdogCLITimestamp(text, key)
+		require.NoError(t, err, "WATCHDOG_CLI_TIMESTAMP_STOPS_AT_NEWLINE")
+		require.Equal(t, expected, value.Format(time.RFC3339Nano))
+	}
+}
 
 func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	f := sshfixture.NewWatchdog(t)
@@ -104,10 +123,7 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	text := logs.String()
 	require.Contains(t, text, "no successfully handled Docker events")
 	extract := func(key string) time.Time {
-		pattern := regexp.MustCompile(key + `=([^ ]+)`)
-		match := pattern.FindStringSubmatch(text)
-		require.Len(t, match, 2)
-		value, err := time.Parse(time.RFC3339Nano, strings.Trim(match[1], "\"\n\r"))
+		value, err := watchdogCLITimestamp(text, key)
 		require.NoError(t, err)
 		return value
 	}

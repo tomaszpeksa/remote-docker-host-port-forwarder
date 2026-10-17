@@ -1,12 +1,17 @@
 package manager
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -68,4 +73,119 @@ func TestRemoteDockerPing(t *testing.T) {
 			require.ErrorIs(t, m.watchdog.dockerPing.Ping(ctx), context.Canceled, "cancellation must not be mistaken for the prior exit-status failure")
 		})
 	}
+}
+
+// This child transfers copies of the command's descriptors to the test owner.
+// No orphan grandchild or elapsed sleep is used to keep the exec copiers open.
+func TestRemoteDockerPingDescriptorChild(t *testing.T) {
+	path := os.Getenv("PING_DESCRIPTOR_SOCKET")
+	if path == "" {
+		return
+	}
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		os.Exit(21)
+	}
+	_, _, err = conn.WriteMsgUnix([]byte("fds"), syscall.UnixRights(1, 2), nil)
+	if err != nil {
+		os.Exit(22)
+	}
+	_ = conn.Close()
+	os.Exit(0)
+}
+
+func TestRemoteDockerPingOwnedLifetime(t *testing.T) {
+	t.Run("LargeDiagnostics", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		t.Setenv("PATH", dir)
+		payload := strings.Repeat("o", 4096)
+		script := "#!/bin/sh\ni=0; while [ \"$i\" -lt 40 ]; do printf '%s' '" + payload + "'; printf '%s' '" + payload + "' >&2; i=$((i+1)); done\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700))
+		var logs bytes.Buffer
+		r := newRemoteDockerPingRunner("ssh://owned.invalid", "/unused", slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		require.NoError(t, r.Ping(context.Background()))
+		require.LessOrEqual(t, logs.Len(), 2*(64<<10)+1024, "PROBE_OUTPUT_BOUND")
+		require.Contains(t, logs.String(), "truncated=true")
+	})
+	t.Run("InheritedOutput", func(t *testing.T) {
+		dir, err := os.MkdirTemp("/tmp", "ping-fd-")
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+		t.Setenv("HOME", dir)
+		t.Setenv("PATH", dir)
+		socket := filepath.Join(dir, "fd")
+		listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+		require.NoError(t, err)
+		defer listener.Close()
+		t.Setenv("PING_DESCRIPTOR_SOCKET", socket)
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		t.Setenv("PING_TEST_EXECUTABLE", executable)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexec \"$PING_TEST_EXECUTABLE\" -test.run '^TestRemoteDockerPingDescriptorChild$'\n"), 0700))
+		r := newRemoteDockerPingRunner("ssh://owned.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- r.Ping(ctx) }()
+		joined := false
+		var held []*os.File
+		defer func() {
+			for _, f := range held {
+				_ = f.Close()
+			}
+			cancel()
+			if !joined {
+				<-done
+			}
+		}()
+		require.NoError(t, listener.SetDeadline(time.Now().Add(3*time.Second)))
+		conn, err := listener.AcceptUnix()
+		require.NoError(t, err)
+		defer conn.Close()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(3*time.Second)))
+		data, control := make([]byte, 16), make([]byte, syscall.CmsgSpace(8))
+		_, n, _, _, err := conn.ReadMsgUnix(data, control)
+		require.NoError(t, err)
+		messages, err := syscall.ParseSocketControlMessage(control[:n])
+		require.NoError(t, err)
+		for _, message := range messages {
+			fds, err := syscall.ParseUnixRights(&message)
+			require.NoError(t, err)
+			for _, fd := range fds {
+				held = append(held, os.NewFile(uintptr(fd), "held-output"))
+			}
+		}
+		require.Len(t, held, 2)
+		select {
+		case err := <-done:
+			joined = true
+			require.True(t, errors.Is(err, exec.ErrWaitDelay), "PROBE_PIPE_JOIN: %v", err)
+		case <-time.After(3 * time.Second):
+			t.Error("PROBE_PIPE_JOIN: direct child exited but inherited output blocked completion")
+		}
+	})
+	t.Run("CanceledInFlight", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		t.Setenv("PATH", dir)
+		t.Setenv("PING_READY", filepath.Join(dir, "ready"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nprintf ready > \"$PING_READY\"\nwhile :; do :; done\n"), 0700))
+		r := newRemoteDockerPingRunner("ssh://owned.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.Ping(ctx) }()
+		joined := false
+		defer func() {
+			cancel()
+			if !joined {
+				<-done
+			}
+		}()
+		require.Eventually(t, func() bool { _, err := os.Stat(filepath.Join(dir, "ready")); return err == nil }, time.Second, time.Millisecond)
+		cancel()
+		err := <-done
+		joined = true
+		require.Error(t, err)
+	})
 }

@@ -53,16 +53,20 @@ func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
 
 	// #nosec G204 - Fixed SSH executable, separated destination and generated numeric ping name.
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	out, err := cmd.CombinedOutput()
+	stdout, stderr := util.NewTailBuffer(64<<10), util.NewTailBuffer(64<<10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
+	err = cmd.Run()
 	if err != nil {
 		r.logger.Warn("event health ping docker run failed",
 			"error", err.Error(),
-			"output", string(out))
+			"output", stdout.String(), "stderr", stderr.String(),
+			"truncated", stdout.Truncated() || stderr.Truncated())
 		return fmt.Errorf("event health ping docker run failed: %w", err)
 	}
 
 	r.logger.Debug("event health ping docker run succeeded",
-		"output", strings.TrimSpace(string(out)))
+		"output", strings.TrimSpace(stdout.String()), "stderr", stderr.String(),
+		"truncated", stdout.Truncated() || stderr.Truncated())
 	return nil
 }
 

@@ -128,6 +128,10 @@ func (h *watchdogOwned) backend() (string, int, string) {
 	require.NoError(h.t, err)
 	port := listener.Addr().(*net.TCPAddr).Port
 	require.NoError(h.t, listener.Close())
+	return h.backendAtPort(port)
+}
+func (h *watchdogOwned) backendAtPort(port int) (string, int, string) {
+	h.t.Helper()
 	id := h.f.Backend(sshfixture.Nginx, port)
 	h.t.Cleanup(h.close)
 	body := fmt.Sprintf("watchdog-%s-%d", h.f.Alias, port)
@@ -172,9 +176,17 @@ func TestWatchdogOwnedWarmProcessing(t *testing.T) {
 	h := newWatchdogOwned(t)
 	h.start()
 	arm := lastWatchdogHealth(h.m.watchdog)
-	_, port, body := h.backend()
+	id, port, body := h.backend()
 	h.wait(15*time.Second, "owned forwarded HTTP", func() bool { return watchdogHTTP(port, body) })
 	h.f.FailAfterCompletedPing()
+	if os.Getenv("RDHPF_WATCHDOG_FAILURE_CONTROL") == "backend" {
+		h.f.ObserveCompletedPingForFailure()
+		name := fmt.Sprintf("%s-%d", h.f.Alias, port)
+		require.Equal(t, id+" /"+name+" "+h.f.Alias, h.f.Docker("inspect", "--format", `{{.Id}} {{.Name}} {{index .Config.Labels "rdhpf.trust"}}`, id))
+		t.Logf("WATCHDOG_INTENTIONAL_BACKEND_COLLISION name=%s Engine_ID=%s", name, id)
+		h.backendAtPort(port) // Fails inside Backend, after its removal registration.
+		t.Fatal("owned duplicate Backend unexpectedly returned")
+	}
 	timer := time.NewTimer(time.Until(arm.Add(130 * time.Second)))
 	defer timer.Stop()
 	select {

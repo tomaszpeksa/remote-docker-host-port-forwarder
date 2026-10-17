@@ -478,6 +478,13 @@ func (w *WatchdogFixture) FailAfterCompletedPing() {
 	if os.Getenv("RDHPF_WATCHDOG_FAILURE_CONTROL") != "1" {
 		return
 	}
+	w.ObserveCompletedPingForFailure()
+	w.T.Fatal("WATCHDOG_INTENTIONAL_FAILURE_AFTER_DISPATCH")
+}
+
+// ObserveCompletedPingForFailure binds a diagnostic failure to a completed real
+// SSH/Engine attempt; its safety observation is not post-failure accounting.
+func (w *WatchdogFixture) ObserveCompletedPingForFailure() {
 	w.T.Helper()
 	var attempt WatchdogAttempt
 	require.Eventually(w.T, func() bool {
@@ -501,7 +508,6 @@ func (w *WatchdogFixture) FailAfterCompletedPing() {
 	require.NotEmpty(w.T, id, "real Engine destroy receipt required before diagnostic failure")
 	require.Empty(w.T, w.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+attempt.Name+"$"), "failure control refuses uncertain remote disposition")
 	w.T.Logf("WATCHDOG_FAILURE_CONTROL_DISPATCH name=%s Engine_ID=%s removed_before_failure=true", attempt.Name, id)
-	w.T.Fatal("WATCHDOG_INTENTIONAL_FAILURE_AFTER_DISPATCH")
 }
 
 // SchedulePingAccounting is called by the already-registered local-owner cleanup

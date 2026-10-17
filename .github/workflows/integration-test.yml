@@ -129,6 +129,15 @@ jobs:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           mkdir -p test-evidence/bin
+          {
+            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            pwd
+            git rev-parse HEAD HEAD^{tree}
+            git status --porcelain=v1 --untracked-files=all
+            git ls-files --others --exclude-standard
+            git diff --exit-code
+            git diff --cached --exit-code
+          } > test-evidence/watchdog-cli-prebuild.txt
           go build -o "$PWD/test-evidence/bin/rdhpf" ./cmd/rdhpf
           go version -m test-evidence/bin/rdhpf > test-evidence/watchdog-cli-build.txt
           sha256sum test-evidence/bin/rdhpf >> test-evidence/watchdog-cli-build.txt

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Repair missed Docker discovery with independent bounded inventory audits,
+  fenced partial progress and fair timer retries; unknown observations preserve
+  current desired ports instead of authorizing removal.
+- Join Docker event-stream commands/readers before terminal completion, reject
+  malformed short IDs safely, bound diagnostics and retain unapplied desired
+  changes across EOF and unavailable transport without perpetual operation retries.
+
 - S07A: require Go 1.27.2 for source builds and macOS 13+ for new macOS binaries;
   pin repository development tools with mise and update application dependencies.
 - Migrate Homebrew publishing to Linux/macOS binary casks. Existing formula users

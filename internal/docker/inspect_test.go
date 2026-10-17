@@ -2,11 +2,46 @@ package docker
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+// Suppressing the required fallback failure falsely authorizes empty desired ports.
+func TestInspectPortsLabelFailure(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte(`#!/bin/sh
+for arg do
+ case "$arg" in
+  *HostConfig.PortBindings*) printf '{}'; exit 0;;
+  *Config.Labels*) printf 'label observation failed' >&2; exit 7;;
+ esac
+done
+exit 91
+`), 0700))
+	ports, err := InspectPorts(context.Background(), "ssh://owned-fixture.invalid", "/unused", "valid-name")
+	require.ErrorContains(t, err, "failed to inspect labels", "LABEL_FAILURE_IS_UNKNOWN")
+	require.Nil(t, ports)
+}
+
+func TestInspectPortsCaptureLimit(t *testing.T) {
+	installFakeSSH(t, "", "", 0)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte(`#!/bin/sh
+i=0
+while [ "$i" -lt 1049 ]; do
+ printf '%1000s' ''
+ i=$((i+1))
+done
+printf '{}'
+`), 0700))
+	ports, err := InspectPorts(context.Background(), "ssh://owned-fixture.invalid", "/unused", "name")
+	require.ErrorContains(t, err, "output limit", "CAPTURE_OVERFLOW_IS_NOT_EMPTY_SUCCESS")
+	require.Nil(t, ports)
+}
 
 func TestInspectPortsBindings(t *testing.T) {
 	for _, tc := range []struct {

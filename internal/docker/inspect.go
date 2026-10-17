@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/util"
 )
 
 // portBindingJSON represents the structure of Docker's PortBindings
@@ -46,7 +48,8 @@ type portBindingJSON map[string][]struct {
 //	}
 //	fmt.Printf("Published ports: %v\n", ports) // [8080, 9090]
 func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string) ([]int, error) {
-	// Import ssh package is already present at the top
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
 	// Remove ssh:// prefix and parse port for SSH command
 	sshHostClean, port, err := ssh.ParseHost(sshHost)
@@ -74,11 +77,23 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 
-	output, err := cmd.Output()
+	stdout, stderr := util.NewLimitedBuffer(1<<20), util.NewLimitedBuffer(64<<10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
+	err = cmd.Run()
+	if stdout.Err() != nil {
+		return nil, stdout.Err()
+	}
+	if stderr.Err() != nil {
+		return nil, stderr.Err()
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	output := stdout.Bytes()
 	if err != nil {
 		// Check if it's a non-existent container error
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			stderr := string(exitErr.Stderr)
+		if _, ok := err.(*exec.ExitError); ok {
+			stderr := string(stderr.Bytes())
 			if strings.Contains(stderr, "No such object") || strings.Contains(stderr, "No such container") {
 				return nil, fmt.Errorf("container not found: %s", containerID)
 			}
@@ -126,7 +141,10 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	// Only enabled if RDHPF_ENABLE_LABEL_PORTS=1 is set
 	if len(ports) == 0 && os.Getenv("RDHPF_ENABLE_LABEL_PORTS") == "1" {
 		labelPorts, err := inspectPortsFromLabels(ctx, sshHost, controlPath, containerID)
-		if err == nil && len(labelPorts) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(labelPorts) > 0 {
 			return labelPorts, nil
 		}
 	}
@@ -164,10 +182,22 @@ func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, container
 
 	// #nosec G204 - SSH command with validated host format (checked in config.Validate)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	output, err := cmd.Output()
+	stdout, stderr := util.NewLimitedBuffer(1<<20), util.NewLimitedBuffer(64<<10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
+	err = cmd.Run()
+	if stdout.Err() != nil {
+		return nil, stdout.Err()
+	}
+	if stderr.Err() != nil {
+		return nil, stderr.Err()
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect labels: %w", err)
 	}
+	output := stdout.Bytes()
 
 	// Parse labels JSON
 	var labels map[string]string

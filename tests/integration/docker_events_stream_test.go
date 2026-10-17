@@ -51,7 +51,7 @@ func TestDockerEventsStreamPersistence(t *testing.T) {
 	// Start docker events stream
 	t.Log("Starting docker events stream via SSH ControlMaster...")
 	reader := docker.NewEventReader(sshHost, controlPath, logger)
-	events, errs := reader.Stream(ctx)
+	events, errs := streamChannelsForTest(ctx, reader)
 
 	// CRITICAL TEST: Stream should NOT close immediately
 	// The bug this catches: stream closes after ~40ms
@@ -116,7 +116,7 @@ func TestDockerEventsStreamReceivesEvents(t *testing.T) {
 	// Start docker events stream
 	t.Log("Starting docker events stream...")
 	reader := docker.NewEventReader(sshHost, controlPath, logger)
-	events, errs := reader.Stream(ctx)
+	events, errs := streamChannelsForTest(ctx, reader)
 
 	// Start a test container to generate events
 	t.Log("Starting test container to generate events...")
@@ -160,4 +160,28 @@ done:
 	}
 
 	t.Log("✅ Stream successfully receives and processes events")
+}
+
+// Adapt inherited channel-based tests only. S09 lifecycle proof consumes the
+// joined result directly; this bridge does not supply readiness or replay.
+func streamChannelsForTest(ctx context.Context, r *docker.EventReader) (<-chan docker.Event, <-chan error) {
+	events := make(chan docker.Event, 10)
+	errs := make(chan error, 1)
+	done := r.Stream(ctx, func(ctx context.Context, e docker.Event) error {
+		select {
+		case events <- e:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	go func() {
+		result := <-done
+		if result.Err != nil && !result.Canceled {
+			errs <- result.Err
+		}
+		close(events)
+		close(errs)
+	}()
+	return events, errs
 }

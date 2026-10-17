@@ -2,61 +2,45 @@ package docker
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
-	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/util"
 )
 
-// Event represents a Docker container event
+// Event represents a Docker container event.
 type Event struct {
-	// Type is the event type: "start", "die", or "stop"
-	Type string
-
-	// ContainerID is the full container ID
+	Type        string
 	ContainerID string
-
-	// Timestamp is when the event occurred
-	Timestamp time.Time
+	Timestamp   time.Time
 }
 
-// EventReader streams Docker container events via SSH
+// StreamResult is published once, after the command and all its readers join.
+// Nil Err with Canceled=false means clean EOF, not subscription readiness.
+type StreamResult struct {
+	Err                  error
+	Canceled             bool
+	Rejected             uint64
+	DiagnosticsTruncated bool
+}
+
+// EventReader streams Docker container events via SSH.
 type EventReader struct {
 	sshHost     string
 	controlPath string
 	logger      *slog.Logger
 }
 
-// NewEventReader creates a new Docker event stream reader.
-//
-// Parameters:
-//   - sshHost: SSH connection string in ssh://user@host format
-//   - controlPath: Path to SSH control socket
-//   - logger: Structured logger for operation logging
-//
-// Example usage:
-//
-//	reader := NewEventReader("ssh://user@example.com", "/tmp/rdhpf-abc123.sock", logger)
-//	ctx := context.Background()
-//	events, errs := reader.Stream(ctx)
 func NewEventReader(sshHost, controlPath string, logger *slog.Logger) *EventReader {
-	return &EventReader{
-		sshHost:     sshHost,
-		controlPath: controlPath,
-		logger:      logger,
-	}
+	return &EventReader{sshHost: sshHost, controlPath: controlPath, logger: logger}
 }
 
-// dockerEventJSON represents the JSON structure from docker events
 type dockerEventJSON struct {
 	Type   string `json:"Type"`
 	Action string `json:"Action"`
@@ -69,281 +53,149 @@ type dockerEventJSON struct {
 	Status   string `json:"status"`
 }
 
-// Stream starts streaming Docker container events.
-// It returns two channels:
-//   - events: Channel of Event structs for start, die, and stop events
-//   - errors: Channel of errors encountered during streaming
-//
-// Both channels are closed when the context is canceled or the stream ends.
-// The caller should handle errors and restart as needed.
-//
-// Note: The Manager implements auto-restart logic with exponential backoff
-// when the stream fails. This method only starts a single stream.
-//
-// Example usage:
-//
-//	ctx, cancel := context.WithCancel(context.Background())
-//	defer cancel()
-//
-//	events, errs := reader.Stream(ctx)
-//	for {
-//	    select {
-//	    case event, ok := <-events:
-//	        if !ok {
-//	            return
-//	        }
-//	        fmt.Printf("Event: %s %s\n", event.Type, event.ContainerID)
-//	    case err := <-errs:
-//	        log.Printf("Error: %v", err)
-//	    }
-//	}
-func (r *EventReader) Stream(ctx context.Context) (<-chan Event, <-chan error) {
-	events := make(chan Event, 10)
-	errors := make(chan error, 1)
-
+// Stream owns one command lifetime. Deliver must respect its supplied context;
+// an error stops this stream. A caller may backpressure, but must never silently
+// discard accepted events. Terminal result does not replace draining its queue.
+func (r *EventReader) Stream(ctx context.Context, deliver func(context.Context, Event) error) <-chan StreamResult {
+	done := make(chan StreamResult, 1)
 	go func() {
-		defer close(events)
-		defer close(errors)
-
-		// Remove ssh:// prefix and parse port for SSH command
-		sshHost, port, err := ssh.ParseHost(r.sshHost)
-		if err != nil {
-			errors <- fmt.Errorf("failed to parse SSH host: %w", err)
-			return
-		}
-
-		// Build the docker command as a single quoted string to protect {{json .}} from shell expansion
-		dockerCmd := `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`
-
-		// Build SSH command that executes docker via sh -c
-		// Important: sh -c and the docker command must be passed as a single argument to SSH
-		remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-		args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
-		if port != "" {
-			args = append(args, "-p", port)
-		}
-		args = append(args, "--", sshHost, remoteCmd)
-
-		// Log full SSH command before execution
-		r.logger.Info("executing docker events command via shell",
-			"args", fmt.Sprintf("%v", args),
-			"dockerCmd", dockerCmd,
-			"host", sshHost,
-			"port", port)
-
-		// #nosec G204 - SSH command with validated host format (checked in config.Validate)
-		cmd := exec.CommandContext(ctx, "ssh", args...)
-
-		// Capture both stdout and stderr
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			errors <- fmt.Errorf("failed to get stdout pipe: %w", err)
-			return
-		}
-
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			errors <- fmt.Errorf("failed to get stderr pipe: %w", err)
-			return
-		}
-
-		// DIAGNOSTIC: Track stream startup timing
-		streamStartTime := time.Now()
-
-		if err := cmd.Start(); err != nil {
-			errors <- fmt.Errorf("failed to start docker events: %w", err)
-			return
-		}
-
-		startupDuration := time.Since(streamStartTime)
-
-		// Ensure process is killed when context is canceled
-		go func() {
-			<-ctx.Done()
-			if cmd.Process != nil {
-				// DIAGNOSTIC: Log cancellation
-				r.logger.Info("DIAGNOSTIC: Context canceled, terminating Docker events stream",
-					"host", sshHost,
-					"pid", cmd.Process.Pid)
-				// Interrupt the SSH process gracefully
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-		}()
-
-		r.logger.Info("docker events stream started",
-			"host", sshHost,
-			"startup_duration_ms", startupDuration.Milliseconds(),
-			"pid", cmd.Process.Pid)
-
-		// Buffer to collect stdout lines for error reporting
-		var stdoutLines []string
-		var stdoutMu sync.Mutex
-
-		// Buffer to collect all stderr output
-		var stderrBuf bytes.Buffer
-		var wg sync.WaitGroup
-
-		// Read stderr in a separate goroutine
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = io.Copy(&stderrBuf, stderr)
-		}()
-
-		// DIAGNOSTIC: Track when we start receiving events
-		firstEventReceived := false
-		firstEventTime := time.Time{}
-		lastEventTime := time.Time{}
-		eventCount := 0
-
-		// Read and parse JSON lines from stdout
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-
-			if !firstEventReceived {
-				firstEventReceived = true
-				firstEventTime = time.Now()
-				r.logger.Info("DIAGNOSTIC: First Docker event received",
-					"time_since_start_ms", time.Since(streamStartTime).Milliseconds())
-			}
-			lastEventTime = time.Now()
-			eventCount++
-
-			// Keep last 50 lines for error reporting
-			stdoutMu.Lock()
-			stdoutLines = append(stdoutLines, line)
-			if len(stdoutLines) > 50 {
-				stdoutLines = stdoutLines[1:]
-			}
-			stdoutMu.Unlock()
-
-			var dockerEvent dockerEventJSON
-			if err := json.Unmarshal([]byte(line), &dockerEvent); err != nil {
-				r.logger.Warn("failed to parse docker event JSON",
-					"error", err.Error(),
-					"line", line)
-				continue
-			}
-
-			// Convert to our Event struct
-			// Docker events can use either Action or status field
-			eventType := dockerEvent.Action
-			if eventType == "" {
-				eventType = dockerEvent.Status
-			}
-
-			// Only process start, die, stop events
-			if eventType != "start" && eventType != "die" && eventType != "stop" {
-				continue
-			}
-
-			event := Event{
-				Type:        eventType,
-				ContainerID: dockerEvent.Actor.ID,
-				Timestamp:   time.Unix(dockerEvent.Time, 0),
-			}
-
-			// Send event (non-blocking to handle context cancellation)
-			select {
-			case events <- event:
-				r.logger.Debug("docker event received",
-					"type", event.Type,
-					"containerID", event.ContainerID[:12])
-			case <-ctx.Done():
-				return
-			}
-		}
-
-		// Wait for stderr reader to finish
-		wg.Wait()
-
-		// Get stderr content
-		stderrContent := stderrBuf.String()
-		if stderrContent != "" {
-			r.logger.Debug("docker events stderr output",
-				"stderr", stderrContent)
-		}
-
-		// DIAGNOSTIC: Log stream statistics before exit
-		streamDuration := time.Since(streamStartTime)
-		r.logger.Info("DIAGNOSTIC: Docker events stream scanner finished",
-			"total_duration_ms", streamDuration.Milliseconds(),
-			"events_received", eventCount,
-			"first_event_received", firstEventReceived,
-			"time_to_first_event_ms", func() int64 {
-				if firstEventReceived {
-					return firstEventTime.Sub(streamStartTime).Milliseconds()
-				}
-				return 0
-			}(),
-			"time_since_last_event_ms", func() int64 {
-				if !lastEventTime.IsZero() {
-					return time.Since(lastEventTime).Milliseconds()
-				}
-				return 0
-			}())
-
-		// Check for scanner errors
-		if err := scanner.Err(); err != nil {
-			r.logger.Warn("docker events scanner error",
-				"error", err.Error(),
-				"stream_duration_ms", streamDuration.Milliseconds())
-			// Send error to channel so manager can handle it
-			select {
-			case errors <- fmt.Errorf("scanner error: %w", err):
-			case <-ctx.Done():
-				return
-			}
-		}
-
-		// Wait for command to finish
-		if err := cmd.Wait(); err != nil {
-			// Don't report error if context was canceled
-			if ctx.Err() == nil {
-				// Extract exit code and signal information
-				exitCode := -1
-				signalInfo := ""
-				if exitErr, ok := err.(*exec.ExitError); ok {
-					if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-						exitCode = status.ExitStatus()
-						if status.Signaled() {
-							signalInfo = fmt.Sprintf("signal: %v", status.Signal())
-						}
-					}
-				}
-
-				// Log detailed failure information
-				stdoutMu.Lock()
-				stdoutStr := strings.Join(stdoutLines, "\n")
-				stdoutMu.Unlock()
-
-				r.logger.Error("docker events command failed",
-					"args", fmt.Sprintf("%v", args),
-					"error", err.Error(),
-					"exitCode", exitCode,
-					"signal", signalInfo,
-					"stderr", stderrContent,
-					"stdoutLines", len(stdoutLines),
-					"stdout", stdoutStr,
-					"stream_duration_ms", streamDuration.Milliseconds(),
-					"events_received", eventCount,
-					"pid", cmd.Process.Pid)
-
-				// Send error to channel so manager can handle it
-				select {
-				case errors <- fmt.Errorf("docker events command failed: %w", err):
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
-		r.logger.Info("docker events stream ended",
-			"host", sshHost,
-			"total_duration_ms", streamDuration.Milliseconds(),
-			"events_received", eventCount)
+		result := r.stream(ctx, deliver)
+		done <- result
+		close(done)
 	}()
+	return done
+}
 
-	return events, errors
+func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, Event) error) (result StreamResult) {
+	if err := ctx.Err(); err != nil {
+		return StreamResult{Err: err, Canceled: true}
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	host, port, err := ssh.ParseHost(r.sshHost)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to parse SSH host: %w", err)
+		return
+	}
+	dockerCmd := `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`
+	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
+	args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, "--", host, remoteCmd)
+	r.logger.Info("executing docker events command via shell", "args", fmt.Sprint(args), "dockerCmd", dockerCmd, "host", host, "port", port)
+	// #nosec G204 - Fixed SSH executable and separated, validated destination.
+	cmd := exec.CommandContext(streamCtx, "ssh", args...)
+	// exec owns its OS-pipe copiers; Wait joins them. The extra pipe lets scanner
+	// failure close its reader immediately, unblocking the stdout copier. WaitDelay
+	// closes inherited OS descriptors, not an excuse to detach an unreaped child.
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	diagnostics := util.NewTailBuffer(64 << 10)
+	outputTail := util.NewTailBuffer(64 << 10)
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = writer, diagnostics, 2*time.Second
+	started := time.Now()
+	if err := cmd.Start(); err != nil {
+		_ = writer.Close()
+		if ctx.Err() != nil {
+			result.Err = ctx.Err()
+			result.Canceled = true
+		} else {
+			result.Err = fmt.Errorf("failed to start docker events: %w", err)
+		}
+		return
+	}
+	r.logger.Info("docker events stream started", "host", host, "startup_duration_ms", time.Since(started).Milliseconds(), "pid", cmd.Process.Pid)
+	finished := make(chan struct{})
+	cleanupDone := watchStreamCleanup(streamCtx, finished, r.logger)
+	defer func() { close(finished); <-cleanupDone }()
+	waited := make(chan error, 1)
+	go func() {
+		waitErr := cmd.Wait()
+		_ = writer.CloseWithError(waitErr)
+		waited <- waitErr
+	}()
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	var deliveryErr error
+	var count int
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		_, _ = outputTail.Write(line)
+		_, _ = outputTail.Write([]byte{'\n'})
+		count++
+		var raw dockerEventJSON
+		if err := json.Unmarshal(line, &raw); err != nil {
+			result.Rejected++
+			r.logger.Warn("failed to parse docker event JSON", "error", err.Error(), "line", string(line))
+			continue
+		}
+		kind := raw.Action
+		if kind == "" {
+			kind = raw.Status
+		}
+		if kind != "start" && kind != "die" && kind != "stop" {
+			continue
+		}
+		if len(raw.Actor.ID) < 12 {
+			result.Rejected++
+			r.logger.Warn("rejected malformed docker event ID", "type", kind, "containerID", raw.Actor.ID)
+			continue
+		}
+		event := Event{Type: kind, ContainerID: raw.Actor.ID, Timestamp: time.Unix(raw.Time, 0)}
+		if err := deliver(streamCtx, event); err != nil {
+			deliveryErr = err
+			break
+		}
+		r.logger.Debug("docker event received", "type", kind, "containerID", event.ContainerID[:12])
+	}
+	scanErr := scanner.Err()
+	if scanErr != nil || deliveryErr != nil {
+		cancel()
+		_ = reader.Close()
+	}
+	waitErr := <-waited
+	result.DiagnosticsTruncated = diagnostics.Truncated() || outputTail.Truncated()
+	if diagnostics.String() != "" {
+		r.logger.Debug("docker events stderr output", "stderr", diagnostics.String(), "truncated", diagnostics.Truncated())
+	}
+	switch {
+	case ctx.Err() != nil:
+		result.Canceled = true
+		result.Err = ctx.Err()
+	case deliveryErr != nil:
+		result.Err = fmt.Errorf("docker event delivery failed: %w", deliveryErr)
+	case scanErr != nil && scanErr != waitErr:
+		result.Err = fmt.Errorf("scanner error: %w", scanErr)
+	case waitErr != nil:
+		result.Err = fmt.Errorf("docker events command failed: %w", waitErr)
+	}
+	if result.Err != nil && !result.Canceled {
+		r.logger.Error("docker events command failed", "error", result.Err, "exitCode", cmd.ProcessState.ExitCode(), "stderr", diagnostics.String(), "stdout", outputTail.String(), "args", fmt.Sprint(args))
+	}
+	r.logger.Info("docker events stream ended", "host", host, "total_duration_ms", time.Since(started).Milliseconds(), "events_received", count, "rejected", result.Rejected, "diagnostics_truncated", result.DiagnosticsTruncated)
+	return
+}
+
+func watchStreamCleanup(ctx context.Context, finished <-chan struct{}, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-finished:
+			return
+		case <-ctx.Done():
+		}
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-finished:
+			return
+		case <-timer.C:
+		}
+		logger.Warn("docker events cleanup allowance exceeded; still joining owned workers")
+		<-finished
+	}()
+	return done
 }

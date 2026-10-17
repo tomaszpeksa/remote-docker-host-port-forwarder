@@ -288,3 +288,55 @@ func (s *State) InvalidateConnection(at time.Time) []ForwardState {
 	}
 	return retired
 }
+
+// MergeInventory applies a complete listing and its successfully observed subset.
+// The caller validates bounded unique IDs and observations before calling.
+func (s *State) MergeInventory(listed []string, observed []ContainerPorts) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	present := make(map[string]bool, len(listed))
+	for _, id := range listed {
+		present[id] = true
+	}
+	changed := false
+	for id, ports := range s.desired {
+		if !present[id] && len(ports) != 0 {
+			s.desired[id] = []int{}
+			changed = true
+		}
+	}
+	for _, cp := range observed {
+		old, exists := s.desired[cp.ContainerID]
+		// Startup inventory never owned infrastructure or newly seen portless
+		// containers. Authoritative empty still clears an existing owner.
+		if !exists && len(cp.Ports) == 0 {
+			continue
+		}
+		if exists && samePorts(old, cp.Ports) {
+			continue
+		}
+		s.desired[cp.ContainerID] = append([]int{}, cp.Ports...)
+		changed = true
+	}
+	return changed
+}
+
+func samePorts(a, b []int) bool {
+	ports := make(map[int]bool, len(a))
+	for _, p := range a {
+		ports[p] = true
+	}
+	other := make(map[int]bool, len(b))
+	for _, p := range b {
+		other[p] = true
+	}
+	if len(ports) != len(other) {
+		return false
+	}
+	for p := range ports {
+		if !other[p] {
+			return false
+		}
+	}
+	return true
+}

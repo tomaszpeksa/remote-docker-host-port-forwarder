@@ -2,192 +2,230 @@ package manager
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"io"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-// fakeClock provides a controllable time source for testing
 type fakeClock struct {
+	mu  sync.Mutex
 	now time.Time
 }
 
-func newFakeClock(t time.Time) *fakeClock {
-	return &fakeClock{now: t}
+func newFakeClock(now time.Time) *fakeClock  { return &fakeClock{now: now} }
+func (c *fakeClock) Now() time.Time          { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func (c *fakeClock) Advance(d time.Duration) { c.mu.Lock(); defer c.mu.Unlock(); c.now = c.now.Add(d) }
+
+func armWatchdog(t *testing.T, clock *fakeClock) (*eventWatchdog, context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	w := newEventWatchdog(clock.Now, nil)
+	w.arm(context.Background(), cancel, &atomic.Bool{})
+	return w, ctx
 }
 
-func (c *fakeClock) Now() time.Time {
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.now = c.now.Add(d)
-}
-
-// fakePingRunner provides a controllable ping runner for testing
-type fakePingRunner struct {
-	calls     int
-	shouldErr bool
-	err       error
-}
-
-func (f *fakePingRunner) Ping(ctx context.Context) error {
-	f.calls++
-	if f.shouldErr {
-		if f.err != nil {
-			return f.err
-		}
-		return fmt.Errorf("fake ping error")
-	}
-	return nil
-}
-
-func TestEventWatchdog_HealthyUnder30s(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Advance time by 29 seconds
-	clock.Advance(29 * time.Second)
-
-	// Tick should return nil (healthy), no ping should be called
-	err := watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error, got: %v", err)
-	}
-	if ping.calls != 0 {
-		t.Errorf("Expected 0 ping calls, got: %d", ping.calls)
-	}
-}
-
-func TestEventWatchdog_PingsBetween30And60s(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Advance time by 30 seconds (idle threshold)
-	clock.Advance(30 * time.Second)
-
-	// First tick should trigger ping
-	err := watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error at 30s, got: %v", err)
-	}
-	if ping.calls != 1 {
-		t.Errorf("Expected 1 ping call at 30s, got: %d", ping.calls)
-	}
-
-	// Advance to 45 seconds
-	clock.Advance(15 * time.Second)
-
-	// Second tick should also trigger ping (still in idle window)
-	err = watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error at 45s, got: %v", err)
-	}
-	if ping.calls != 2 {
-		t.Errorf("Expected 2 ping calls at 45s, got: %d", ping.calls)
+func TestEventWatchdogBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		elapsed      time.Duration
+		probe, fatal bool
+	}{
+		{"under30", 30*time.Second - time.Nanosecond, false, false},
+		{"at30", 30 * time.Second, true, false},
+		{"under60", 60*time.Second - time.Nanosecond, true, false},
+		{"at60", 60 * time.Second, false, true},
+		{"after60", 61 * time.Second, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t0 := time.Unix(1000, 0)
+			clock := newFakeClock(t0)
+			w, ctx := armWatchdog(t, clock)
+			clock.Advance(tc.elapsed)
+			deadline, err := w.Tick()
+			if tc.probe {
+				require.Equal(t, time.Unix(1060, 0), deadline)
+			} else {
+				require.True(t, deadline.IsZero())
+			}
+			if tc.fatal {
+				require.ErrorContains(t, err, "no successfully handled Docker events")
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, ctx.Err())
+			}
+		})
 	}
 }
 
-func TestEventWatchdog_FatalAt60s(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Advance time by 60 seconds (fatal threshold)
-	clock.Advance(60 * time.Second)
-
-	// Tick should return fatal error
-	err := watchdog.Tick(context.Background())
-	if err == nil {
-		t.Error("Expected fatal error at 60s, got nil")
-	}
-	if err != nil && err.Error() != "event stream unhealthy: no events for 1m0s" {
-		t.Errorf("Unexpected error message: %v", err)
-	}
-}
-
-func TestEventWatchdog_OnEventResetsTimer(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Advance to 40 seconds (should trigger ping)
+func TestEventWatchdogArmsAtRunOnlyOnce(t *testing.T) {
+	clock := newFakeClock(time.Unix(1000, 0))
+	w := newEventWatchdog(clock.Now, nil)
+	clock.Advance(2 * time.Minute)
+	w.OnEvent()
+	deadline, err := w.Tick()
+	require.NoError(t, err)
+	require.True(t, deadline.IsZero())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.arm(context.Background(), cancel, &atomic.Bool{})
+	deadline, err = w.Tick()
+	require.NoError(t, err)
+	require.True(t, deadline.IsZero(), "construction age is not processing silence")
 	clock.Advance(40 * time.Second)
-	err := watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error at 40s, got: %v", err)
-	}
-	if ping.calls != 1 {
-		t.Errorf("Expected 1 ping call, got: %d", ping.calls)
-	}
+	w.arm(context.Background(), cancel, &atomic.Bool{})
+	deadline, err = w.Tick()
+	require.NoError(t, err)
+	require.Equal(t, time.Unix(1180, 0), deadline, "RETRY_MUST_NOT_REARM")
+	clock.Advance(20 * time.Second)
+	_, err = w.Tick()
+	require.Error(t, err)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+}
 
-	// Simulate receiving an event - this should reset the timer
-	watchdog.OnEvent()
-
-	// Now advance only 29 seconds from the event
-	clock.Advance(29 * time.Second)
-
-	// Tick should NOT ping (we're under 30s since last event)
-	err = watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error after reset, got: %v", err)
-	}
-	if ping.calls != 1 {
-		t.Errorf("Expected still 1 ping call after reset, got: %d", ping.calls)
+func TestEventWatchdogFirstTerminalWins(t *testing.T) {
+	for _, order := range []string{"health-before-check", "fatal-before-health", "parent-before-fatal", "fatal-before-parent", "ordinary-before-fatal", "nil-before-fatal"} {
+		t.Run(order, func(t *testing.T) {
+			clock := newFakeClock(time.Unix(1000, 0))
+			parent, parentCancel := context.WithCancel(context.Background())
+			defer parentCancel()
+			ctx, cancel := context.WithCancel(parent)
+			defer cancel()
+			stopping := &atomic.Bool{}
+			w := newEventWatchdog(clock.Now, nil)
+			w.arm(parent, cancel, stopping)
+			ordinary := errors.New("ordinary terminal error")
+			clock.Advance(time.Minute)
+			switch order {
+			case "health-before-check":
+				w.OnEvent()
+				deadline, err := w.Tick()
+				require.NoError(t, err)
+				require.True(t, deadline.IsZero())
+				require.False(t, stopping.Load())
+				return
+			case "fatal-before-health":
+				_, err := w.Tick()
+				require.Error(t, err)
+				clock.Advance(time.Second)
+				w.OnEvent()
+				require.Equal(t, time.Unix(1000, 0), w.lastEvent)
+				require.Same(t, err, w.finish(ordinary), "WATCHDOG_CAUSE_MUST_SURVIVE")
+			case "parent-before-fatal":
+				parentCancel()
+				_, err := w.Tick()
+				require.NoError(t, err)
+				require.NoError(t, w.finish(ordinary))
+			case "fatal-before-parent":
+				_, err := w.Tick()
+				parentCancel()
+				require.Same(t, err, w.finish(ordinary), "WATCHDOG_CAUSE_MUST_SURVIVE")
+			case "ordinary-before-fatal":
+				require.Same(t, ordinary, w.finish(ordinary))
+				_, err := w.Tick()
+				require.Same(t, ordinary, err)
+			case "nil-before-fatal":
+				require.NoError(t, w.finish(nil))
+				_, err := w.Tick()
+				require.NoError(t, err)
+				require.NoError(t, w.finish(ordinary))
+			}
+			require.True(t, stopping.Load())
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+		})
 	}
 }
 
-func TestEventWatchdog_PingErrorsNotImmediatelyFatal(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{shouldErr: true}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Advance to 35 seconds (in ping window)
-	clock.Advance(35 * time.Second)
-
-	// Tick should call ping, but error from ping should not be fatal
-	err := watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error despite ping failure, got: %v", err)
-	}
-	if ping.calls != 1 {
-		t.Errorf("Expected 1 ping call, got: %d", ping.calls)
-	}
-
-	// Advance to 59 seconds (still not fatal)
-	clock.Advance(24 * time.Second)
-	err = watchdog.Tick(context.Background())
-	if err != nil {
-		t.Errorf("Expected nil error at 59s even with failing pings, got: %v", err)
-	}
-
-	// Advance to 60 seconds - NOW it should be fatal because of time
-	clock.Advance(1 * time.Second)
-	err = watchdog.Tick(context.Background())
-	if err == nil {
-		t.Error("Expected fatal error at 60s, got nil")
-	}
-}
-
-func TestEventWatchdog_MultipleEventsKeepHealthy(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	ping := &fakePingRunner{}
-	watchdog := newEventWatchdog(clock.Now, ping)
-
-	// Simulate events every 20 seconds for 2 minutes
-	for i := 0; i < 6; i++ {
-		clock.Advance(20 * time.Second)
-		watchdog.OnEvent()
-
-		// Tick should never trigger ping or error
-		err := watchdog.Tick(context.Background())
-		if err != nil {
-			t.Errorf("Iteration %d: Expected nil error, got: %v", i, err)
-		}
-		if ping.calls != 0 {
-			t.Errorf("Iteration %d: Expected 0 ping calls, got: %d", i, ping.calls)
-		}
+func TestEventWatchdogProbeRemainingAllowance(t *testing.T) {
+	for _, parentBound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "health-does-not-extend", true: "parent-shortens"}[parentBound], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				t0 := time.Now()
+				parent := context.Background()
+				parentCancel := func() {}
+				if parentBound {
+					parent, parentCancel = context.WithDeadline(parent, t0.Add(45*time.Second))
+				}
+				defer parentCancel()
+				ctx, cancel := context.WithCancel(parent)
+				defer cancel()
+				entered := make(chan context.Context, 2)
+				release := make(chan struct{})
+				var once sync.Once
+				w := newEventWatchdog(time.Now, watchdogPingFunc(func(ctx context.Context) error { entered <- ctx; <-release; return errors.New("probe failed") }))
+				w.arm(parent, cancel, &atomic.Bool{})
+				m := &Manager{watchdog: w, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				ticks := make(chan time.Time)
+				done := make(chan struct{})
+				go func() { defer close(done); m.startEventWatchdogLoop(ctx, ticks) }()
+				defer func() { cancel(); once.Do(func() { close(release) }); <-done }()
+				time.Sleep(30 * time.Second)
+				ticks <- t0
+				probe := <-entered
+				deadline, ok := probe.Deadline()
+				require.True(t, ok)
+				want := t0.Add(60 * time.Second)
+				if parentBound {
+					want = t0.Add(45 * time.Second)
+				}
+				require.Equal(t, want, deadline, "PROBE_USES_REMAINING_ALLOWANCE")
+				time.Sleep(10 * time.Second)
+				w.OnEvent()
+				ticks <- t0
+				synctest.Wait()
+				require.NoError(t, probe.Err(), "no independent five-second cap")
+				time.Sleep(time.Until(want))
+				synctest.Wait()
+				require.ErrorIs(t, probe.Err(), context.DeadlineExceeded)
+				if !parentBound {
+					require.NoError(t, ctx.Err())
+					ticks <- t0
+					synctest.Wait()
+					require.NoError(t, ctx.Err(), "late successful health postpones next fatal check, not old attempt deadline")
+				}
+				select {
+				case <-entered:
+					t.Error("overlapping probe")
+				default:
+				}
+				select {
+				case <-done:
+					t.Error("RUN_MUST_RETAIN_OWNED_JOIN")
+				default:
+				}
+				once.Do(func() { close(release) })
+				synctest.Wait()
+				if parentBound {
+					return
+				}
+				select {
+				case <-entered:
+					t.Error("completion must not immediately retry")
+				default:
+				}
+				time.Sleep(10 * time.Second)
+				ticks <- t0
+				next := <-entered
+				nextDeadline, _ := next.Deadline()
+				require.Equal(t, t0.Add(100*time.Second), nextDeadline)
+				synctest.Wait()
+				require.NoError(t, ctx.Err(), "probe error is not fatal or health")
+				time.Sleep(30 * time.Second)
+				ticks <- t0
+				synctest.Wait()
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+				err, fatal := w.terminalResult()
+				require.True(t, fatal)
+				require.Error(t, err)
+			})
+		})
 	}
 }

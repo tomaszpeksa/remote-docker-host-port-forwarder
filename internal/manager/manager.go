@@ -74,55 +74,110 @@ func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
 type eventWatchdog struct {
 	now           func() time.Time
 	dockerPing    dockerPingRunner
+	ticks         func() (<-chan time.Time, func())
 	idleThreshold time.Duration // 30s - when to start pinging
 	fatalAfter    time.Duration // 60s - when to consider stream dead
 
-	mu        sync.RWMutex
-	lastEvent time.Time
+	mu              sync.RWMutex
+	lastEvent       time.Time
+	armed           bool
+	terminal        bool
+	watchdogFailure bool
+	result          error
+	selectedAt      time.Time
+	parent          context.Context
+	cancel          context.CancelFunc
+	stopping        *atomic.Bool
 }
 
 func newEventWatchdog(now func() time.Time, ping dockerPingRunner) *eventWatchdog {
-	t := now()
 	return &eventWatchdog{
-		now:           now,
-		dockerPing:    ping,
+		now:        now,
+		dockerPing: ping,
+		ticks: func() (<-chan time.Time, func()) {
+			ticker := time.NewTicker(10 * time.Second)
+			return ticker.C, ticker.Stop
+		},
 		idleThreshold: 30 * time.Second,
 		fatalAfter:    60 * time.Second,
-		lastEvent:     t,
 	}
 }
 
-// OnEvent should be called whenever any Docker event is processed
+// arm starts the processing clock once, when Run starts monitoring, not at construction.
+func (w *eventWatchdog) arm(parent context.Context, cancel context.CancelFunc, stopping *atomic.Bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.armed {
+		return
+	}
+	w.parent, w.cancel, w.stopping = parent, cancel, stopping
+	w.lastEvent, w.armed = w.now(), true
+}
+
+// OnEvent records successful handler completion, never admission or probe success.
 func (w *eventWatchdog) OnEvent() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.lastEvent = w.now()
+	if w.armed && !w.terminal && w.parent.Err() == nil {
+		w.lastEvent = w.now()
+	}
 }
 
-// Tick should be called periodically (~10s) to check event stream health
-// Returns a fatal error if no events have been seen for >= fatalAfter duration
-func (w *eventWatchdog) Tick(ctx context.Context) error {
-	w.mu.RLock()
-	last := w.lastEvent
-	w.mu.RUnlock()
-
-	now := w.now()
-	dt := now.Sub(last)
-
+// Tick makes only a timing/terminal decision. Probe work and joins cannot delay it.
+func (w *eventWatchdog) Tick() (time.Time, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.armed {
+		return time.Time{}, nil
+	}
+	if w.terminal {
+		return time.Time{}, w.result
+	}
+	if w.parent.Err() != nil {
+		w.selectTerminalLocked(nil, false)
+		return time.Time{}, w.result
+	}
+	dt := w.now().Sub(w.lastEvent)
 	switch {
 	case dt < w.idleThreshold:
-		// Recent events; stream is healthy
-		return nil
-
+		return time.Time{}, nil
 	case dt < w.fatalAfter:
-		// Idle window: try to generate an event via ping
-		_ = w.dockerPing.Ping(ctx) // Errors are logged inside Ping; don't make them fatal
-		return nil
-
+		return w.lastEvent.Add(w.fatalAfter), nil
 	default:
-		// Too long without any event (including pings)
-		return fmt.Errorf("event stream unhealthy: no events for %s", dt.Round(time.Second))
+		w.selectTerminalLocked(fmt.Errorf("event stream unhealthy: no successfully handled Docker events for %s", dt.Round(time.Second)), true)
+		return time.Time{}, w.result
 	}
+}
+
+// selectTerminalLocked is the ordering point for Run's first terminal result.
+// A selected nil is terminal too. Commit and cancel before logging or any join.
+func (w *eventWatchdog) selectTerminalLocked(candidate error, watchdogFailure bool) {
+	if w.terminal {
+		return
+	}
+	if w.parent.Err() != nil {
+		candidate, watchdogFailure = nil, false
+	}
+	w.terminal, w.result, w.watchdogFailure = true, candidate, watchdogFailure
+	w.selectedAt = w.now()
+	w.stopping.Store(true)
+	w.cancel()
+}
+
+func (w *eventWatchdog) finish(candidate error) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.armed {
+		return candidate
+	}
+	w.selectTerminalLocked(candidate, false)
+	return w.result
+}
+
+func (w *eventWatchdog) terminalResult() (error, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.result, w.watchdogFailure
 }
 
 // Manager orchestrates Docker event handling and port forward reconciliation.
@@ -290,7 +345,8 @@ func NewManager(
 //	if err := manager.Run(ctx, owner); err != nil {
 //	    log.Fatal(err)
 //	}
-func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
+func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr error) {
+	parent := ctx
 	socketPath, statePath, err := owner.Paths(m.cfg.Host)
 	if err != nil {
 		return err
@@ -313,6 +369,36 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		return err
 	}
 
+	// This finalizer is installed before any monitored work. Publisher retirement
+	// remains outside it, so admission stays owned through all local completion.
+	m.watchdog.arm(parent, cancel, &m.stopping)
+	watchdogDone := make(chan struct{})
+	var activeStream <-chan docker.StreamResult
+	cleaned := false
+	cleanup := func() {
+		_ = m.watchdog.finish(nil)
+		if !cleaned {
+			cleaned = true
+			m.cleanupAllForwards(context.Background())
+		}
+	}
+	defer func() {
+		runErr = m.watchdog.finish(runErr)
+		if activeStream != nil {
+			<-activeStream
+			for len(m.discovery.events) > 0 {
+				m.retireEvent((<-m.discovery.events).token)
+			}
+		}
+		m.stopRecovery()
+		if _, watchdogFailure := m.watchdog.terminalResult(); watchdogFailure {
+			cleanup()
+		}
+		<-watchdogDone
+	}()
+	ticks, stopTicker := m.watchdog.ticks()
+	go func() { defer close(watchdogDone); defer stopTicker(); m.startEventWatchdogLoop(ctx, ticks) }()
+
 	// Changes are nonblocking wakeups, not state-bearing callbacks. Every
 	// reconciliation, including this worker, uses the Master's lifecycle gate.
 	recoveryDone := make(chan struct{})
@@ -326,7 +412,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		<-recoveryDone
 		<-discoveryDone
 	}
-	defer m.stopRecovery()
 
 	// Start SSH health monitor (check every 15 seconds for faster failure detection)
 	m.sshMaster.StartHealthMonitor(ctx, 15*time.Second)
@@ -338,8 +423,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 	go m.logPerformanceMetrics(ctx, 5*time.Minute)
 
 	// Start event stream watchdog (checks every 10s, pings after 30s idle, fatal after 60s)
-	fatalCh := make(chan error, 1)
-	go m.startEventWatchdogLoop(ctx, fatalCh)
 	m.logger.Info("event stream watchdog started",
 		"tick_interval", "10s",
 		"idle_threshold", "30s",
@@ -352,23 +435,10 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 	baseDelay := 1 * time.Second
 
 	for {
-		// Check for watchdog fatal error
-		select {
-		case err := <-fatalCh:
-			if err != nil {
-				m.logger.Error("event stream watchdog detected failure, shutting down",
-					"error", err.Error())
-				m.cleanupAllForwards(context.Background())
-				return err
-			}
-		default:
-			// Continue with normal loop
-		}
-
 		// Check if context is canceled before starting/restarting
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
-			m.cleanupAllForwards(context.Background())
+			cleanup()
 			return nil
 		}
 
@@ -430,6 +500,10 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 			m.logger.Info("DIAGNOSTIC: Docker daemon connectivity validated")
 		}
 
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		// Start event stream with healthy ControlMaster
 		streamStartTime := time.Now()
 		m.logger.Info("DIAGNOSTIC: Starting Docker events stream",
@@ -441,6 +515,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		generation := m.discovery.generation
 		m.discovery.mu.Unlock()
 		terminal := m.discovery.openStream(ctx, func(ctx context.Context, event docker.Event) error { return m.deliverEvent(ctx, generation, event) })
+		activeStream = terminal
 
 		if consecutiveFailures > 0 {
 			m.logger.Warn("event stream restarted",
@@ -452,6 +527,8 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 
 		// Run event loop until stream closes or errors
 		streamClosed := m.runEventLoop(ctx, terminal, generation)
+		<-activeStream
+		activeStream = nil
 		if err := m.finishStream(generation); err != nil {
 			return err
 		}
@@ -467,7 +544,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 		// If stream closed cleanly due to context cancellation, cleanup and exit
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
-			m.cleanupAllForwards(context.Background())
+			cleanup()
 			return nil
 		}
 
@@ -521,26 +598,41 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) error {
 	}
 }
 
-// startEventWatchdogLoop runs the event stream health watchdog
-func (m *Manager) startEventWatchdogLoop(ctx context.Context, fatalCh chan<- error) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
+// startEventWatchdogLoop owns exactly one probe, including its completion.
+func (m *Manager) startEventWatchdogLoop(ctx context.Context, ticks <-chan time.Time) {
+	var probeDone chan struct{}
+	var cancelProbe context.CancelFunc
+	defer func() {
+		if probeDone != nil {
+			cancelProbe()
+			<-probeDone
+		}
+	}()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
-
-		case <-ticker.C:
-			if err := m.watchdog.Tick(ctx); err != nil {
-				m.logger.Error("event stream watchdog tick failed",
-					"error", err.Error())
-				select {
-				case fatalCh <- err:
-				default:
-					// Channel already has a fatal error; drop this one
-				}
+		case <-probeDone:
+			cancelProbe()
+			probeDone, cancelProbe = nil, nil
+		case <-ticks:
+			// The payload may be stale after scheduling delay. Tick samples now.
+			deadline, err := m.watchdog.Tick()
+			if err != nil {
+				m.watchdog.mu.RLock()
+				selectedAt, lastEvent := m.watchdog.selectedAt, m.watchdog.lastEvent
+				m.watchdog.mu.RUnlock()
+				m.logger.Error("event stream watchdog detected failure, shutting down",
+					"error", err, "selected_at", selectedAt, "last_successful_event", lastEvent)
 				return
+			}
+			if !deadline.IsZero() && probeDone == nil && ctx.Err() == nil {
+				probeCtx, cancel := context.WithDeadline(ctx, deadline)
+				cancelProbe, probeDone = cancel, make(chan struct{})
+				go func(done chan struct{}) { defer close(done); _ = m.watchdog.dockerPing.Ping(probeCtx) }(probeDone)
 			}
 		}
 	}
@@ -567,15 +659,8 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 	}
 
 	for {
-		if result != nil && len(events) == 0 {
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			m.wakeReconciliation()
-			return result.Err == nil || result.Canceled
-		}
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
+			_ = m.watchdog.finish(nil)
 			if terminal != nil {
 				<-terminal
 			}
@@ -586,6 +671,17 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 				debounceTimer.Stop()
 			}
 			return true
+		}
+		if result != nil && len(events) == 0 {
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			m.wakeReconciliation()
+			return result.Err == nil || result.Canceled
+		}
+		select {
+		case <-ctx.Done():
+			continue
 
 		case completed := <-terminal:
 			result = &completed
@@ -615,7 +711,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 				} else {
 					eventCount++
 					resetDebounceTimer()
-					// Notify watchdog that we received an event
+					// Only successful handler completion is processing health.
 					m.watchdog.OnEvent()
 				}
 
@@ -627,7 +723,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 				} else {
 					eventCount++
 					resetDebounceTimer()
-					// Notify watchdog that we received an event
+					// Only successful handler completion is processing health.
 					m.watchdog.OnEvent()
 				}
 

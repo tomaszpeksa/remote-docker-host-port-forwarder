@@ -338,3 +338,39 @@ atomic Docker snapshot or complete event history. A delayed start for a stopped
 but inspectable container can transiently restore desired ports until an audit.
 Continuous churn, permanent observation failure and capacity limits can delay
 convergence. Bounded discovery does not bound existing State tombstones.
+
+### Processing watchdog and terminal cause
+
+The watchdog arms once at Run monitoring start, before connection maintenance.
+Construction and earlier CLI SSH startup are outside that clock. On each ordinary
+10-second check, elapsed time below 30 seconds is healthy; from 30 to below 60
+seconds one probe is eligible; at 60 seconds or more the watchdog commits a fatal
+result and cancels active Run work. Retries, generations and clean EOF do not
+re-arm it. Only successful start/die/stop handler completion updates health;
+queue admission, failed inspections, inventory and probe success do not.
+
+Timing decisions never execute or wait for Ping. A single owned asynchronous
+probe has a fixed deadline at the launch-time last-success timestamp plus 60
+seconds, further shortened by its parent. Later health does not extend an active
+attempt; completion permits another only on a later eligible tick. Ping retains
+64 KiB tails per output stream and a two-second inherited-descriptor WaitDelay.
+Its direct local command and copy workers join before Ping returns. The remote
+`alpine:latest` stimulus, possible implicit pull, configured target and inherited
+SSH trust remain unchanged. These bounds do not prove remote container removal.
+
+Health and terminal selection share a short lock. A committed result is immutable;
+parent cancellation already observable at selection wins over a new watchdog
+contender. A watchdog cause is committed before cancellation, logging or joining,
+so induced context cancellation and late events cannot erase it. Cancellation
+reaches the active handler's existing five-second inspection context, stream,
+discovery and reconciliation. Run retires accepted reservations exactly once,
+joins its active stream and new watchdog/probe owner, and invokes existing terminal
+forward cleanup once for watchdog termination, including preflight/backoff exits.
+Publisher admission remains held through those obligations.
+
+The guarantee is bounded **initiation**, not a global shutdown deadline. Existing
+SSH lifecycle-gate waits, background cleanup and uncertain child retirement can
+delay completion; no worker is detached to manufacture an exit deadline. Successful
+processing is the health signal, not proof that delivery stopped or that every
+forward has working application traffic. Stream restart pacing and global shutdown
+policy are separate concerns.

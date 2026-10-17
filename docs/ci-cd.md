@@ -130,8 +130,8 @@ controls. A generic AST launch guard is deferred; this inventory is not a guaran
 about arbitrary future launch sites. The ping cases also require a real event on
 the application's remote stream and no residual ping container, despite hostile
 local Docker endpoint settings. The unchanged production `alpine:latest` ping
-image is warmed on the owned daemon and its actual digest recorded separately
-from the pinned fixture images. Normal real inspection and label fallback cover
+image is warmed on the owned daemon after the mandatory watchdog cold-miss phase,
+and its actual digest is recorded separately from the pinned fixture images. Normal real inspection and label fallback cover
 full IDs, short IDs and names with Docker options before `--`.
 
 Actual-method shell regressions execute both remote shell layers using owned fake
@@ -511,3 +511,52 @@ changes only this recipe's package revision; the Docker upstream source commits
 are unchanged. This is the fixture CLI's distribution build, not the application's
 Go toolchain. Exact package/version assertions and normal apk signature checks
 remain enabled; no package ranges, mirror replacement or trust bypass is used.
+
+### Mandatory processing-watchdog evidence
+
+The owned hosted workflow adds six exact leaf PASS requirements in
+`.github/required-watchdog-tests.txt`:
+
+- `TestWatchdogOwnedColdPull`: prove an actual `alpine:latest` image miss before
+  warm-up, then exercise the unchanged probe through SSH/Engine and record its
+  outcome, digest when available, and exact-name cleanup. A cached image blocks
+  cold proof; the test does not delete an unowned tag or silently skip.
+- `TestWatchdogOwnedWarmProcessing`: retain real processing and forwarded HTTP
+  for at least 130 seconds with correlated ping Engine IDs.
+- `TestWatchdogOwnedCLISilentStream`: run the built shipped CLI, hold only its
+  owned stream output, and require the processing-based fatal diagnostic and
+  exit 1 after ordinary cleanup, without user cancellation as the oracle.
+- `TestWatchdogOwnedBlockedWork/Probe` and `/Inspect`: separately hold concrete
+  owned real-SSH output/completion boundaries and record fatal/cancel/Wait times.
+  The inspect case requires cancellation before its unchanged five-second budget;
+  its separately recorded pre-dispatch probe hold prevents probe-generated health
+  from shifting the horizon. A suppressed probe has no SSH child or Engine ID and
+  is not real blocked-probe evidence.
+- `TestWatchdogOwnedPullAllowance`: an owned real-probe completion delay exceeds
+  its remaining allowance without delaying fatal initiation. This controlled
+  delay is not a second cold-download claim.
+
+The controller records application proxy, retained real-child Wait and controller
+completion separately. A held output copier can delay Wait even after the remote
+command exits; no claim that such a child was still executing is inferred. Native
+unit tests separately prove Run cannot abandon its own watchdog/probe join. Local
+joins and remote `--rm` removal are distinct facts; interrupted attempts enumerate
+exact generated names/observed IDs and only verified owned leftovers are removed.
+
+`scripts/itest-watchdog-mutations.sh` requires eight named assertion reds and
+byte-exact restored greens: cancellation, probe independence, failed-handler
+health, retained cause, one-time arming, remaining allowance, owner join and
+inherited-output completion. Compile errors, outer timeouts, races and cleanup
+leaks are not valid reds. Native guard tests execute the workflow's actual jq
+predicate against missing, skipped, wrong-package/name, malformed and unfinished
+records. Native unselected hosted tests self-skip and do not supply this proof.
+
+The former 35-second log-only
+`TestEventWatchdog_PingRunsAndDoesNotKillManagerWhenHealthy` and
+`TestEventWatchdog_ExecutesPingLocally` scenarios are replaced by the warm and
+CLI cases above. Production 10/30/60 timings are unchanged; the existing 35-minute
+job allowance gains 25 minutes for additive phase envelopes (60 total). All 89
+trust names, 14 trust controls, four discovery cases/seven controls, S08 identity
+control, both two-loss HTTP/monitor scenarios and both full three-minute Make
+stability cases plus cleanup remain required. A workflow's green summary alone
+is not scenario, remote-cleanup or release clearance.

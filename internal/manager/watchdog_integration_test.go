@@ -132,8 +132,9 @@ func (h *watchdogOwned) backend() (string, int, string) {
 }
 func (h *watchdogOwned) backendAtPort(port int) (string, int, string) {
 	h.t.Helper()
+	// Register after Backend's cleanup even when its assertions call Goexit.
+	defer h.t.Cleanup(h.close)
 	id := h.f.Backend(sshfixture.Nginx, port)
-	h.t.Cleanup(h.close)
 	body := fmt.Sprintf("watchdog-%s-%d", h.f.Alias, port)
 	h.f.Docker("exec", id, "sh", "-c", "printf %s "+body+" > /usr/share/nginx/html/index.html")
 	return id, port, body

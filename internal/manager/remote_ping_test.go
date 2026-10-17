@@ -122,6 +122,9 @@ func TestRemoteDockerPingOwnedLifetime(t *testing.T) {
 		executable, err := os.Executable()
 		require.NoError(t, err)
 		t.Setenv("PING_TEST_EXECUTABLE", executable)
+		// The owned child is this race-instrumented test executable. Its artificial
+		// exit sleep is not part of SSH/Ping's inherited-descriptor lifetime.
+		t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexec \"$PING_TEST_EXECUTABLE\" -test.run '^TestRemoteDockerPingDescriptorChild$'\n"), 0700))
 		r := newRemoteDockerPingRunner("ssh://owned.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil)))
 		ctx, cancel := context.WithCancel(context.Background())

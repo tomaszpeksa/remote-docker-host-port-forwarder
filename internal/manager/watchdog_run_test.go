@@ -41,6 +41,9 @@ func newWatchdogRun(t *testing.T) *watchdogRun {
 	require.NoError(t, err)
 	t.Setenv("S10_TEST_EXECUTABLE", executable)
 	t.Setenv("S10_NATIVE_SSH", "1")
+	// This race-instrumented test executable also acts as SSH. Remove only the
+	// race runtime's artificial exit sleep in children, not detection or budgets.
+	t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
 	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte("#!/bin/sh\nexec \"$S10_TEST_EXECUTABLE\" -test.run '^TestWatchdogNativeSSH$' -- \"$@\"\n"), 0700))
 	home, err := os.MkdirTemp("/tmp", "s10-run-")
 	require.NoError(t, err)

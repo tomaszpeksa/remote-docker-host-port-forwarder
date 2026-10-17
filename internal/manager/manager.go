@@ -247,7 +247,16 @@ func (m *performanceMetrics) recordSSHCommand(duration time.Duration) {
 	}
 }
 
-func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHTime time.Duration, uptime time.Duration) {
+type performanceStats struct {
+	avgEventTime         time.Duration
+	avgReconcileTime     time.Duration
+	avgSSHTime           time.Duration
+	uptime               time.Duration
+	totalEventsProcessed int64
+	totalReconciliations int64
+}
+
+func (m *performanceMetrics) getStats() (stats performanceStats) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -256,7 +265,7 @@ func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHT
 		for _, d := range m.eventProcessingTimes {
 			total += d
 		}
-		avgEventTime = total / time.Duration(len(m.eventProcessingTimes))
+		stats.avgEventTime = total / time.Duration(len(m.eventProcessingTimes))
 	}
 
 	if len(m.reconciliationTimes) > 0 {
@@ -264,7 +273,7 @@ func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHT
 		for _, d := range m.reconciliationTimes {
 			total += d
 		}
-		avgReconcileTime = total / time.Duration(len(m.reconciliationTimes))
+		stats.avgReconcileTime = total / time.Duration(len(m.reconciliationTimes))
 	}
 
 	if len(m.sshCommandTimes) > 0 {
@@ -272,10 +281,12 @@ func (m *performanceMetrics) getStats() (avgEventTime, avgReconcileTime, avgSSHT
 		for _, d := range m.sshCommandTimes {
 			total += d
 		}
-		avgSSHTime = total / time.Duration(len(m.sshCommandTimes))
+		stats.avgSSHTime = total / time.Duration(len(m.sshCommandTimes))
 	}
 
-	uptime = time.Since(m.startTime)
+	stats.uptime = time.Since(m.startTime)
+	stats.totalEventsProcessed = m.totalEventsProcessed
+	stats.totalReconciliations = m.totalReconciliations
 	return
 }
 
@@ -919,7 +930,7 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			avgEvent, avgReconcile, avgSSH, uptime := m.metrics.getStats()
+			stats := m.metrics.getStats()
 
 			// Count active forwards and conflicts
 			actualStates := m.state.GetActual()
@@ -935,14 +946,14 @@ func (m *Manager) logPerformanceMetrics(ctx context.Context, interval time.Durat
 			}
 
 			m.logger.Info("Performance summary",
-				"avg_event_latency_ms", avgEvent.Milliseconds(),
-				"avg_reconcile_ms", avgReconcile.Milliseconds(),
-				"avg_ssh_cmd_ms", avgSSH.Milliseconds(),
+				"avg_event_latency_ms", stats.avgEventTime.Milliseconds(),
+				"avg_reconcile_ms", stats.avgReconcileTime.Milliseconds(),
+				"avg_ssh_cmd_ms", stats.avgSSHTime.Milliseconds(),
 				"active_forwards", activeCount,
 				"conflicts", conflictCount,
-				"total_events", m.metrics.totalEventsProcessed,
-				"total_reconciliations", m.metrics.totalReconciliations,
-				"uptime", uptime.Round(time.Second).String())
+				"total_events", stats.totalEventsProcessed,
+				"total_reconciliations", stats.totalReconciliations,
+				"uptime", stats.uptime.Round(time.Second).String())
 		}
 	}
 }

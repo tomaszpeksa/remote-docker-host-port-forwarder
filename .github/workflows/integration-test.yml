@@ -251,6 +251,13 @@ jobs:
         run: |
           export RDHPF_ISOLATION_BINARY="$PWD/test-evidence/rdhpf-isolation"
           export RDHPF_ISOLATION_EVIDENCE="$PWD/test-evidence/isolation-runtime"
+          {
+            pwd -P
+            git rev-parse HEAD HEAD^{tree}
+            git status --porcelain=v1 --untracked-files=all
+            git diff --exit-code
+            git diff --cached --exit-code
+          } > test-evidence/isolation-prebuild.txt
           go build -o "$RDHPF_ISOLATION_BINARY" ./cmd/rdhpf
           go version -m "$RDHPF_ISOLATION_BINARY" > test-evidence/isolation-binary.txt
           sha256sum "$RDHPF_ISOLATION_BINARY" >> test-evidence/isolation-binary.txt

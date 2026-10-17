@@ -89,6 +89,67 @@ printf '%s/golangci-lint\n' "$MANAGED_TOOLS"
 	require.NoError(t, err, "guard must require the release provider without executing the tool: %s", output)
 }
 
+func TestProjectToolGuardPathIdentity(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	require.NoError(t, err)
+	basename, err := exec.LookPath("basename")
+	require.NoError(t, err)
+	for _, name := range []string{"identical", "directory-alias", "ambient-shadow", "missing-managed", "nonexecutable-managed"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			managed, ambient := filepath.Join(dir, "managed"), filepath.Join(dir, "ambient")
+			require.NoError(t, os.Mkdir(managed, 0700))
+			require.NoError(t, os.Mkdir(ambient, 0700))
+			write := func(path, body string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body), 0700))
+			}
+			write(filepath.Join(managed, "mise"), "[ \"$*\" = 'which go --tool core:go' ] || exit 2\nprintf '%s\\n' \"$*\" >> \"$LOOKUP_CALLS\"\nprintf '%s/go\\n' \"$MANAGED_TOOLS\"\n")
+			write(filepath.Join(managed, "basename"), "printf '%s\\n' \"$*\" >> \"$NORMALIZATION_CALLS\"\nexec \"$REAL_BASENAME\" \"$@\"\n")
+			tool := "printf 'unexpected tool execution\\n' >> \"$TOOL_CALLS\"\nexit 99\n"
+			write(filepath.Join(managed, "go"), tool)
+			write(filepath.Join(ambient, "go"), tool)
+			path, wantError, wantNormalization := managed, "", 0
+			switch name {
+			case "directory-alias":
+				path = filepath.Join(dir, "alias")
+				require.NoError(t, os.Symlink(managed, path))
+				wantNormalization = 2
+			case "ambient-shadow":
+				path = ambient + ":" + managed
+				wantError, wantNormalization = "resolves to", 2
+			case "missing-managed":
+				require.NoError(t, os.Remove(filepath.Join(managed, "go")))
+				path, wantError = managed+":"+ambient, "is not installed"
+			case "nonexecutable-managed":
+				require.NoError(t, os.Chmod(filepath.Join(managed, "go"), 0600))
+				path, wantError = managed+":"+ambient, "is not installed"
+			}
+			lookup, normalization, calls := filepath.Join(dir, "lookup"), filepath.Join(dir, "normalization"), filepath.Join(dir, "calls")
+			cmd := exec.Command(filepath.Join(root, "scripts/check-tools.sh"), "go")
+			cmd.Env = []string{"PATH=" + path + ":/usr/bin:/bin", "HOME=" + dir, "MANAGED_TOOLS=" + managed,
+				"LOOKUP_CALLS=" + lookup, "NORMALIZATION_CALLS=" + normalization, "TOOL_CALLS=" + calls, "REAL_BASENAME=" + basename}
+			output, err := cmd.CombinedOutput()
+			if wantError == "" {
+				require.NoError(t, err, "%s", output)
+			} else {
+				require.Error(t, err, "%s", output)
+				require.Contains(t, string(output), wantError)
+			}
+			data, err := os.ReadFile(lookup)
+			require.NoError(t, err)
+			require.Equal(t, "which go --tool core:go\n", string(data), "every path must query the required provider")
+			data, err = os.ReadFile(normalization)
+			if !os.IsNotExist(err) {
+				require.NoError(t, err)
+			}
+			require.Equal(t, wantNormalization, strings.Count(string(data), "\n"), "PROVIDER_NORMALIZATION_WORK: identical spellings need no redundant normalization subprocesses")
+			_, err = os.Stat(calls)
+			require.True(t, os.IsNotExist(err), "provider checking must not execute either tool")
+		})
+	}
+}
+
 func TestSecurityRecipeRejectsIncompleteReports(t *testing.T) {
 	makePath, err := exec.LookPath("make")
 	require.NoError(t, err)

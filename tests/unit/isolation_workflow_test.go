@@ -34,6 +34,9 @@ func TestIntegrationWorkflowMandatoryIsolationPasses(t *testing.T) {
 	names := strings.Fields(string(required))
 	require.ElementsMatch(t, []string{
 		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedCLIIsolation",
+		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedCLIIsolation/same-target",
+		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedCLIIsolation/different-target",
+		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedCLIIsolation/directory-alias",
 		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedMasterProcessIsolation",
 		"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh|TestMasterPrivatePathNativeBind",
 	}, names)

@@ -216,6 +216,7 @@ func TestWatchdogOwnedWarmProcessing(t *testing.T) {
 	arm := lastWatchdogHealth(h.m.watchdog)
 	_, port, body := h.backend()
 	h.wait(15*time.Second, "owned forwarded HTTP", func() bool { return watchdogHTTP(port, body) })
+	h.f.FailAfterCompletedPing()
 	timer := time.NewTimer(time.Until(arm.Add(130 * time.Second)))
 	defer timer.Stop()
 	select {

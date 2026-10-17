@@ -470,3 +470,36 @@ func WatchdogProxyMain() int {
 		}
 	}
 }
+
+// FailAfterCompletedPing is selected only by the hosted diagnostic invocation.
+// The real probe must already have an Engine destroy receipt and no leftover,
+// so the pre-fix failure can expose missing accounting without orphaning work.
+func (w *WatchdogFixture) FailAfterCompletedPing() {
+	if os.Getenv("RDHPF_WATCHDOG_FAILURE_CONTROL") != "1" {
+		return
+	}
+	w.T.Helper()
+	var attempt WatchdogAttempt
+	require.Eventually(w.T, func() bool {
+		for _, a := range w.Snapshot() {
+			if a.Operation == "ping" && a.RealChildStarted && !a.DispatchSuppressed && !a.JoinedAt.IsZero() && !a.CompletedAt.IsZero() {
+				attempt = a
+				return true
+			}
+		}
+		return false
+	}, 45*time.Second, 10*time.Millisecond, "failure control requires completed actual SSH probe")
+	raw := w.Docker("events", "--since", attempt.StartedAt.Add(-time.Second).Format(time.RFC3339Nano), "--until", time.Now().Format(time.RFC3339Nano), "--filter", "container="+attempt.Name, "--format", `{{.Action}} {{.Actor.ID}} {{index .Actor.Attributes "name"}} {{index .Actor.Attributes "rdhpf.health-check"}}`)
+	id := ""
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 4 && fields[0] == "destroy" && fields[2] == attempt.Name && fields[3] == "true" {
+			require.Regexp(w.T, `^[a-f0-9]{64}$`, fields[1])
+			id = fields[1]
+		}
+	}
+	require.NotEmpty(w.T, id, "real Engine destroy receipt required before diagnostic failure")
+	require.Empty(w.T, w.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+attempt.Name+"$"), "failure control refuses uncertain remote disposition")
+	w.T.Logf("WATCHDOG_FAILURE_CONTROL_DISPATCH name=%s Engine_ID=%s removed_before_failure=true", attempt.Name, id)
+	w.T.Fatal("WATCHDOG_INTENTIONAL_FAILURE_AFTER_DISPATCH")
+}

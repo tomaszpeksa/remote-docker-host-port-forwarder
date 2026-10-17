@@ -144,6 +144,12 @@ jobs:
           docker exec "$id" docker pull alpine:latest > test-evidence/ping-image-pull.txt
           docker exec "$id" docker image inspect alpine:latest --format '{{json .RepoDigests}}' > test-evidence/ping-image-digests.txt
 
+      - name: Owned watchdog failure accounting control
+        timeout-minutes: 7
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: bash scripts/itest-watchdog-failure-accounting.sh
+
       - name: Owned watchdog warm processing
         timeout-minutes: 5
         env:

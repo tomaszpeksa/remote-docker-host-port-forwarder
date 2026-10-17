@@ -512,6 +512,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		}
 
 		if ctx.Err() != nil {
+			cleanup()
 			return nil
 		}
 
@@ -633,6 +634,9 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, ticks <-chan time.
 			// The payload may be stale after scheduling delay. Tick samples now.
 			deadline, err := m.watchdog.Tick()
 			if err != nil {
+				if _, watchdogFailure := m.watchdog.terminalResult(); !watchdogFailure {
+					return
+				}
 				m.watchdog.mu.RLock()
 				selectedAt, lastEvent := m.watchdog.selectedAt, m.watchdog.lastEvent
 				m.watchdog.mu.RUnlock()

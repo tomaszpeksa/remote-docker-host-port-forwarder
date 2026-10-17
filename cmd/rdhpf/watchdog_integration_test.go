@@ -89,6 +89,7 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Fatal("WATCHDOG_CLI_JOIN_PENDING")
 		}
+		t.Log("WATCHDOG_CLI_JOINED retained CLI Wait after controller join")
 	}()
 	require.Eventually(t, func() bool {
 		for _, a := range f.Snapshot() {
@@ -112,6 +113,7 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("owned stream output gate did not enter")
 	}
+	f.FailAfterCompletedPing()
 	select {
 	case <-done:
 	case <-time.After(80 * time.Second):

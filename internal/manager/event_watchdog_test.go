@@ -229,3 +229,34 @@ func TestEventWatchdogProbeRemainingAllowance(t *testing.T) {
 		})
 	}
 }
+
+func TestEventWatchdogLoopDiagnosticOrigin(t *testing.T) {
+	for _, fatal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary-before-tick", true: "watchdog"}[fatal], func(t *testing.T) {
+			clock := newFakeClock(time.Unix(1000, 0))
+			w, ctx := armWatchdog(t, clock)
+			m := &Manager{watchdog: w}
+			var headlines []string
+			watchRunLogs(m, func(record slog.Record) { headlines = append(headlines, record.Message) })
+			ticks, done := make(chan time.Time), make(chan struct{})
+			ordinary := errors.New("ordinary Run terminal")
+			clock.Advance(time.Minute)
+			w.mu.Lock()
+			go func() { defer close(done); m.startEventWatchdogLoop(ctx, ticks) }()
+			ticks <- time.Unix(0, 0) // loop has selected tick, but Tick still waits for the latch
+			if !fatal {
+				w.selectTerminalLocked(ordinary, false)
+			}
+			w.mu.Unlock()
+			<-done
+			if fatal {
+				require.Equal(t, []string{"event stream watchdog detected failure, shutting down"}, headlines)
+			} else {
+				require.Empty(t, headlines, "ORDINARY_CAUSE_MUST_NOT_LOG_WATCHDOG_FAILURE")
+				cause, origin := w.terminalResult()
+				require.Same(t, ordinary, cause)
+				require.False(t, origin)
+			}
+		})
+	}
+}

@@ -20,16 +20,17 @@ import (
 )
 
 type watchdogRun struct {
-	m         *Manager
-	clock     *fakeClock
-	ticks     chan time.Time
-	cancel    context.CancelFunc
-	done      chan struct{}
-	err       error
-	stream    chan context.Context
-	stopped   chan struct{}
-	launch    func()
-	startOnce sync.Once
+	m                       *Manager
+	clock                   *fakeClock
+	ticks                   chan time.Time
+	cancel                  context.CancelFunc
+	done                    chan struct{}
+	err                     error
+	stream                  chan context.Context
+	stopped                 chan struct{}
+	launch                  func()
+	startOnce               sync.Once
+	beforeRuntimeRetirement func()
 }
 
 // Own a real Run, publisher admission, inert SSH processes, and a joined stream.
@@ -69,6 +70,11 @@ func newWatchdogRun(t *testing.T) *watchdogRun {
 		<-r.done
 		if r.m.watchdog.armed {
 			<-r.stopped
+		}
+		// A failed Close retains admission and HOME; Run only stops monitoring.
+		require.NoError(t, m.sshMaster.Close(), "MASTER_RETIREMENT_UNCERTAIN: preserving admission and runtime HOME %s", home)
+		if r.beforeRuntimeRetirement != nil {
+			r.beforeRuntimeRetirement()
 		}
 		require.NoError(t, owner.Close())
 		require.NoError(t, os.RemoveAll(home))
@@ -601,6 +607,9 @@ func TestManagerWatchdogExitPaths(t *testing.T) {
 // Retain the production retry schedule: this is deliberately a ~151s test,
 // not a retry-policy seam or a claim that the fake processing clock is real.
 func TestManagerWatchdogRestartLimitJoinsProbe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("production retry exhaustion takes ~151s; mandatory full no-short native and Quality profiles cover it")
+	}
 	r := newWatchdogRun(t)
 	attempts := make(chan int, 10)
 	probeEntered := make(chan context.Context, 1)
@@ -645,4 +654,55 @@ func TestManagerWatchdogRestartLimitJoinsProbe(t *testing.T) {
 		return
 	}
 	require.Same(t, cause, r.err)
+}
+
+func TestManagerWatchdogParentCancelPreflightCleanup(t *testing.T) {
+	r := newWatchdogRun(t)
+	entered := filepath.Join(os.Getenv("PATH"), "parent-preflight-entered")
+	t.Setenv("S10_CONNECT_ENTERED", entered)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte("#!/bin/sh\ncase \"$*\" in *docker\\ version*) printf entered > \"$S10_CONNECT_ENTERED\"; while :; do :; done;; esac\nexec \"$S10_TEST_EXECUTABLE\" -test.run '^TestWatchdogNativeSSH$' -- \"$@\"\n"), 0700))
+	r.start()
+	require.Eventually(t, func() bool { _, err := os.Stat(entered); return err == nil }, time.Second, time.Millisecond)
+	r.m.state.SetDesired(discoveryA, []int{18881})
+	r.m.state.MarkActive(discoveryA, 18881)
+	r.cancel()
+	if !awaitWatchdog(t, r.done, "PARENT_PREFLIGHT_MUST_JOIN") {
+		return
+	}
+	require.NoError(t, r.err, "parent cancellation retains nil convention")
+	require.Empty(t, r.stream, "parent-canceled preflight must not open replacement")
+	desired := r.m.state.GetDesired()
+	require.Len(t, desired, 1)
+	require.Equal(t, discoveryA, desired[0].ContainerID)
+	require.Empty(t, desired[0].Ports, "PARENT_PREFLIGHT_MUST_CLEAN_DESIRED")
+	require.Empty(t, r.m.state.GetActual(), "PARENT_PREFLIGHT_MUST_CLEAN_ACTUAL")
+	shutdownRecords := 0
+	for _, entry := range r.m.history.GetAll() {
+		if entry.EndReason == "rdhpf shutdown" {
+			shutdownRecords++
+		}
+	}
+	require.Equal(t, 1, shutdownRecords, "cleanup must run exactly once; reconciliation also records container stopped")
+	_, fatal := r.m.watchdog.terminalResult()
+	require.False(t, fatal)
+}
+
+func TestWatchdogRunMasterRetiredBeforeRuntime(t *testing.T) {
+	r := newWatchdogRun(t)
+	home := os.Getenv("HOME")
+	r.start()
+	r.awaitStream(t)
+	require.NoError(t, r.m.sshMaster.Check(), "real retained native Master initially ready")
+	r.beforeRuntimeRetirement = func() {
+		_, err := os.Stat(home)
+		require.NoError(t, err, "runtime remains until owned retirement")
+		peer, err := instancepath.Acquire(r.m.cfg.Host)
+		if peer != nil {
+			require.NoError(t, peer.Close())
+		}
+		require.Error(t, err, "admission remains held until owned retirement")
+		require.Error(t, r.m.sshMaster.Check(), "MASTER_MUST_JOIN_BEFORE_RUNTIME_RETIREMENT")
+		_, err = os.Stat(filepath.Dir(r.m.sshMaster.ControlPath()))
+		require.True(t, os.IsNotExist(err), "retained Wait and namespace close precede runtime retirement")
+	}
 }

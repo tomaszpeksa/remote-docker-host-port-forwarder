@@ -503,3 +503,78 @@ func (w *WatchdogFixture) FailAfterCompletedPing() {
 	w.T.Logf("WATCHDOG_FAILURE_CONTROL_DISPATCH name=%s Engine_ID=%s removed_before_failure=true", attempt.Name, id)
 	w.T.Fatal("WATCHDOG_INTENTIONAL_FAILURE_AFTER_DISPATCH")
 }
+
+// SchedulePingAccounting is called by the already-registered local-owner cleanup
+// after joining Run/CLI and Master, before backend/config retirement. Register
+// every attempt before making any assertion: failure observing one must not
+// discard the remaining attempts. Failed local joining records uncertainty only:
+// never infer remote retirement or remove resources from a missing Wait receipt.
+func (w *WatchdogFixture) SchedulePingAccounting(requireCreated, localJoined bool) int {
+	var attempts []WatchdogAttempt
+	for _, a := range w.Snapshot() {
+		if a.Operation == "ping" {
+			attempts = append(attempts, a)
+		}
+	}
+	completed := 0
+	w.T.Cleanup(func() {
+		w.T.Logf("WATCHDOG_PING_ACCOUNT_COMPLETE attempts=%d unknown=%d", len(attempts), len(attempts)-completed)
+	})
+	for i := len(attempts) - 1; i >= 0; i-- {
+		a := attempts[i]
+		w.T.Cleanup(func() {
+			observed := false
+			defer func() {
+				if !observed {
+					w.T.Logf("WATCHDOG_PING_ACCOUNT_UNKNOWN name=%s disposition=uncertain; unverified identities are preserved", a.Name)
+				}
+			}()
+			if !localJoined {
+				w.T.Errorf("WATCHDOG_PING_LOCAL_JOIN_UNCERTAIN name=%s; remote observation deferred", a.Name)
+				return
+			}
+			w.accountPing(a, requireCreated)
+			observed = true
+			completed++
+		})
+	}
+	return len(attempts)
+}
+
+// Exact attempt-name/Engine-ID accounting, never a label sweep or an assumption
+// that canceling local SSH removed an interrupted remote container.
+func (w *WatchdogFixture) accountPing(a WatchdogAttempt, requireCreated bool) {
+	w.T.Helper()
+	raw := w.Docker("events", "--since", a.StartedAt.Add(-time.Second).Format(time.RFC3339Nano), "--until", time.Now().Format(time.RFC3339Nano), "--filter", "container="+a.Name, "--format", "{{json .}}")
+	ids := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		if line == "" {
+			continue
+		}
+		var event struct {
+			Actor struct {
+				ID         string
+				Attributes map[string]string
+			}
+		}
+		require.NoError(w.T, json.Unmarshal([]byte(line), &event))
+		if event.Actor.Attributes["name"] == a.Name {
+			require.Equal(w.T, "true", event.Actor.Attributes["rdhpf.health-check"])
+			require.Regexp(w.T, `^[a-f0-9]{64}$`, event.Actor.ID)
+			ids[event.Actor.ID] = true
+		}
+	}
+	if requireCreated && !a.DispatchSuppressed {
+		require.Len(w.T, ids, 1, "exact ping must have an Engine ID")
+	} else {
+		require.LessOrEqual(w.T, len(ids), 1)
+	}
+	left := w.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+a.Name+"$")
+	if left != "" {
+		require.True(w.T, ids[left], "unaccounted leftover is not cleanup authority")
+		require.Equal(w.T, "true", w.Docker("inspect", "--format", `{{index .Config.Labels "rdhpf.health-check"}}`, left))
+		w.Docker("rm", "-f", left)
+	}
+	w.T.Logf("WATCHDOG_PING_ACCOUNT name=%s Engine_IDs=%v no_ID_observed=%v leftover_before_cleanup=%q suppressed=%v", a.Name, ids, len(ids) == 0, left, a.DispatchSuppressed)
+	require.Empty(w.T, w.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+a.Name+"$"))
+}

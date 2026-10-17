@@ -4,7 +4,6 @@ package manager
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,19 +32,21 @@ func TestWatchdogSSHProxy(t *testing.T) {
 }
 
 type watchdogOwned struct {
-	t             *testing.T
-	f             *sshfixture.WatchdogFixture
-	m             *Manager
-	owner         *instancepath.Owner
-	ctx           context.Context
-	cancel        context.CancelFunc
-	done          chan struct{}
-	err           error
-	stream        chan context.Context
-	epoch         chan time.Time
-	tickEpoch     time.Time
-	probeContexts chan context.Context
-	closeOnce     sync.Once
+	t                  *testing.T
+	f                  *sshfixture.WatchdogFixture
+	m                  *Manager
+	owner              *instancepath.Owner
+	ctx                context.Context
+	cancel             context.CancelFunc
+	done               chan struct{}
+	err                error
+	stream             chan context.Context
+	epoch              chan time.Time
+	tickEpoch          time.Time
+	probeContexts      chan context.Context
+	closeOnce          sync.Once
+	requirePingCreated bool
+	pingCount          int
 }
 
 func newWatchdogOwned(t *testing.T) *watchdogOwned {
@@ -100,6 +100,8 @@ func (h *watchdogOwned) start() context.Context {
 }
 func (h *watchdogOwned) close() {
 	h.closeOnce.Do(func() {
+		joined := false
+		defer func() { h.pingCount = h.f.SchedulePingAccounting(h.requirePingCreated, joined) }()
 		h.cancel()
 		h.f.Close()
 		if h.done != nil {
@@ -111,8 +113,9 @@ func (h *watchdogOwned) close() {
 		}
 		require.NoError(h.t, h.m.sshMaster.Close())
 		require.NoError(h.t, h.owner.Close())
-		h.f.NoPrompt()
+		joined = true
 		h.t.Logf("WATCHDOG_RUN_JOINED result=%v", h.err)
+		h.f.NoPrompt()
 	})
 }
 func (h *watchdogOwned) wait(duration time.Duration, marker string, predicate func() bool) {
@@ -165,51 +168,6 @@ func (h *watchdogOwned) fatal(ctx context.Context, last time.Time) {
 	h.t.Logf("WATCHDOG_REAL_ACTION last_success=%s selected=%s observed_cancel=%s silence=%s", last.Format(time.RFC3339Nano), selected.Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano), selected.Sub(last))
 }
 
-// Exact attempt-name/Engine-ID accounting, not a label sweep or an assumption
-// that canceling local SSH removed a remote interrupted container.
-func (h *watchdogOwned) accountPings(requireCreated bool) int {
-	h.t.Helper()
-	count := 0
-	for _, a := range h.f.Snapshot() {
-		if a.Operation != "ping" {
-			continue
-		}
-		count++
-		raw := h.f.Docker("events", "--since", a.StartedAt.Add(-time.Second).Format(time.RFC3339Nano), "--until", time.Now().Format(time.RFC3339Nano), "--filter", "container="+a.Name, "--format", "{{json .}}")
-		ids := map[string]bool{}
-		for _, line := range strings.Split(raw, "\n") {
-			if line == "" {
-				continue
-			}
-			var event struct {
-				Actor struct {
-					ID         string
-					Attributes map[string]string
-				}
-			}
-			require.NoError(h.t, json.Unmarshal([]byte(line), &event))
-			if event.Actor.Attributes["name"] == a.Name {
-				require.Equal(h.t, "true", event.Actor.Attributes["rdhpf.health-check"])
-				ids[event.Actor.ID] = true
-			}
-		}
-		if requireCreated && !a.DispatchSuppressed {
-			require.Len(h.t, ids, 1, "exact ping must have an Engine ID")
-		} else {
-			require.LessOrEqual(h.t, len(ids), 1)
-		}
-		left := h.f.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+a.Name+"$")
-		if left != "" {
-			require.True(h.t, ids[left], "unaccounted leftover is not cleanup authority")
-			require.Equal(h.t, "true", h.f.Docker("inspect", "--format", `{{index .Config.Labels "rdhpf.health-check"}}`, left))
-			h.f.Docker("rm", "-f", left)
-		}
-		h.t.Logf("WATCHDOG_PING_ACCOUNT name=%s Engine_IDs=%v no_ID_observed=%v leftover_before_cleanup=%q suppressed=%v", a.Name, ids, len(ids) == 0, left, a.DispatchSuppressed)
-		require.Empty(h.t, h.f.Docker("ps", "-aq", "--no-trunc", "--filter", "name=^/"+a.Name+"$"))
-	}
-	return count
-}
-
 func TestWatchdogOwnedWarmProcessing(t *testing.T) {
 	h := newWatchdogOwned(t)
 	h.start()
@@ -227,9 +185,10 @@ func TestWatchdogOwnedWarmProcessing(t *testing.T) {
 	require.Greater(t, lastWatchdogHealth(h.m.watchdog).Sub(arm), 90*time.Second, "real successful ping processing over multiple horizons")
 	require.True(t, watchdogHTTP(port, body))
 	require.NoError(t, h.ctx.Err())
+	h.requirePingCreated = true
 	h.close()
 	require.NoError(t, h.err)
-	require.GreaterOrEqual(t, h.accountPings(true), 3)
+	require.GreaterOrEqual(t, h.pingCount, 3)
 	t.Log("WATCHDOG_WARM_130_SECONDS actual Run/SSH/Engine/HTTP remained healthy")
 }
 
@@ -250,8 +209,8 @@ func TestWatchdogOwnedColdPull(t *testing.T) {
 	cause := h.m.watchdog.result
 	h.m.watchdog.mu.RUnlock()
 	t.Logf("WATCHDOG_COLD_OUTCOME duration=%s successful_processing=%v fatal=%v", time.Since(arm), lastWatchdogHealth(h.m.watchdog).After(arm), cause)
+	h.requirePingCreated = cause == nil
 	h.close()
-	h.accountPings(cause == nil)
 	if cause == nil {
 		require.NoError(t, h.err)
 		t.Logf("WATCHDOG_COLD_IMAGE_DIGEST %s", h.f.Docker("image", "inspect", "alpine:latest", "--format", "{{json .RepoDigests}}"))
@@ -322,7 +281,6 @@ func TestWatchdogOwnedBlockedWork(t *testing.T) {
 		releaseDispatch()
 		h.close()
 		require.ErrorContains(t, h.err, "no successfully handled Docker events")
-		h.accountPings(false)
 	})
 }
 func watchdogOwnedHeldProbe(t *testing.T, allowance bool) {
@@ -369,8 +327,9 @@ func watchdogOwnedHeldProbe(t *testing.T, allowance bool) {
 	}
 	releaseProbe()
 	releaseEvents()
+	h.requirePingCreated = true
 	h.close()
 	require.ErrorContains(t, h.err, "no successfully handled Docker events")
-	require.Equal(t, 1, h.accountPings(true))
+	require.Equal(t, 1, h.pingCount)
 }
 func TestWatchdogOwnedPullAllowance(t *testing.T) { watchdogOwnedHeldProbe(t, true) }

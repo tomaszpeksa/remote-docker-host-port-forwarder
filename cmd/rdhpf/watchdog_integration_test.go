@@ -78,6 +78,8 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	// No failure path kills the CLI and abandons its Master: request its normal
 	// signal shutdown, release controller faults, and retain its Wait completion.
 	defer func() {
+		joined := false
+		defer func() { f.SchedulePingAccounting(false, joined) }()
 		select {
 		case <-done:
 		default:
@@ -89,6 +91,7 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Fatal("WATCHDOG_CLI_JOIN_PENDING")
 		}
+		joined = true
 		t.Log("WATCHDOG_CLI_JOINED retained CLI Wait after controller join")
 	}()
 	require.Eventually(t, func() bool {

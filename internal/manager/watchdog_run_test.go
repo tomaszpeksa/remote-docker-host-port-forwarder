@@ -565,6 +565,20 @@ func TestManagerWatchdogExitPaths(t *testing.T) {
 			}
 			r.start()
 			if path == "finish-stream" {
+				// Startup has its existing three-second harness guard; the one-second
+				// ownership assertion starts only after this scenario reaches a stream.
+				select {
+				case <-r.stream:
+				case <-r.done:
+					// A fast ordinary return and the buffered receipt can both be ready.
+					select {
+					case <-r.stream:
+					default:
+						t.Fatalf("Run returned before finish-stream boundary: %v", r.err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("owned finish-stream boundary did not enter")
+				}
 				if !awaitWatchdog(t, r.done, "ordinary return must join watchdog owner") {
 					return
 				}

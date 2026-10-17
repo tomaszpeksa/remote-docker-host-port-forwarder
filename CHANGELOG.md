@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Snapshot performance-summary totals and averages under the same metrics lock,
+  preventing races with concurrent event and reconciliation recording.
+
 - Request full container IDs during startup inventory so stopping a preexisting
   container removes its forwards and restarting the same container restores one
   consistent owner. Inventory/event handoff and resynchronization are unchanged.

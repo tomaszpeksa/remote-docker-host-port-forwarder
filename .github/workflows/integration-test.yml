@@ -25,8 +25,9 @@ jobs:
     defaults:
       run:
         shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
-    # Existing scenario budgets remain; Make-cycle proof is bounded within the 35m job.
-    timeout-minutes: 35
+    # Preserve the existing 35m envelope plus additive 5m isolation/8m controls.
+    # All inherited scenario and Make stability budgets remain unchanged.
+    timeout-minutes: 48
     env:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
@@ -89,7 +90,7 @@ jobs:
             sha256sum "$ssh_executable"
             ssh -V 2>&1
           } > test-evidence/source.txt
-          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' 'discovery-owned|^TestManagerDiscoveryOwned' > test-evidence/plan.txt
+          printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' 'discovery-owned|^TestManagerDiscoveryOwned' 'isolation-owned|^Test(OwnedCLIIsolation|OwnedMasterProcessIsolation|MasterPrivatePathNativeBind)$' > test-evidence/plan.txt
           go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
@@ -241,6 +242,32 @@ jobs:
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: bash scripts/itest-identity-mutation.sh
+
+      - name: Owned process isolation
+        timeout-minutes: 5
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+          RDHPF_HOSTED_ISOLATION: '1'
+        run: |
+          export RDHPF_ISOLATION_BINARY="$PWD/test-evidence/rdhpf-isolation"
+          export RDHPF_ISOLATION_EVIDENCE="$PWD/test-evidence/isolation-runtime"
+          go build -o "$RDHPF_ISOLATION_BINARY" ./cmd/rdhpf
+          go version -m "$RDHPF_ISOLATION_BINARY" > test-evidence/isolation-binary.txt
+          sha256sum "$RDHPF_ISOLATION_BINARY" >> test-evidence/isolation-binary.txt
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -run '^Test(OwnedCLIIsolation|OwnedMasterProcessIsolation|MasterPrivatePathNativeBind)$' ./tests/integration ./internal/ssh 2> test-evidence/isolation-owned.stderr | tee test-evidence/isolation-owned.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/isolation-owned.exit
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
+          bash scripts/check-isolation-evidence.sh test-evidence/isolation-owned.jsonl
+
+      - name: Source-bound isolation controls
+        timeout-minutes: 8
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+          RDHPF_HOSTED_ISOLATION: '1'
+        run: bash scripts/itest-isolation-mutations.sh
 
       - name: Inventory executed, excluded and unrun tests
         if: always()

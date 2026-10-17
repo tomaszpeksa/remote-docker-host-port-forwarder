@@ -151,6 +151,33 @@ up, a named Manager test in its per-invocation runtime HOME, down, a second up,
 both real stability cases, and down. Named PASS guards reject skips; uncertain
 publisher failure retains runtime storage rather than deleting its lock inode.
 
+The additive owned-isolation phase builds the actual CLI and records its binary
+hash/build information. Three contender processes (same target, different fixture
+alias, and directory alias) must exit before their marker-only SSH can dispatch;
+the incumbent and its successor must serve fresh exact-body HTTP through real SSH.
+Separate native processes also own production Masters with disjoint forwards:
+retiring one must preserve the other's socket and HTTP traffic. Runtime directories
+are removed only after owned processes join; uncertain cleanup retains them.
+
+`.github/required-isolation-tests.txt` and `scripts/check-isolation-evidence.sh`
+require exact package/name RUN-to-PASS records and completed packages. Guard tests
+exercise missing, skipped, wrong-name/package, malformed and unfinished evidence.
+Source controls disable admission or the final-writer join, or lengthen the private
+mux pathname; only named behavioral assertion failures followed by exact-source
+restoration and green count. These diagnostic binaries/results are distinct from
+the unchanged candidate. Inherited scenarios and stability deadlines are unchanged;
+the job adds five minutes for isolation and eight for controls to its existing
+35-minute envelope.
+
+Native Linux/macOS tests bind both the actual generated private socket address and
+its reserved OpenSSH dot-plus-16-character temporary address. This proves the
+kernel pathname budget on the executing OS, not authenticated macOS SSH behavior
+or arbitrary-long-HOME status sockets. The constructor's byte budget includes NUL
+against Darwin's 104-byte `sun_path`; Linux supplies 108 bytes. The temporary-name
+basis is OpenSSH portable `mux.c`, `muxserver_listen` (for example tag `V_10_3_P1`),
+which appends the random suffix before binding and linking the final address.
+Actual authenticated SSH/HTTP scenarios run only on the owned Linux fixture.
+
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
 

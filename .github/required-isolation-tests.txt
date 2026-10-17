@@ -1,0 +1,3 @@
+github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedCLIIsolation
+github.com/tomaszpeksa/remote-docker-host-port-forwarder/tests/integration|TestOwnedMasterProcessIsolation
+github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh|TestMasterPrivatePathNativeBind

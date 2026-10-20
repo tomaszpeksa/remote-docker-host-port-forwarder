@@ -91,6 +91,7 @@ jobs:
             ssh -V 2>&1
           } > test-evidence/source.txt
           printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' 'discovery-owned|^TestManagerDiscoveryOwned' > test-evidence/plan.txt
+          printf '%s\n' 'stream-owned|^TestManagerStreamOwnedTermination$' >> test-evidence/plan.txt
           printf '%s\n' 'watchdog-cold|^TestWatchdogOwnedColdPull$' 'watchdog-warm|^TestWatchdogOwnedWarmProcessing$' 'watchdog-cli|^TestWatchdogOwnedCLISilentStream$' 'watchdog-blocked|^TestWatchdogOwned(BlockedWork|PullAllowance)$' >> test-evidence/plan.txt
           go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh ./cmd/rdhpf ./internal/testutil/sshfixture > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
@@ -314,6 +315,38 @@ jobs:
             . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
             ($names | length) == 4 and all($names[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))
           ' test-evidence/discovery-owned.jsonl
+
+      - name: Owned finite event stream termination
+        timeout-minutes: 6
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=5m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/stream-owned.coverage -run '^TestManagerStreamOwnedTermination$' ./internal/manager 2> test-evidence/stream-owned.stderr | tee test-evidence/stream-owned.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/stream-owned.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Require owned stream passes
+        run: |
+          jq -e -s --rawfile required .github/required-stream-tests.txt '
+            . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
+            ($names | length) == 2 and all($names[]; . as $name |
+              [$events[] | select(.Test == $name and .Package == "github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager")] as $matches |
+              ($matches | last | .Action) == "pass") and
+            all($events[] | select(.Action == "run"); . as $run |
+              any($events[]; .Package == $run.Package and .Test == $run.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) and
+            (any($events[]; .Action == "fail") | not)
+          ' test-evidence/stream-owned.jsonl
+
+      - name: Source-bound stream controls
+        timeout-minutes: 3
+        env:
+          SSH_TEST_HOST: ''
+          SSH_TEST_KEY_PATH: ''
+          RDHPF_HOSTED_TRUST: ''
+          RDHPF_HOSTED_RECOVERY: ''
+        run: bash scripts/itest-stream-mutations.sh
 
       - name: Source-bound discovery controls
         timeout-minutes: 5

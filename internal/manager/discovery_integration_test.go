@@ -49,7 +49,11 @@ type discoveryOwned struct {
 
 func newDiscoveryOwned(t *testing.T) *discoveryOwned {
 	t.Helper()
-	f := sshfixture.New(t)
+	return newDiscoveryOwnedFixture(t, sshfixture.New(t))
+}
+
+func newDiscoveryOwnedFixture(t *testing.T, f *sshfixture.Fixture) *discoveryOwned {
+	t.Helper()
 	require.False(t, testing.Short(), "selected discovery proof must execute fully")
 	f.Configure("yes", f.PublicKey, "", f.Key, "no")
 	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "")

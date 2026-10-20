@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Pace clean Docker event-stream EOF with a cancelable one-second wait after
+  accepted events drain and owned workers join. Preserve clean-EOF forgiveness,
+  existing nonclean retry backoff/ten-failure limit and processing-watchdog health.
+
 - Make the processing watchdog initiate fatal cancellation on the first
   ten-second check observing 60 seconds without successfully handled Docker
   events, including an open silent stream or blocked handler/probe. Arm once at

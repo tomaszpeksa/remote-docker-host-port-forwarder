@@ -560,3 +560,32 @@ trust names, 14 trust controls, four discovery cases/seven controls, S08 identit
 control, both two-loss HTTP/monitor scenarios and both full three-minute Make
 stability cases plus cleanup remain required. A workflow's green summary alone
 is not scenario, remote-cleanup or release clearance.
+
+### Mandatory finite event-stream evidence
+
+`stream-owned` requires both exact leaves in `.github/required-stream-tests.txt`:
+`TestManagerStreamOwnedTermination/EOF` and `/Exit7`. On the same owned SSH/Engine
+fixture, a one-shot finite Engine-history interval supplies actual start/stop
+records through the production EventReader. Only the exact validated event
+operation/destination can receive test-only `--since`/`--until` operands and an
+optional exit 7 after successful Docker completion. Application trust/options
+remain unchanged; no production replay policy or subscription readiness is implied.
+
+An existing stream-opening seam holds the Run consumer while records are accepted
+and the actual stream joins, then forwards that exact terminal result. Assertions
+cover pending retirement before replacement, repeated paced endings, buffered
+owner changes, surviving unique HTTP content, stopped-listener refusal and one
+history entry with stable CreatedAt. Native tests separately hold real inspection,
+exercise cancellation/forgiveness/shared backoff, transfer inherited descriptors,
+and require reaped direct children, closed copier readers and watcher completion.
+Local SSH/proxy Wait and controller completion are recorded separately from remote
+effects and exact-owned cleanup. Synthetic results and TCP acceptance alone do
+not establish this hosted proof.
+
+`scripts/itest-stream-mutations.sh` preserves named reds and exact restored greens
+for missing pacing, accepted processing/retirement, inherited-copy WaitDelay and
+watcher joining. The copier control retains actual `cmd.Wait`; it is not a control
+proving sensitivity to removing Wait itself. Workflow guard tests reject missing,
+skipped, wrong-package, malformed, unfinished or failed leaf evidence. These phases
+are additive: all inherited trust, discovery, watchdog, identity, recovery and
+full Make stability/cleanup requirements and their timing limits remain unchanged.

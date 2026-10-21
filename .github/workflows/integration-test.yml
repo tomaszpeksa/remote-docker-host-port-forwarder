@@ -346,7 +346,9 @@ jobs:
           SSH_TEST_KEY_PATH: ''
           RDHPF_HOSTED_TRUST: ''
           RDHPF_HOSTED_RECOVERY: ''
-        run: bash scripts/itest-stream-mutations.sh
+        run: |
+          bash scripts/itest-stream-mutations.sh
+          test "$(cat test-evidence/stream-controls/result.txt)" = 'Named stream assertion reds and exact restored greens observed: no-pacing no-processing no-retirement no-direct-wait-join no-wait-delay no-watcher-join'
 
       - name: Source-bound discovery controls
         timeout-minutes: 5

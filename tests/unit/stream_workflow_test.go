@@ -12,6 +12,49 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// A zero script exit without the completed selected matrix is not proof.
+func TestStreamWorkflowControlCompletion(t *testing.T) {
+	source, err := os.ReadFile("../../.github/workflows/integration-test.yml")
+	require.NoError(t, err)
+	var workflow struct {
+		Jobs map[string]struct{ Steps []struct{ Name, Run string } }
+	}
+	require.NoError(t, yaml.Unmarshal(source, &workflow))
+	command := ""
+	for _, step := range workflow.Jobs["integration-test"].Steps {
+		if step.Name == "Source-bound stream controls" {
+			command = step.Run
+		}
+	}
+	require.NotEmpty(t, command)
+	complete := "Named stream assertion reds and exact restored greens observed: no-pacing no-processing no-retirement no-direct-wait-join no-wait-delay no-watcher-join\n"
+	for _, variant := range []string{"complete", "missing", "partial", "old-five"} {
+		t.Run(variant, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(root, "scripts"), 0700))
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "test-evidence/stream-controls"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts/itest-stream-mutations.sh"), []byte("#!/bin/bash\nexit 0\n"), 0600))
+			receipt := complete
+			if variant == "partial" {
+				receipt = "no-pacing\n"
+			} else if variant == "old-five" {
+				receipt = strings.Replace(complete, "no-direct-wait-join ", "", 1)
+			}
+			if variant != "missing" {
+				require.NoError(t, os.WriteFile(filepath.Join(root, "test-evidence/stream-controls/result.txt"), []byte(receipt), 0600))
+			}
+			cmd := exec.Command("/bin/bash", "-eo", "pipefail", "-c", command)
+			cmd.Dir = root
+			output, err := cmd.CombinedOutput()
+			if variant == "complete" {
+				require.NoError(t, err, "%s", output)
+			} else {
+				require.Error(t, err, "STREAM_CONTROL_MUST_REJECT_%s: %s", variant, output)
+			}
+		})
+	}
+}
+
 func TestStreamWorkflowRequiredPasses(t *testing.T) {
 	output, err := exec.Command("../../scripts/check-tools.sh", "jq").CombinedOutput()
 	require.NoError(t, err, "%s", output)

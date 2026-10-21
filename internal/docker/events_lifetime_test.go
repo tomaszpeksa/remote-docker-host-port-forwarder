@@ -33,6 +33,24 @@ func TestEventReaderDescriptorChild(t *testing.T) {
 	if err != nil {
 		os.Exit(22)
 	}
+	if os.Getenv("STREAM_WAIT_HOLD") == "1" {
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			os.Exit(23)
+		}
+		var request [1]byte
+		if _, err := io.ReadFull(conn, request[:]); err != nil {
+			os.Exit(24)
+		}
+		if os.Stdout.Close() != nil || os.Stderr.Close() != nil {
+			os.Exit(25)
+		}
+		if _, err := conn.Write([]byte("R")); err != nil {
+			os.Exit(26)
+		}
+		if _, err := io.ReadFull(conn, request[:]); err != nil && err != io.EOF {
+			os.Exit(27)
+		}
+	}
 	_ = conn.Close()
 	os.Exit(0)
 }

@@ -583,9 +583,19 @@ effects and exact-owned cleanup. Synthetic results and TCP acceptance alone do
 not establish this hosted proof.
 
 `scripts/itest-stream-mutations.sh` preserves named reds and exact restored greens
-for missing pacing, accepted processing/retirement, inherited-copy WaitDelay and
-watcher joining. The copier control retains actual `cmd.Wait`; it is not a control
-proving sensitivity to removing Wait itself. Workflow guard tests reject missing,
-skipped, wrong-package, malformed, unfinished or failed leaf evidence. These phases
+for missing pacing, accepted processing/retirement, premature direct-Wait results,
+inherited-copy WaitDelay and watcher joining. The direct-Wait control first waits
+for a held direct child's descriptor/identity acknowledgment. Its diagnostic
+production-call overlay returns early but retains the real `cmd.Wait` under the
+test's independently registered cleanup owner. Cleanup releases the reaper gate,
+terminates as necessary, joins both owners and requires ECHILD, even after the
+named lifecycle assertion fails. The control requires matching PID entry/join/
+reaping receipts; it never drops Wait or leaves cleanup to process absence.
+The copier and watcher controls remain separate guarantees. A new valid control
+does not reconstruct the old invalid attempt's missing cleanup receipt.
+The workflow also requires the completed six-control matrix receipt: a zero
+script exit without that receipt is not success. Guard tests reject missing,
+partial or old five-control receipts as well as missing, skipped, wrong-package,
+malformed, unfinished or failed leaf evidence. These phases
 are additive: all inherited trust, discovery, watchdog, identity, recovery and
 full Make stability/cleanup requirements and their timing limits remain unchanged.

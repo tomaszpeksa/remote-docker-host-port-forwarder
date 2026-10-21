@@ -25,9 +25,9 @@ jobs:
     defaults:
       run:
         shell: mise exec -- bash --noprofile --norc -eo pipefail {0}
-    # Preserve the existing 35m envelope plus additive 5m isolation/8m controls.
-    # All inherited scenario and Make stability budgets remain unchanged.
-    timeout-minutes: 48
+    # Share the accepted 60m ceiling across watchdog, stream and isolation proof.
+    # All leaf deadlines, production 10/30/60 and full Make stability are unchanged.
+    timeout-minutes: 60
     env:
       GOTOOLCHAIN: local
       MISE_AUTO_INSTALL: "0"
@@ -91,7 +91,9 @@ jobs:
             ssh -V 2>&1
           } > test-evidence/source.txt
           printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' 'discovery-owned|^TestManagerDiscoveryOwned' 'isolation-owned|^Test(OwnedCLIIsolation|OwnedMasterProcessIsolation|MasterPrivatePathNativeBind)$' > test-evidence/plan.txt
-          go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh > test-evidence/list.jsonl 2> test-evidence/list.stderr
+          printf '%s\n' 'stream-owned|^TestManagerStreamOwnedTermination$' >> test-evidence/plan.txt
+          printf '%s\n' 'watchdog-cold|^TestWatchdogOwnedColdPull$' 'watchdog-warm|^TestWatchdogOwnedWarmProcessing$' 'watchdog-cli|^TestWatchdogOwnedCLISilentStream$' 'watchdog-blocked|^TestWatchdogOwned(BlockedWork|PullAllowance)$' >> test-evidence/plan.txt
+          go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh ./cmd/rdhpf ./internal/testutil/sshfixture > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
         run: |
@@ -105,9 +107,6 @@ jobs:
           cp .itests/provenance.txt test-evidence/fixture-provenance.txt
           cp .itests/host-key.pub test-evidence/host-key.pub
           id=$(cat .itests/container-id)
-          # Warm the unchanged production ping image only on the owned daemon.
-          docker exec "$id" docker pull alpine:latest > test-evidence/ping-image-pull.txt
-          docker exec "$id" docker image inspect alpine:latest --format '{{json .RepoDigests}}' > test-evidence/ping-image-digests.txt
           docker exec "$id" sh -ec 'sha256sum /etc/apk/keys/*; apk policy openssh-server docker-cli; /usr/sbin/sshd -T' > test-evidence/fixture-policy.txt
           # Actual account config is used by real application SSH. Save exact
           # previous bytes privately; never upload this backup or private keys.
@@ -124,6 +123,98 @@ jobs:
           cp .itests/home/.ssh/id_ed25519.pub "$HOME/.ssh/id_rdhpf_test.pub"
           cp .itests/home/.ssh/config "$HOME/.ssh/config"
           cp .itests/home/.ssh/known_hosts "$HOME/.ssh/known_hosts"
+
+      - name: Owned watchdog cold pull before image warmup
+        timeout-minutes: 4
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          mkdir -p test-evidence/bin
+          {
+            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            pwd
+            git rev-parse HEAD HEAD^{tree}
+            git status --porcelain=v1 --untracked-files=all
+            git ls-files --others --exclude-standard
+            git diff --exit-code
+            git diff --cached --exit-code
+          } > test-evidence/watchdog-cli-prebuild.txt
+          go build -o "$PWD/test-evidence/bin/rdhpf" ./cmd/rdhpf
+          go version -m test-evidence/bin/rdhpf > test-evidence/watchdog-cli-build.txt
+          sha256sum test-evidence/bin/rdhpf >> test-evidence/watchdog-cli-build.txt
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cold.coverage -run '^TestWatchdogOwnedColdPull$' ./internal/manager 2> test-evidence/watchdog-cold.stderr | tee test-evidence/watchdog-cold.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-cold.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Warm unchanged production ping image after cold proof
+        run: |
+          id=$(cat .itests/container-id)
+          docker exec "$id" docker pull alpine:latest > test-evidence/ping-image-pull.txt
+          docker exec "$id" docker image inspect alpine:latest --format '{{json .RepoDigests}}' > test-evidence/ping-image-digests.txt
+
+      - name: Owned watchdog failure accounting control
+        timeout-minutes: 7
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: bash scripts/itest-watchdog-failure-accounting.sh
+
+      - name: Owned watchdog warm processing
+        timeout-minutes: 5
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=4m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-warm.coverage -run '^TestWatchdogOwnedWarmProcessing$' ./internal/manager 2> test-evidence/watchdog-warm.stderr | tee test-evidence/watchdog-warm.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-warm.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Owned watchdog delivered CLI silence
+        timeout-minutes: 4
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          export RDHPF_WATCHDOG_BINARY="$PWD/test-evidence/bin/rdhpf"
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cli.coverage -run '^TestWatchdogOwnedCLISilentStream$' ./cmd/rdhpf 2> test-evidence/watchdog-cli.stderr | tee test-evidence/watchdog-cli.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-cli.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Owned watchdog blocked commands and pull allowance
+        timeout-minutes: 7
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=6m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-blocked.coverage -run '^TestWatchdogOwned(BlockedWork|PullAllowance)$' ./internal/manager 2> test-evidence/watchdog-blocked.stderr | tee test-evidence/watchdog-blocked.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-blocked.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Require owned watchdog passes
+        run: |
+          jq -e -s --rawfile required .github/required-watchdog-tests.txt '
+            . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
+            ($names | length) == 6 and all($names[]; . as $name |
+              (if $name == "TestWatchdogOwnedCLISilentStream" then "cmd/rdhpf" else "internal/manager" end) as $suffix |
+              [$events[] | select(.Test == $name and .Package == ("github.com/tomaszpeksa/remote-docker-host-port-forwarder/" + $suffix))] as $matches |
+              ($matches | last | .Action) == "pass") and
+            all($events[] | select(.Action == "run"); . as $run |
+              any($events[]; .Package == $run.Package and .Test == $run.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) and
+            (any($events[]; .Action == "fail") | not)
+          ' test-evidence/watchdog-{cold,warm,cli,blocked}.jsonl
+
+      - name: Source-bound watchdog controls
+        timeout-minutes: 5
+        env:
+          SSH_TEST_HOST: ''
+          SSH_TEST_KEY_PATH: ''
+          RDHPF_HOSTED_TRUST: ''
+          RDHPF_HOSTED_RECOVERY: ''
+        run: bash scripts/itest-watchdog-mutations.sh
 
       - name: Phase 1 - Run SSH Master integration tests
         env:
@@ -224,6 +315,40 @@ jobs:
             . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
             ($names | length) == 4 and all($names[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))
           ' test-evidence/discovery-owned.jsonl
+
+      - name: Owned finite event stream termination
+        timeout-minutes: 6
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=5m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/stream-owned.coverage -run '^TestManagerStreamOwnedTermination$' ./internal/manager 2> test-evidence/stream-owned.stderr | tee test-evidence/stream-owned.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/stream-owned.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
+      - name: Require owned stream passes
+        run: |
+          jq -e -s --rawfile required .github/required-stream-tests.txt '
+            . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
+            ($names | length) == 2 and all($names[]; . as $name |
+              [$events[] | select(.Test == $name and .Package == "github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/manager")] as $matches |
+              ($matches | last | .Action) == "pass") and
+            all($events[] | select(.Action == "run"); . as $run |
+              any($events[]; .Package == $run.Package and .Test == $run.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) and
+            (any($events[]; .Action == "fail") | not)
+          ' test-evidence/stream-owned.jsonl
+
+      - name: Source-bound stream controls
+        timeout-minutes: 3
+        env:
+          SSH_TEST_HOST: ''
+          SSH_TEST_KEY_PATH: ''
+          RDHPF_HOSTED_TRUST: ''
+          RDHPF_HOSTED_RECOVERY: ''
+        run: |
+          bash scripts/itest-stream-mutations.sh
+          test "$(cat test-evidence/stream-controls/result.txt)" = 'Named stream assertion reds and exact restored greens observed: no-pacing no-processing no-retirement no-direct-wait-join no-wait-delay no-watcher-join'
 
       - name: Source-bound discovery controls
         timeout-minutes: 5

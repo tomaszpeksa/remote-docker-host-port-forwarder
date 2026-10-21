@@ -1,0 +1,6 @@
+TestWatchdogOwnedColdPull
+TestWatchdogOwnedWarmProcessing
+TestWatchdogOwnedCLISilentStream
+TestWatchdogOwnedBlockedWork/Probe
+TestWatchdogOwnedBlockedWork/Inspect
+TestWatchdogOwnedPullAllowance

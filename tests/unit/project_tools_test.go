@@ -10,6 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// This is a literal configuration contract, not a runtime timeout test.
+func TestPreCommitFastUnitPackageBudget(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/pre-commit.sh")
+	require.NoError(t, err)
+	var invocations []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "if ! go test ") {
+			invocations = append(invocations, line)
+		}
+	}
+	require.Equal(t, []string{`if ! go test -short -timeout=60s "$pkg" 2>&1; then`}, invocations,
+		"FAST_UNIT_PACKAGE_BUDGET: common macOS/Linux hook must retain short mode and unfiltered package selection with the approved 60s alarm")
+}
+
 // The real Make recipe must reject a missing managed tool or an ambient shadow
 // before executing it. The binaries are inert fixtures, not host toolchains.
 func TestMakeRejectsUnmanagedTools(t *testing.T) {
@@ -146,6 +161,61 @@ func TestProjectToolGuardPathIdentity(t *testing.T) {
 			require.Equal(t, wantNormalization, strings.Count(string(data), "\n"), "PROVIDER_NORMALIZATION_WORK: identical spellings need no redundant normalization subprocesses")
 			_, err = os.Stat(calls)
 			require.True(t, os.IsNotExist(err), "provider checking must not execute either tool")
+		})
+	}
+}
+
+func TestProjectToolExactProviderWork(t *testing.T) {
+	guard, err := filepath.Abs("../../scripts/check-tools.sh")
+	require.NoError(t, err)
+	dirname, err := exec.LookPath("dirname")
+	require.NoError(t, err)
+	basename, err := exec.LookPath("basename")
+	require.NoError(t, err)
+	for _, variant := range []string{"exact", "alias", "mismatch", "non-executable", "missing-provider"} {
+		t.Run(variant, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "bin")
+			require.NoError(t, os.Mkdir(bin, 0700))
+			write := func(name, body string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0700))
+			}
+			write("mise", "[ \"$*\" = 'which go --tool core:go' ] || exit 2\n[ \"$CASE\" != missing-provider ] || exit 1\nprintf '%s\\n' \"$EXPECTED\"\n")
+			write("go", "printf 'executed\\n' > \"$TOOL_CALLS\"\nexit 99\n")
+			write("dirname", "printf 'dirname\\n' >> \"$CANONICAL_CALLS\"\nexec \"$REAL_DIRNAME\" \"$@\"\n")
+			write("basename", "printf 'basename\\n' >> \"$CANONICAL_CALLS\"\nexec \"$REAL_BASENAME\" \"$@\"\n")
+			expected := filepath.Join(bin, "go")
+			switch variant {
+			case "alias":
+				alias := filepath.Join(root, "alias")
+				require.NoError(t, os.Symlink(bin, alias))
+				expected = filepath.Join(alias, "go")
+			case "mismatch":
+				expected = filepath.Join(root, "other-go")
+				require.NoError(t, os.WriteFile(expected, []byte("#!/bin/sh\nexit 99\n"), 0700))
+			case "non-executable":
+				require.NoError(t, os.Chmod(expected, 0600))
+			}
+			calls, toolCalls := filepath.Join(root, "canonical.calls"), filepath.Join(root, "tool.calls")
+			cmd := exec.Command(guard, "go")
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + root, "EXPECTED=" + expected, "CASE=" + variant, "CANONICAL_CALLS=" + calls, "TOOL_CALLS=" + toolCalls, "REAL_DIRNAME=" + dirname, "REAL_BASENAME=" + basename}
+			output, err := cmd.CombinedOutput()
+			if variant == "exact" || variant == "alias" {
+				require.NoError(t, err, "%s", output)
+			} else {
+				require.Error(t, err, "%s", output)
+				require.Contains(t, string(output), "required project tool")
+			}
+			_, err = os.Stat(toolCalls)
+			require.True(t, os.IsNotExist(err), "provider validation must not execute the tool")
+			data, err := os.ReadFile(calls)
+			require.NoError(t, err)
+			want := 1 // Only dirname for the script's own working directory.
+			if variant == "alias" || variant == "mismatch" {
+				want = 5 // Preserve both directory canonicalizations on unequal spellings.
+			}
+			require.Len(t, strings.Fields(string(data)), want, "EXACT_PROVIDER_MUST_AVOID_REDUNDANT_CANONICALIZATION: %s", data)
 		})
 	}
 }

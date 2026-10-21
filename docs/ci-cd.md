@@ -560,3 +560,42 @@ trust names, 14 trust controls, four discovery cases/seven controls, S08 identit
 control, both two-loss HTTP/monitor scenarios and both full three-minute Make
 stability cases plus cleanup remain required. A workflow's green summary alone
 is not scenario, remote-cleanup or release clearance.
+
+### Mandatory finite event-stream evidence
+
+`stream-owned` requires both exact leaves in `.github/required-stream-tests.txt`:
+`TestManagerStreamOwnedTermination/EOF` and `/Exit7`. On the same owned SSH/Engine
+fixture, a one-shot finite Engine-history interval supplies actual start/stop
+records through the production EventReader. Only the exact validated event
+operation/destination can receive test-only `--since`/`--until` operands and an
+optional exit 7 after successful Docker completion. Application trust/options
+remain unchanged; no production replay policy or subscription readiness is implied.
+
+An existing stream-opening seam holds the Run consumer while records are accepted
+and the actual stream joins, then forwards that exact terminal result. Assertions
+cover pending retirement before replacement, repeated paced endings, buffered
+owner changes, surviving unique HTTP content, stopped-listener refusal and one
+history entry with stable CreatedAt. Native tests separately hold real inspection,
+exercise cancellation/forgiveness/shared backoff, transfer inherited descriptors,
+and require reaped direct children, closed copier readers and watcher completion.
+Local SSH/proxy Wait and controller completion are recorded separately from remote
+effects and exact-owned cleanup. Synthetic results and TCP acceptance alone do
+not establish this hosted proof.
+
+`scripts/itest-stream-mutations.sh` preserves named reds and exact restored greens
+for missing pacing, accepted processing/retirement, premature direct-Wait results,
+inherited-copy WaitDelay and watcher joining. The direct-Wait control first waits
+for a held direct child's descriptor/identity acknowledgment. Its diagnostic
+production-call overlay returns early but retains the real `cmd.Wait` under the
+test's independently registered cleanup owner. Cleanup releases the reaper gate,
+terminates as necessary, joins both owners and requires ECHILD, even after the
+named lifecycle assertion fails. The control requires matching PID entry/join/
+reaping receipts; it never drops Wait or leaves cleanup to process absence.
+The copier and watcher controls remain separate guarantees. A new valid control
+does not reconstruct the old invalid attempt's missing cleanup receipt.
+The workflow also requires the completed six-control matrix receipt: a zero
+script exit without that receipt is not success. Guard tests reject missing,
+partial or old five-control receipts as well as missing, skipped, wrong-package,
+malformed, unfinished or failed leaf evidence. These phases
+are additive: all inherited trust, discovery, watchdog, identity, recovery and
+full Make stability/cleanup requirements and their timing limits remain unchanged.

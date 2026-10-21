@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -217,7 +218,12 @@ func TestWatchdogNativeSSH(t *testing.T) {
 			if err != nil {
 				os.Exit(22)
 			}
-			_, _ = fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
+			// Kernel-peer association sends no data and owns the close. Only
+			// this fixture's explicit check client requests a PID response.
+			var request [1]byte
+			if _, err := io.ReadFull(conn, request[:]); err == nil && request[0] == 'c' {
+				_, _ = fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
+			}
 			_ = conn.Close()
 		}
 	}
@@ -225,6 +231,10 @@ func TestWatchdogNativeSSH(t *testing.T) {
 		conn, err := net.Dial("unix", path)
 		if err != nil {
 			os.Exit(23)
+		}
+		if _, err := conn.Write([]byte{'c'}); err != nil {
+			_ = conn.Close()
+			os.Exit(25)
 		}
 		_, err = io.Copy(os.Stdout, conn)
 		_ = conn.Close()
@@ -238,6 +248,45 @@ func TestWatchdogNativeSSH(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "{}")
 	}
 	os.Exit(0)
+}
+
+// Association clients query the connected kernel peer without sending an SSH
+// check request. The fixture must not close that connection before they do.
+func TestWatchdogNativeSSHAssociationLifetime(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "s11-peer-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+	path := filepath.Join(dir, "mux")
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWatchdogNativeSSH$", "--", "-MN", "-o", "ControlPath="+path)
+	cmd.Env = append(os.Environ(), "S10_NATIVE_SSH=1", "GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0")
+	started := false
+	t.Cleanup(func() {
+		cancel()
+		if started {
+			err := cmd.Wait()
+			t.Logf("NATIVE_ASSOCIATION_SERVER_WAIT pid=%d result=%v", cmd.Process.Pid, err)
+		}
+	})
+	require.NoError(t, cmd.Start())
+	started = true
+	require.Eventually(t, func() bool { _, err := os.Stat(path); return err == nil }, 3*time.Second, time.Millisecond)
+	conn, err := net.Dial("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+	var byteReceived [1]byte
+	_, err = conn.Read(byteReceived[:])
+	var timeout net.Error
+	require.True(t, errors.As(err, &timeout) && timeout.Timeout(), "NATIVE_ASSOCIATION_MUST_STAY_CONNECTED: read=%q error=%v", byteReceived, err)
+	require.NoError(t, conn.Close())
+	check := exec.CommandContext(ctx, executable, "-test.run=^TestWatchdogNativeSSH$", "--", "-S", path, "-O", "check")
+	check.Env = cmd.Env
+	output, err := check.CombinedOutput()
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("Master running (pid=%d)\n", cmd.Process.Pid), string(output))
 }
 
 type watchdogPingFunc func(context.Context) error

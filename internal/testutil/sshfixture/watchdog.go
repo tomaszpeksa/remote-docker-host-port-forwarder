@@ -28,6 +28,8 @@ type WatchdogAttempt struct {
 	Operation, Name, ContainerID                 string
 	ProxyPID, ChildPID                           int
 	RealChildStarted, DispatchSuppressed         bool
+	FiniteEvents                                 bool
+	ExitCode                                     int
 	StartedAt, CanceledAt, JoinedAt, CompletedAt time.Time
 }
 type watchdogGate struct {
@@ -50,18 +52,37 @@ func (g *watchdogGate) open() { g.releaseOnce.Do(func() { close(g.release) }) }
 // It owns every selected real SSH child even when the application proxy dies.
 type WatchdogFixture struct {
 	*Fixture
-	listener   net.Listener
-	socket     string
-	ctx        context.Context
-	cancel     context.CancelFunc
-	acceptDone chan struct{}
-	workers    sync.WaitGroup
-	mu         sync.Mutex
-	gates      map[string]*watchdogGate
-	dispatch   *watchdogGate
-	attempts   []*WatchdogAttempt
-	closeOnce  sync.Once
+	listener     net.Listener
+	socket       string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	acceptDone   chan struct{}
+	workers      sync.WaitGroup
+	mu           sync.Mutex
+	gates        map[string]*watchdogGate
+	dispatch     *watchdogGate
+	finiteEvents *finiteEventStream
+	attempts     []*WatchdogAttempt
+	closeOnce    sync.Once
 }
+
+// finiteEventStream is a one-shot, owned Engine-history stimulus, not a
+// production replay policy or a substitute for a real SSH terminal result.
+type finiteEventStream struct {
+	since, until time.Time
+	exitCode     int
+}
+
+func (w *WatchdogFixture) FiniteEvents(since, until time.Time, exitCode int) {
+	w.T.Helper()
+	require.True(w.T, since.Before(until))
+	require.Contains(w.T, []int{0, 7}, exitCode)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Nil(w.T, w.finiteEvents, "finite event stimulus already armed")
+	w.finiteEvents = &finiteEventStream{since: since, until: until, exitCode: exitCode}
+}
+
 type watchdogRequest struct {
 	Args      []string
 	Operation string
@@ -289,11 +310,27 @@ func (w *WatchdogFixture) serve(conn net.Conn) {
 	}
 	ctx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
-	a := &WatchdogAttempt{Operation: operation, Name: name, ContainerID: id, ProxyPID: request.PID, StartedAt: time.Now()}
+	a := &WatchdogAttempt{Operation: operation, Name: name, ContainerID: id, ProxyPID: request.PID, StartedAt: time.Now(), ExitCode: -1}
 	w.mu.Lock()
 	w.attempts = append(w.attempts, a)
 	dispatch := w.dispatch
+	var finite *finiteEventStream
+	if operation == "events" {
+		finite, w.finiteEvents = w.finiteEvents, nil
+		a.FiniteEvents = finite != nil
+	}
 	w.mu.Unlock()
+	// Only the exact validated event operation on this fixture's destination
+	// may receive the one-shot finite stimulus. Other argv remain untouched.
+	args := request.Args
+	if finite != nil {
+		args = append([]string(nil), args...)
+		command := "docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop --since " + watchdogShellQuote(finite.since.Format(time.RFC3339Nano)) + " --until " + watchdogShellQuote(finite.until.Format(time.RFC3339Nano))
+		if finite.exitCode == 7 {
+			command += " && exit 7"
+		}
+		args[len(args)-1] = "sh -c " + watchdogShellQuote(command)
+	}
 	disconnected := make(chan struct{})
 	go func() {
 		defer close(disconnected)
@@ -319,7 +356,7 @@ func (w *WatchdogFixture) serve(conn net.Conn) {
 	}
 	// The retained absolute SSH provider and exact original application argv are
 	// the only executable/arguments accepted by this concrete fixture.
-	cmd := exec.CommandContext(ctx, w.SSH, request.Args...)
+	cmd := exec.CommandContext(ctx, w.SSH, args...)
 	output := &watchdogOutput{fixture: w, ctx: ctx, conn: conn, operation: operation}
 	cmd.Stdout = &watchdogOutputStream{output: output, stream: "stdout"}
 	cmd.Stderr = &watchdogOutputStream{output: output, stream: "stderr"}
@@ -333,6 +370,7 @@ func (w *WatchdogFixture) serve(conn net.Conn) {
 		err = cmd.Wait()
 		w.mu.Lock()
 		a.JoinedAt = time.Now()
+		a.ExitCode = cmd.ProcessState.ExitCode()
 		w.mu.Unlock()
 	}
 	// Keep controlled completion pending separately from the real-child Wait.
@@ -345,6 +383,9 @@ func (w *WatchdogFixture) serve(conn net.Conn) {
 	code := 0
 	if err != nil {
 		code = 1
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() > 0 {
+			code = cmd.ProcessState.ExitCode()
+		}
 	}
 	output.mu.Lock()
 	_ = json.NewEncoder(conn).Encode(watchdogFrame{Exit: &code})

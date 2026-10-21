@@ -606,6 +606,18 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 					"previous_failures", consecutiveFailures)
 				consecutiveFailures = 0
 			}
+			// Even a clean EOF must not spin through connection checks and
+			// replacement. Run owns this timer after the old stream has joined.
+			timer := time.NewTimer(baseDelay)
+			m.logger.Debug("clean event stream ended, waiting before replacement", "delay", baseDelay)
+			select {
+			case <-timer.C:
+				timer.Stop()
+			case <-ctx.Done():
+				timer.Stop()
+				cleanup()
+				return nil
+			}
 		}
 	}
 }

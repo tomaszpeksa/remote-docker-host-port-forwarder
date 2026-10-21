@@ -51,6 +51,55 @@ func TestWatchdogFixtureRefusesUnownedRequests(t *testing.T) {
 		})
 	}
 }
+func TestWatchdogFixtureFiniteEventsValidatedOnce(t *testing.T) {
+	w := inertWatchdog(t)
+	argsFile := filepath.Join(w.Dir, "finite-argv")
+	t.Setenv("STREAM_FINITE_ARGV", argsFile)
+	require.NoError(t, os.WriteFile(w.SSH, []byte("#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$STREAM_FINITE_ARGV\"\nexit 7\n"), 0700))
+	since, until := time.Unix(100, 0), time.Unix(101, 0)
+	w.FiniteEvents(since, until, 7)
+	base := []string{"-o", "BatchMode=yes", "-S", "/tmp/owned/master.sock", "--", w.Alias}
+	request := watchdogRequest{Operation: "events", Args: append(append([]string(nil), base...), watchdogEvents+"; unowned")}
+	conn := watchdogConnection(t, w, request)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	var frame watchdogFrame
+	require.NoError(t, json.NewDecoder(conn).Decode(&frame))
+	require.NotNil(t, frame.Exit)
+	require.Equal(t, 97, *frame.Exit, "FINITE_STREAM_MUST_VALIDATE_BEFORE_INJECTION")
+	require.Empty(t, w.Snapshot())
+	require.NoFileExists(t, argsFile)
+	require.NoError(t, conn.Close())
+	for index := range 2 {
+		request.Args = append(append([]string(nil), base...), watchdogEvents)
+		conn = watchdogConnection(t, w, request)
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		require.NoError(t, json.NewDecoder(conn).Decode(&frame))
+		require.NotNil(t, frame.Exit)
+		require.Equal(t, 7, *frame.Exit, "FINITE_STREAM_MUST_PRESERVE_ACTUAL_EXIT")
+		require.NoError(t, conn.Close())
+		data, err := os.ReadFile(argsFile)
+		require.NoError(t, err)
+		args := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+		require.Equal(t, base, args[:len(args)-1], "finite injection preserves trust/options/destination")
+		if index == 0 {
+			command := "docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop --since " + watchdogShellQuote(since.Format(time.RFC3339Nano)) + " --until " + watchdogShellQuote(until.Format(time.RFC3339Nano)) + " && exit 7"
+			require.Equal(t, "sh -c "+watchdogShellQuote(command), args[len(args)-1])
+		} else {
+			require.Equal(t, watchdogEvents, args[len(args)-1], "finite stimulus consumed once")
+		}
+	}
+	w.Close()
+	a := w.Snapshot()
+	require.Len(t, a, 2)
+	require.True(t, a[0].FiniteEvents)
+	require.False(t, a[1].FiniteEvents)
+	for _, attempt := range a {
+		require.Equal(t, 7, attempt.ExitCode)
+		require.False(t, attempt.JoinedAt.IsZero())
+		require.False(t, attempt.CompletedAt.IsZero())
+	}
+}
+
 func TestWatchdogFixtureProxyDeathJoinsHeldChild(t *testing.T) {
 	w := inertWatchdog(t)
 	entered, release := w.Gate("events")

@@ -327,6 +327,15 @@ reservations without manufacturing new forwards or removal history. Deadlines
 initiate cancellation/pipe closure/kill; OS-uninterruptible children do not have
 a guaranteed bounded join.
 
+After joined completion, accepted-event drain and generation retirement, clean
+EOF clears prior restart failures and waits one cancelable second before another
+connection check/subscription. Nonclean stream and EnsureAlive failures retain
+shared 1/2/4/8/16/30-second backoff and termination on the tenth failure; successful
+event handling does not forgive that restart history. Parent or watchdog
+cancellation suppresses replacement and retains the selected terminal cause.
+This pacing floor neither bounds lifetime EOF count nor establishes healthy HTTP
+traffic or synchronous reconciliation/history completion.
+
 Desired changes retain a request revision independently of debounce and EOF.
 Only a ready-gated Diff/Apply attempt acknowledges its captured revision; a newer
 request remains owed. Unavailable transport retains timer work, while a failed

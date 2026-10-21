@@ -29,6 +29,8 @@ for binary in "$@"; do
     expected=$(mise which "$binary" --tool "$tool") || fail "$binary has no locked managed provider"
     [ -x "$expected" ] || fail "$binary is not installed at $expected"
     actual=$(command -v "$binary") || fail "$binary is not on PATH"
+    # Identical spellings already identify the required provider without extra processes.
+    [ "$actual" = "$expected" ] && continue
     # Resolve directory aliases such as /tmp -> /private/tmp on macOS.
     expected="$(cd "$(dirname "$expected")" && pwd -P)/$(basename "$expected")"
     actual="$(cd "$(dirname "$actual")" && pwd -P)/$(basename "$actual")"

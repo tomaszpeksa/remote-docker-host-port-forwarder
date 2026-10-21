@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -46,7 +47,16 @@ func newWatchdogRun(t *testing.T) *watchdogRun {
 	// This race-instrumented test executable also acts as SSH. Remove only the
 	// race runtime's artificial exit sleep in children, not detection or budgets.
 	t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
-	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte("#!/bin/sh\nexec \"$S10_TEST_EXECUTABLE\" -test.run '^TestWatchdogNativeSSH$' -- \"$@\"\n"), 0700))
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$#" -eq 7 ] && [ "$1" = '-o' ] && [ "$2" = 'BatchMode=yes' ] &&
+   [ "$3" = '-S' ] && [ "$4" = %q ] && [ "$5" = '--' ] &&
+   [ "$6" = 'owned-fixture.invalid' ] && [ "$7" = "sh -c \"docker version --format '{{.Server.Version}}'\"" ]; then
+    printf '{}\n'
+    exit 0
+fi
+exec "$S10_TEST_EXECUTABLE" -test.run '^TestWatchdogNativeSSH$' -- "$@"
+`, m.sshMaster.ControlPath())
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte(script), 0700))
 	home, err := os.MkdirTemp("/tmp", "s10-run-")
 	require.NoError(t, err)
 	t.Setenv("HOME", home)
@@ -85,6 +95,101 @@ func newWatchdogRun(t *testing.T) *watchdogRun {
 }
 
 func (r *watchdogRun) start() { r.startOnce.Do(r.launch) }
+
+func TestWatchdogRunConnectivityNativeWork(t *testing.T) {
+	// Register directory retirement before the Run cleanup, so records and the
+	// forwarding wrapper survive every owned child and its retained Wait.
+	records := t.TempDir()
+	r := newWatchdogRun(t)
+	executable := os.Getenv("S10_TEST_EXECUTABLE")
+	wrapper := filepath.Join(records, "native-entry")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\000' \"$@\" > %q/\"$$\"\nexec %q \"$@\"\n", records, executable)
+	require.NoError(t, os.WriteFile(wrapper, []byte(script), 0700))
+	// newWatchdogRun already registered restoration of this variable, after
+	// its owned cleanup; another t.Setenv here would restore it too early.
+	require.NoError(t, os.Setenv("S10_TEST_EXECUTABLE", wrapper))
+	readEntries := func() [][]string {
+		files, err := os.ReadDir(records)
+		require.NoError(t, err)
+		var entries [][]string
+		for _, file := range files {
+			if file.Name() == "native-entry" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(records, file.Name()))
+			require.NoError(t, err)
+			entries = append(entries, strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"))
+		}
+		return entries
+	}
+	args := []string{"-o", "BatchMode=yes", "-S", r.m.sshMaster.ControlPath(), "--", "owned-fixture.invalid", `sh -c "docker version --format '{{.Server.Version}}'"`}
+	originalLogger := r.m.logger
+	var versions []string
+	watchRunLogs(r.m, func(record slog.Record) {
+		if record.Message == "DIAGNOSTIC: Docker connectivity test succeeded" {
+			record.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "docker_version" {
+					versions = append(versions, attr.Value.String())
+				}
+				return true
+			})
+		}
+	})
+	for range 3 {
+		require.NoError(t, r.m.validateDockerConnectivity(context.Background(), r.m.sshMaster.ControlPath()))
+	}
+	r.m.logger = originalLogger
+	require.Equal(t, []string{"{}", "{}", "{}"}, versions)
+	entries := readEntries()
+	for _, entry := range entries {
+		t.Logf("CONNECTIVITY_NATIVE_ENTRY argv=%q", entry)
+		require.Equal(t, append([]string{"-test.run", "^TestWatchdogNativeSSH$", "--"}, args...), entry)
+	}
+	require.Len(t, entries, 0, "WATCHDOG_CONNECTIVITY_NATIVE_WORK: three production calls must not enter the native test executable")
+
+	invoke := func(argv []string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "ssh", argv...)
+		var output bytes.Buffer
+		cmd.Stdout = &output
+		require.NoError(t, cmd.Start())
+		pid := cmd.Process.Pid
+		err := cmd.Wait()
+		t.Logf("CONNECTIVITY_CHILD_WAIT pid=%d result=%v", pid, err)
+		require.Positive(t, pid)
+		require.NoError(t, err)
+		require.True(t, cmd.ProcessState.Exited())
+		require.Equal(t, "{}\n", output.String())
+	}
+	invoke(args)
+	require.Empty(t, readEntries(), "exact connectivity still uses a real shell child, not native exec")
+	near := [][]string{
+		append(append([]string(nil), args...), "extra"),
+		{"-S", args[3], "-o", "BatchMode=yes", "--", args[5], args[6]},
+	}
+	for i, replacement := range []string{"-x", "BatchMode=no", "-s", args[3] + "-other", "-", "other.invalid", args[6] + " "} {
+		variant := append([]string(nil), args...)
+		variant[i] = replacement
+		near = append(near, variant)
+	}
+	for _, variant := range near {
+		before := len(readEntries())
+		invoke(variant)
+		require.Len(t, readEntries(), before+1, "NEAR_CONNECTIVITY_MUST_RETAIN_NATIVE_EXEC: %q", variant)
+	}
+	r.start()
+	r.awaitStream(t)
+	require.NoError(t, r.m.sshMaster.Check(), "native kernel association and check remain real")
+	var master, check bool
+	for _, entry := range readEntries() {
+		joined := "\x00" + strings.Join(entry, "\x00") + "\x00"
+		master = master || strings.Contains(joined, "\x00--\x00-MN\x00")
+		check = check || strings.Contains(joined, "\x00-O\x00check\x00")
+	}
+	require.True(t, master, "NATIVE_MASTER_MUST_EXEC")
+	require.True(t, check, "NATIVE_CHECK_MUST_EXEC")
+}
 
 func awaitWatchdog(t *testing.T, ch <-chan struct{}, marker string) bool {
 	t.Helper()

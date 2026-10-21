@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Owned process-isolation coverage for actual CLI contenders and successor HTTP
+  traffic, separate SSH Master processes, and native private Unix-socket length
+  checks. Admission and publication behavior are unchanged.
 - Comprehensive debug logging for docker events SSH command execution
   - Logs full SSH command with arguments before execution
   - Captures and logs stderr separately (SSH warnings, error messages)

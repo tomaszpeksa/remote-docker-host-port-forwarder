@@ -111,6 +111,11 @@ func TestWatchdogWorkflowColdPrecedesWarmup(t *testing.T) {
 	warm, ok := positions["Warm unchanged production ping image after cold proof"]
 	require.True(t, ok)
 	require.Less(t, cold, warm)
+	for _, name := range []string{"Owned process isolation", "Source-bound isolation controls"} {
+		position, ok := positions[name]
+		require.True(t, ok, "isolation phase %s retained", name)
+		require.Less(t, cold, position, "WATCHDOG_COLD_MUST_PRECEDE_ISOLATION: %s", name)
+	}
 	for _, name := range []string{"Phase 3 - Run all integration tests", "Owned discovery repair", "Source-bound discovery controls", "Source-bound trust red controls", "Source-bound container identity control", "Documented Make fixture lifecycle"} {
 		_, ok := positions[name]
 		require.True(t, ok, "inherited phase %s retained", name)

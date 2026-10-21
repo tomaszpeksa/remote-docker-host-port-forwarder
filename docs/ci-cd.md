@@ -151,6 +151,34 @@ up, a named Manager test in its per-invocation runtime HOME, down, a second up,
 both real stability cases, and down. Named PASS guards reject skips; uncertain
 publisher failure retains runtime storage rather than deleting its lock inode.
 
+The additive owned-isolation phase builds the actual CLI and records its binary
+hash/build information. Three contender processes (same target, different fixture
+alias, and directory alias) must exit before their marker-only SSH can dispatch;
+the incumbent and its successor must serve fresh exact-body HTTP through real SSH.
+Separate native processes also own production Masters with disjoint forwards:
+retiring one must preserve the other's socket and HTTP traffic. Runtime directories
+are removed only after owned processes join; uncertain cleanup retains them.
+
+`.github/required-isolation-tests.txt` and `scripts/check-isolation-evidence.sh`
+require exact package/name RUN-to-PASS records and completed packages. Guard tests
+exercise missing, skipped, wrong-name/package, malformed and unfinished evidence.
+Source controls disable admission or the final-writer join, or lengthen the private
+mux pathname; only named behavioral assertion failures followed by exact-source
+restoration and green count. These diagnostic binaries/results are distinct from
+the unchanged candidate. Inherited scenarios and stability deadlines are unchanged;
+the five-minute isolation and eight-minute control phases share the accepted
+60-minute job ceiling with watchdog, finite-stream and inherited proof. Both
+isolation phases run after the mandatory cold-miss proof and image warm-up.
+
+Native Linux/macOS tests bind both the actual generated private socket address and
+its reserved OpenSSH dot-plus-16-character temporary address. This proves the
+kernel pathname budget on the executing OS, not authenticated macOS SSH behavior
+or arbitrary-long-HOME status sockets. The constructor's byte budget includes NUL
+against Darwin's 104-byte `sun_path`; Linux supplies 108 bytes. The temporary-name
+basis is OpenSSH portable `mux.c`, `muxserver_listen` (for example tag `V_10_3_P1`),
+which appends the random suffix before binding and linking the final address.
+Actual authenticated SSH/HTTP scenarios run only on the owned Linux fixture.
+
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
 
@@ -554,8 +582,8 @@ records. Native unselected hosted tests self-skip and do not supply this proof.
 The former 35-second log-only
 `TestEventWatchdog_PingRunsAndDoesNotKillManagerWhenHealthy` and
 `TestEventWatchdog_ExecutesPingLocally` scenarios are replaced by the warm and
-CLI cases above. Production 10/30/60 timings are unchanged; the existing 35-minute
-job allowance gains 25 minutes for additive phase envelopes (60 total). All 89
+CLI cases above. Production 10/30/60 timings are unchanged; watchdog, finite-stream,
+isolation and inherited phases share the accepted 60-minute job ceiling. All 89
 trust names, 14 trust controls, four discovery cases/seven controls, S08 identity
 control, both two-loss HTTP/monitor scenarios and both full three-minute Make
 stability cases plus cleanup remain required. A workflow's green summary alone

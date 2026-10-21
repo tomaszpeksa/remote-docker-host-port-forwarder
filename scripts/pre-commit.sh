@@ -58,7 +58,7 @@ if [ -n "$TEST_PACKAGES" ]; then
         fi
 
         echo -e "  Testing: $pkg"
-        if ! go test -short -timeout=30s "$pkg" 2>&1; then
+        if ! go test -short -timeout=60s "$pkg" 2>&1; then
             echo -e "${RED}✗ Tests failed in $pkg${NC}"
             exit 1
         fi

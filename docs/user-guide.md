@@ -84,11 +84,27 @@ The event watchdog now sends its Docker ping through the configured application
 the remote Docker environment is the same one used for discovery and events.
 
 The command remains `docker run --rm --name rdhpf-ping-<unique> --label
-rdhpf.health-check=true alpine:latest echo works`. Ten-second ticks, the
-30-second idle ping threshold, 60-second stale-event threshold, event resets,
-cancellation and ignored ping errors are unchanged. The ping is synchronous and
-can delay ticks; this is not a hard 60-second outage deadline or a redesign of
-watchdog timing/fatal handling.
+rdhpf.health-check=true alpine:latest echo works`. If the image is missing, Docker
+may pull it. Normal `--rm` removes the completed container, but interruption or
+network loss can leave remote resources; local SSH completion does not prove
+remote removal. The application does not sweep health-check labels.
+
+Monitoring arms once when Manager starts monitoring in `Run`, not at construction
+or during earlier CLI SSH startup. Every ten seconds it checks the time since the
+last **successfully handled start/die/stop event**: below 30 seconds no probe is
+needed; from 30 to below 60 seconds it may start one probe; at 60 seconds or more
+it initiates fatal cancellation on the first observing check. Stream retries do
+not reset this clock. Incoming starts whose inspections fail do not count as
+health; successful probes, inventories and SSH checks do not count either.
+
+One asynchronous probe is owned until completion, with a fixed deadline at its
+launch-time health horizon (last successful event plus 60 seconds), shortened by
+parent cancellation/deadlines. Later events do not extend that attempt. Probe
+failure alone is not fatal, and blocked execution or completion cannot delay the
+watchdog's cancellation decision. Missing processing can terminate otherwise
+useful forwarding. This bounds action initiation under ordinary scheduling, not
+whole-process exit: cleanup and owned-child joins can take longer. If cleanup
+completes, watchdog failure reaches the CLI as exit status 1.
 
 The application no longer reads `SSH_TEST_KEY_PATH`. Configure authentication
 with OpenSSH `IdentityFile` or an agent; the variable remains optional only for

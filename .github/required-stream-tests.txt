@@ -1,0 +1,2 @@
+TestManagerStreamOwnedTermination/EOF
+TestManagerStreamOwnedTermination/Exit7

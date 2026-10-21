@@ -91,16 +91,40 @@ func TestEventReaderCompletionOwnsWorkers(t *testing.T) {
 }
 
 func TestEventReaderOwnedCancellation(t *testing.T) {
-	installFakeSSH(t, fmt.Sprintf("{\"Action\":\"start\",\"Actor\":{\"ID\":%q}}\n", eventContainerID), "", 0)
+	installFakeSSH(t, "", "", 0)
+	// More than pipe capacity while delivery is held: cancellation must unblock
+	// the scanner's pipe writer and join os/exec's stdout/stderr copiers.
+	line := fmt.Sprintf("{\"Action\":\"start\",\"Actor\":{\"ID\":%q}}", eventContainerID)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("PATH"), "ssh"), []byte("#!/bin/sh\ni=0; while [ \"$i\" -lt 10000 ]; do printf '%s\\n' '"+line+"'; i=$((i+1)); done\n"), 0700))
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	entered := make(chan struct{})
-	done := NewEventReader("ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewTextHandler(io.Discard, nil))).Stream(ctx, func(ctx context.Context, e Event) error { close(entered); <-ctx.Done(); return ctx.Err() })
-	<-entered
+	var logs streamLogBuffer
+	done := NewEventReader("ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewJSONHandler(&logs, nil))).Stream(ctx, func(ctx context.Context, e Event) error { close(entered); <-ctx.Done(); return ctx.Err() })
+	joined := false
+	defer func() {
+		cancel()
+		if !joined {
+			<-done
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("owned delivery did not enter")
+	}
 	cancel()
 	result := <-done
+	joined = true
 	require.True(t, result.Canceled)
 	require.ErrorIs(t, result.Err, context.Canceled)
+	pid := 0
+	for _, record := range logs.records(t) {
+		if record["msg"] == "docker events stream started" {
+			pid = int(record["pid"].(float64))
+		}
+	}
+	require.Positive(t, pid)
+	requireStreamReaped(t, pid)
 	_, ok := <-done
 	require.False(t, ok, "one terminal result")
 }

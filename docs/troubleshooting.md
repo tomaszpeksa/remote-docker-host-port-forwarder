@@ -532,3 +532,28 @@ If you encounter an issue not covered here:
 | `context canceled` | Normal shutdown | None needed (expected during Ctrl+C) |
 | `container not found` | Container stopped/removed | None needed (rdhpf removes forward automatically) |
 | `no published ports` | Container has no `-p` flags | Add `-p` flags to container |
+
+### Event processing watchdog shutdown
+
+`event stream unhealthy: no successfully handled Docker events` means no
+start/die/stop handler completed successfully during the watchdog's silence
+window. It does **not** prove that Docker sent no events: repeated inspection
+failures can cause this result while events arrive. Check preceding inspection,
+SSH and Docker errors as well as event delivery. Successful inventory audits or
+probe command exits do not reset processing health.
+
+The clock starts once at Run monitoring start. Ten-second checks allow a probe
+from 30 seconds and initiate fatal cancellation at the first check observing at
+least 60 seconds without successful handling. Retries do not grant another
+window. The probe uses the application's SSH target/control path and inherited
+trust, and may implicitly pull `alpine:latest`. Its remaining-window deadline is
+not a promise that every cold download finishes in time.
+
+Cancellation is independent of a blocked probe or handler, but cleanup and owned
+process joins can remain pending. A delayed exit is not evidence that cancellation
+was never requested; compare `selected_at`, `last_successful_event`, command
+cancellation and subsequent cleanup diagnostics. Under ordinary completed cleanup
+the CLI exits 1 with the watchdog cause. Do not remove active publisher locks or
+SSH namespaces to force completion. Local SSH retirement is not remote Docker
+cleanup: investigate any interrupted ping by its exact generated name/ID, never
+remove every container carrying the shared health-check label.

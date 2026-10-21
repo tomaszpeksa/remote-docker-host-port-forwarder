@@ -130,8 +130,8 @@ controls. A generic AST launch guard is deferred; this inventory is not a guaran
 about arbitrary future launch sites. The ping cases also require a real event on
 the application's remote stream and no residual ping container, despite hostile
 local Docker endpoint settings. The unchanged production `alpine:latest` ping
-image is warmed on the owned daemon and its actual digest recorded separately
-from the pinned fixture images. Normal real inspection and label fallback cover
+image is warmed on the owned daemon after the mandatory watchdog cold-miss phase,
+and its actual digest is recorded separately from the pinned fixture images. Normal real inspection and label fallback cover
 full IDs, short IDs and names with Docker options before `--`.
 
 Actual-method shell regressions execute both remote shell layers using owned fake
@@ -150,6 +150,34 @@ same disposable runner also exercises the documented Make fixture lifecycle:
 up, a named Manager test in its per-invocation runtime HOME, down, a second up,
 both real stability cases, and down. Named PASS guards reject skips; uncertain
 publisher failure retains runtime storage rather than deleting its lock inode.
+
+The additive owned-isolation phase builds the actual CLI and records its binary
+hash/build information. Three contender processes (same target, different fixture
+alias, and directory alias) must exit before their marker-only SSH can dispatch;
+the incumbent and its successor must serve fresh exact-body HTTP through real SSH.
+Separate native processes also own production Masters with disjoint forwards:
+retiring one must preserve the other's socket and HTTP traffic. Runtime directories
+are removed only after owned processes join; uncertain cleanup retains them.
+
+`.github/required-isolation-tests.txt` and `scripts/check-isolation-evidence.sh`
+require exact package/name RUN-to-PASS records and completed packages. Guard tests
+exercise missing, skipped, wrong-name/package, malformed and unfinished evidence.
+Source controls disable admission or the final-writer join, or lengthen the private
+mux pathname; only named behavioral assertion failures followed by exact-source
+restoration and green count. These diagnostic binaries/results are distinct from
+the unchanged candidate. Inherited scenarios and stability deadlines are unchanged;
+the five-minute isolation and eight-minute control phases share the accepted
+60-minute job ceiling with watchdog, finite-stream and inherited proof. Both
+isolation phases run after the mandatory cold-miss proof and image warm-up.
+
+Native Linux/macOS tests bind both the actual generated private socket address and
+its reserved OpenSSH dot-plus-16-character temporary address. This proves the
+kernel pathname budget on the executing OS, not authenticated macOS SSH behavior
+or arbitrary-long-HOME status sockets. The constructor's byte budget includes NUL
+against Darwin's 104-byte `sun_path`; Linux supplies 108 bytes. The temporary-name
+basis is OpenSSH portable `mux.c`, `muxserver_listen` (for example tag `V_10_3_P1`),
+which appends the random suffix before binding and linking the final address.
+Actual authenticated SSH/HTTP scenarios run only on the owned Linux fixture.
 
 It does not run a nested Docker daemon or a separate remote-host job. The legacy
 manual `ssh_host` input does not change the fixed localhost harness.
@@ -511,3 +539,91 @@ changes only this recipe's package revision; the Docker upstream source commits
 are unchanged. This is the fixture CLI's distribution build, not the application's
 Go toolchain. Exact package/version assertions and normal apk signature checks
 remain enabled; no package ranges, mirror replacement or trust bypass is used.
+
+### Mandatory processing-watchdog evidence
+
+The owned hosted workflow adds six exact leaf PASS requirements in
+`.github/required-watchdog-tests.txt`:
+
+- `TestWatchdogOwnedColdPull`: prove an actual `alpine:latest` image miss before
+  warm-up, then exercise the unchanged probe through SSH/Engine and record its
+  outcome, digest when available, and exact-name cleanup. A cached image blocks
+  cold proof; the test does not delete an unowned tag or silently skip.
+- `TestWatchdogOwnedWarmProcessing`: retain real processing and forwarded HTTP
+  for at least 130 seconds with correlated ping Engine IDs.
+- `TestWatchdogOwnedCLISilentStream`: run the built shipped CLI, hold only its
+  owned stream output, and require the processing-based fatal diagnostic and
+  exit 1 after ordinary cleanup, without user cancellation as the oracle.
+- `TestWatchdogOwnedBlockedWork/Probe` and `/Inspect`: separately hold concrete
+  owned real-SSH output/completion boundaries and record fatal/cancel/Wait times.
+  The inspect case requires cancellation before its unchanged five-second budget;
+  its separately recorded pre-dispatch probe hold prevents probe-generated health
+  from shifting the horizon. A suppressed probe has no SSH child or Engine ID and
+  is not real blocked-probe evidence.
+- `TestWatchdogOwnedPullAllowance`: an owned real-probe completion delay exceeds
+  its remaining allowance without delaying fatal initiation. This controlled
+  delay is not a second cold-download claim.
+
+The controller records application proxy, retained real-child Wait and controller
+completion separately. A held output copier can delay Wait even after the remote
+command exits; no claim that such a child was still executing is inferred. Native
+unit tests separately prove Run cannot abandon its own watchdog/probe join. Local
+joins and remote `--rm` removal are distinct facts; interrupted attempts enumerate
+exact generated names/observed IDs and only verified owned leftovers are removed.
+
+`scripts/itest-watchdog-mutations.sh` requires eight named assertion reds and
+byte-exact restored greens: cancellation, probe independence, failed-handler
+health, retained cause, one-time arming, remaining allowance, owner join and
+inherited-output completion. Compile errors, outer timeouts, races and cleanup
+leaks are not valid reds. Native guard tests execute the workflow's actual jq
+predicate against missing, skipped, wrong-package/name, malformed and unfinished
+records. Native unselected hosted tests self-skip and do not supply this proof.
+
+The former 35-second log-only
+`TestEventWatchdog_PingRunsAndDoesNotKillManagerWhenHealthy` and
+`TestEventWatchdog_ExecutesPingLocally` scenarios are replaced by the warm and
+CLI cases above. Production 10/30/60 timings are unchanged; watchdog, finite-stream,
+isolation and inherited phases share the accepted 60-minute job ceiling. All 89
+trust names, 14 trust controls, four discovery cases/seven controls, S08 identity
+control, both two-loss HTTP/monitor scenarios and both full three-minute Make
+stability cases plus cleanup remain required. A workflow's green summary alone
+is not scenario, remote-cleanup or release clearance.
+
+### Mandatory finite event-stream evidence
+
+`stream-owned` requires both exact leaves in `.github/required-stream-tests.txt`:
+`TestManagerStreamOwnedTermination/EOF` and `/Exit7`. On the same owned SSH/Engine
+fixture, a one-shot finite Engine-history interval supplies actual start/stop
+records through the production EventReader. Only the exact validated event
+operation/destination can receive test-only `--since`/`--until` operands and an
+optional exit 7 after successful Docker completion. Application trust/options
+remain unchanged; no production replay policy or subscription readiness is implied.
+
+An existing stream-opening seam holds the Run consumer while records are accepted
+and the actual stream joins, then forwards that exact terminal result. Assertions
+cover pending retirement before replacement, repeated paced endings, buffered
+owner changes, surviving unique HTTP content, stopped-listener refusal and one
+history entry with stable CreatedAt. Native tests separately hold real inspection,
+exercise cancellation/forgiveness/shared backoff, transfer inherited descriptors,
+and require reaped direct children, closed copier readers and watcher completion.
+Local SSH/proxy Wait and controller completion are recorded separately from remote
+effects and exact-owned cleanup. Synthetic results and TCP acceptance alone do
+not establish this hosted proof.
+
+`scripts/itest-stream-mutations.sh` preserves named reds and exact restored greens
+for missing pacing, accepted processing/retirement, premature direct-Wait results,
+inherited-copy WaitDelay and watcher joining. The direct-Wait control first waits
+for a held direct child's descriptor/identity acknowledgment. Its diagnostic
+production-call overlay returns early but retains the real `cmd.Wait` under the
+test's independently registered cleanup owner. Cleanup releases the reaper gate,
+terminates as necessary, joins both owners and requires ECHILD, even after the
+named lifecycle assertion fails. The control requires matching PID entry/join/
+reaping receipts; it never drops Wait or leaves cleanup to process absence.
+The copier and watcher controls remain separate guarantees. A new valid control
+does not reconstruct the old invalid attempt's missing cleanup receipt.
+The workflow also requires the completed six-control matrix receipt: a zero
+script exit without that receipt is not success. Guard tests reject missing,
+partial or old five-control receipts as well as missing, skipped, wrong-package,
+malformed, unfinished or failed leaf evidence. These phases
+are additive: all inherited trust, discovery, watchdog, identity, recovery and
+full Make stability/cleanup requirements and their timing limits remain unchanged.

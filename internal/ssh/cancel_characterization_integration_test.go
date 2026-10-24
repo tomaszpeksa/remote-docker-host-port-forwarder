@@ -117,13 +117,17 @@ func TestControlRequestTrustCancelCharacterization(t *testing.T) {
 	retained = master.connection
 	require.NotNil(t, retained)
 	t.Logf("S12_MASTER pid=%d generation=%d controlPath=%q argv=%q", retained.cmd.Process.Pid, master.generation, master.ControlPath(), retained.cmd.Args)
-	require.NoError(t, master.WithConnection(ctx, func(generation uint64, ready bool) error {
-		require.True(t, ready)
-		t.Logf("S12_ASSOCIATED generation=%d pid=%d tupleA=127.0.0.1:%d:localhost:%d tupleB=127.0.0.1:%d:localhost:%d", generation, retained.cmd.Process.Pid, portA, portA, portB, portB)
-		if err := AddForward(ctx, master.ControlPath(), f.Host, portA, portA, slog.Default()); err != nil {
+	require.NoError(t, master.WithForwarding(ctx, func(connection *Forwarding) error {
+		require.True(t, connection.Ready())
+		t.Logf("S12_ASSOCIATED generation=%d pid=%d tupleA=127.0.0.1:%d:localhost:%d tupleB=127.0.0.1:%d:localhost:%d", connection.Generation(), retained.cmd.Process.Pid, portA, portA, portB, portB)
+		if effect, err := AddForward(ctx, connection, portA, portA, slog.Default()); err != nil {
 			return err
+		} else {
+			require.Equal(t, ForwardAcknowledged, effect)
 		}
-		return AddForward(ctx, master.ControlPath(), f.Host, portB, portB, slog.Default())
+		effect, err := AddForward(ctx, connection, portB, portB, slog.Default())
+		require.Equal(t, ForwardAcknowledged, effect)
+		return err
 	}))
 	cancelCharacterizationHTTP(t, portA, bodyA, false)
 	cancelCharacterizationHTTP(t, portB, bodyB, false)

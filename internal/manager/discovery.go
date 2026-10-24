@@ -353,6 +353,7 @@ func (m *Manager) wakeReconciliation() {
 
 func (m *Manager) runReconciliation(ctx context.Context) {
 	var retry <-chan time.Time
+	var armedAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -364,17 +365,29 @@ func (m *Manager) runReconciliation(ctx context.Context) {
 			}
 		case <-retry:
 			retry = nil
-			if !m.hasUnapplied() {
-				continue
-			}
+			armedAt = time.Time{}
 		}
-		if err := m.triggerReconcile(ctx); err != nil && ctx.Err() == nil {
+		err := m.triggerReconcile(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			m.logger.Warn("reconciliation unavailable or failed", "error", err)
 		}
-		if m.hasUnapplied() {
-			retry = m.discovery.after(time.Second)
-		} else {
-			retry = nil
+		now := m.discovery.now()
+		next, pending := m.reconciler.NextRetry()
+		if m.hasUnapplied() && (!pending || now.Add(time.Second).Before(next)) {
+			next, pending = now.Add(time.Second), true
+		}
+		// An unavailable connection must not hot-loop an already due resource.
+		if err != nil && pending && !next.After(now) {
+			next = now.Add(time.Second)
+		}
+		if !pending {
+			retry, armedAt = nil, time.Time{}
+		} else if retry == nil || next.Before(armedAt) {
+			armedAt = next
+			retry = m.discovery.after(max(next.Sub(now), time.Duration(0)))
 		}
 	}
 }

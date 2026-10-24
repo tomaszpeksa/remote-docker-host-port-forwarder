@@ -104,7 +104,11 @@ func TestSSHTrust(t *testing.T) {
 					return
 				}
 				require.NoError(t, err)
-				require.NoError(t, ssh.AddForward(ctx, m.ControlPath(), f.Host, port, port, slog.Default()))
+				require.NoError(t, m.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+					effect, err := ssh.AddForward(ctx, connection, port, port, slog.Default())
+					require.Equal(t, ssh.ForwardAcknowledged, effect)
+					return err
+				}))
 				client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}}
 				response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 				require.NoError(t, err)

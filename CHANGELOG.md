@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Manage only app-created local TCP forwards. Suppress configured forwarding and
+  Tunnel on all app SSH invocations without discarding host aliases, authentication
+  or trust. Use bounded, peer-verified mux-v4 OPEN/CLOSE replies instead of SSH
+  command exit/stderr as mutation authority; there is no helper SSH fallback.
+- Track forwarding obligations separately from public readiness: retain failed or
+  uncertain cancellation, remove owned-pending listeners on stop, and retry known
+  conflicts after release without another event. Unknown effects wait for proven
+  natural Master retirement; terminal history is consumed once.
+
 - Pace clean Docker event-stream EOF with a cancelable one-second wait after
   accepted events drain and owned workers join. Preserve clean-EOF forgiveness,
   existing nonclean retry backoff/ten-failure limit and processing-watchdog health.

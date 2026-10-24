@@ -1,14 +1,16 @@
 package ssh
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,289 +23,310 @@ func forwardTestContext(t *testing.T) context.Context {
 	t.Cleanup(cancel)
 	return ctx
 }
+func quietForwardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func quietForwardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-func TestAddForwardArgv(t *testing.T) {
-	for _, tc := range []struct {
-		name, host string
-		want       []string
-	}{
-		{"default_port", "ssh://docker@fixture.invalid", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}},
-		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "user@fixture.invalid"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := installFakeSSH(t, sshResponse{})
-			require.NoError(t, AddForward(forwardTestContext(t), "/control socket", tc.host, 15432, 5432, quietForwardLogger()))
-			require.Equal(t, [][]string{tc.want}, fake.calls(t))
-		})
-	}
-}
-
-func requirePortConflict(t *testing.T, err error, output string) {
-	t.Helper()
-	var conflict *PortConflictError
-	require.ErrorAs(t, err, &conflict)
-	require.Same(t, conflict, err, "return the conflict itself, not an extra wrapper")
-	require.Equal(t, 15432, conflict.Port)
-	require.Empty(t, conflict.ContainerID, "AddForward does not populate container identity")
-	require.Equal(t, output, conflict.Output)
-	require.EqualError(t, err, "port 15432 already in use locally")
-	require.Same(t, ErrPortInUse, conflict.Unwrap())
-	require.ErrorIs(t, err, ErrPortInUse)
-	wrapped := fmt.Errorf("caller context: %w", err)
-	var recovered *PortConflictError
-	require.ErrorAs(t, wrapped, &recovered)
-	require.Same(t, conflict, recovered)
-	require.ErrorIs(t, wrapped, ErrPortInUse)
-	require.NotErrorIs(t, err, &PortConflictError{Port: 15432, Output: output})
-}
-
-func TestAddForwardClassification(t *testing.T) {
-	for _, tc := range []struct {
-		name, output string
-		conflict     bool
-	}{
-		{"lowercase", "address already in use", true},
-		{"uppercase", "Address already in use", true},
-		{"cannot_listen", "cannot listen to port: 15432", true},
-		{"remote_forward", "remote port forwarding failed", true},
-		{"bind_address", "bind: Address already in use", true},
-		{"bind_bracket", "bind [127.0.0.1]:15432: fixture failure", true},
-		{"unrelated", "permission denied", false},
-	} {
-		for _, stream := range []string{"stdout", "stderr"} {
-			t.Run(tc.name+"/"+stream, func(t *testing.T) {
-				response := sshResponse{status: 7}
-				if stream == "stdout" {
-					response.stdout = "  " + tc.output + "\n"
-				} else {
-					response.stderr = "  " + tc.output + "\n"
-				}
-				fake := installFakeSSH(t, response)
-				err := AddForward(forwardTestContext(t), "/control socket", "ssh://docker@fixture.invalid", 15432, 5432, quietForwardLogger())
-				if tc.conflict {
-					requirePortConflict(t, err, tc.output)
-				} else {
-					require.EqualError(t, err, "failed to add port forward 15432->5432: exit status 7 (output: permission denied)")
-					require.NotErrorIs(t, err, ErrPortInUse)
-					var exitErr *exec.ExitError
-					require.ErrorAs(t, err, &exitErr)
-					require.Equal(t, 7, exitErr.ExitCode())
-				}
-				require.Len(t, fake.calls(t), 1)
-			})
-		}
-	}
-}
-
-type forwardRetryCase struct {
-	name      string
-	responses []sshResponse
-	calls     int
-	output    string
-	unrelated bool
-}
-
-func forwardRetryCases() []forwardRetryCase {
-	return []forwardRetryCase{
-		{name: "immediate_success", responses: []sshResponse{{}}, calls: 1},
-		{name: "conflicts_then_success", responses: []sshResponse{
-			{stderr: "address already in use: first", status: 7},
-			{stdout: "bind [127.0.0.1]:15432: second", status: 7},
-			{},
-		}, calls: 3},
-		{name: "unrelated_failure", responses: []sshResponse{{stderr: "permission denied", status: 7}}, calls: 1, unrelated: true},
-		{name: "five_attempt_exhaustion", responses: []sshResponse{
-			{stderr: "address already in use: first", status: 7},
-			{stderr: "address already in use: second", status: 7},
-			{stderr: "address already in use: third", status: 7},
-			{stderr: "address already in use: fourth", status: 7},
-			{stderr: "  address already in use: fifth\n", status: 7},
-		}, calls: 5, output: "address already in use: fifth"},
-	}
-}
-
-func requireRetryResult(t *testing.T, tc forwardRetryCase, err error, fake *fakeSSH) {
-	t.Helper()
-	if tc.output != "" {
-		requirePortConflict(t, err, tc.output)
-	} else if tc.unrelated {
-		require.EqualError(t, err, "failed to add port forward 15432->5432: exit status 7 (output: permission denied)")
-		require.NotErrorIs(t, err, ErrPortInUse)
-	} else {
+func TestForwardPositiveRepliesAndExactTuple(t *testing.T) {
+	master, dir := masterFixture(t)
+	calls := filepath.Join(dir, "forwards")
+	t.Setenv("S12_MUX_RECORD", calls)
+	require.NoError(t, master.Open(forwardTestContext(t)))
+	var retained *Forwarding
+	require.NoError(t, master.WithForwarding(forwardTestContext(t), func(f *Forwarding) error {
+		retained = f
+		effect, err := AddForward(context.Background(), f, 15432, 5432, quietForwardLogger())
 		require.NoError(t, err)
-	}
-	calls := fake.calls(t)
-	require.Len(t, calls, tc.calls)
-	for _, argv := range calls {
-		require.Equal(t, []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "-O", "forward", "-L", "127.0.0.1:15432:localhost:5432", "--", "docker@fixture.invalid"}, argv)
-	}
-}
-
-// Exercise the exported wrapper as well as the controlled timer path: real
-// subprocess results must reach the retry loop and real AddForward on every call.
-func TestAddForwardWithRetry(t *testing.T) {
-	for _, tc := range forwardRetryCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := installFakeSSH(t, tc.responses...)
-			err := AddForwardWithRetry(forwardTestContext(t), "/control socket", "ssh://docker@fixture.invalid:2222", 15432, 5432, quietForwardLogger())
-			requireRetryResult(t, tc, err, fake)
-		})
-	}
-}
-
-func forwardLogRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
-	t.Helper()
-	var records []map[string]any
-	decoder := json.NewDecoder(buf)
-	for {
-		var record map[string]any
-		err := decoder.Decode(&record)
-		if err == io.EOF {
-			return records
-		}
+		require.Equal(t, ForwardAcknowledged, effect)
+		effect, err = AddForward(context.Background(), f, 15432, 5432, quietForwardLogger())
 		require.NoError(t, err)
-		delete(record, "time")
-		records = append(records, record)
-	}
-}
-
-func TestAddForwardLogging(t *testing.T) {
-	for _, conflict := range []bool{false, true} {
-		t.Run(fmt.Sprintf("conflict_%t", conflict), func(t *testing.T) {
-			response := sshResponse{}
-			if conflict {
-				response = sshResponse{stderr: "address already in use", status: 7}
-			}
-			installFakeSSH(t, response)
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			err := AddForward(forwardTestContext(t), "/control socket", "ssh://docker@fixture.invalid", 15432, 5432, logger)
-			want := []map[string]any{{"level": "INFO", "msg": "adding SSH port forward", "localPort": float64(15432), "remotePort": float64(5432), "host": "docker@fixture.invalid"}}
-			if conflict {
-				require.ErrorIs(t, err, ErrPortInUse)
-				want = append(want, map[string]any{"level": "WARN", "msg": "port already in use locally", "port": float64(15432), "remotePort": float64(5432), "suggestion": "Check what's using the port with: lsof -i :15432", "note": "Other forwards will continue normally"})
-			} else {
-				require.NoError(t, err)
-				want = append(want, map[string]any{"level": "INFO", "msg": "SSH port forward added successfully", "localPort": float64(15432), "remotePort": float64(5432)})
-			}
-			require.Equal(t, want, forwardLogRecords(t, &logs))
-		})
-	}
-}
-
-func TestCalculateBackoff(t *testing.T) {
-	for attempt, want := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond, 6400 * time.Millisecond, 10 * time.Second, 10 * time.Second} {
-		t.Run(fmt.Sprint(attempt), func(t *testing.T) {
-			require.Equal(t, want, calculateBackoff(attempt))
-		})
-	}
-	require.Equal(t, 10*time.Second, calculateBackoff(20))
-}
-
-func TestIsAddressInUse(t *testing.T) {
-	require.False(t, isAddressInUse(nil))
-	for _, message := range []string{"address already in use", "Address already in use", "cannot listen to port", "remote port forwarding failed", "bind: Address already in use", "bind ["} {
-		t.Run(message, func(t *testing.T) {
-			require.True(t, isAddressInUse(errors.New("prefix: "+message+": suffix")))
-		})
-	}
-	for _, message := range []string{"", "connection refused", "permission denied", "network unreachable", "some other error"} {
-		t.Run(message, func(t *testing.T) {
-			require.False(t, isAddressInUse(errors.New(message)))
-		})
-	}
+		require.Equal(t, ForwardAcknowledged, effect, "duplicate OPEN_OK is not exclusive creation evidence")
+		effect, err = CancelForward(context.Background(), f, 15432, 5433, quietForwardLogger())
+		require.Error(t, err)
+		require.Equal(t, ForwardRejected, effect, "wrong tuple is not cancellation")
+		effect, err = CancelForward(context.Background(), f, 15432, 5432, quietForwardLogger())
+		require.NoError(t, err)
+		require.Equal(t, ForwardAcknowledged, effect)
+		effect, err = CancelForward(context.Background(), f, 15432, 5432, quietForwardLogger())
+		require.Error(t, err)
+		require.Equal(t, ForwardRejected, effect, "absent tuple does not discharge older work")
+		return nil
+	}))
+	effect, err := retained.Open(context.Background(), 15432, 5432)
+	require.Error(t, err)
+	require.Equal(t, ForwardNotDispatched, effect, "expired capability must fail closed")
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	require.Equal(t, "OPEN 15432 5432\nOPEN 15432 5432\nCLOSE 15432 5433\nCLOSE 15432 5432\nCLOSE 15432 5432\n", string(data))
 }
 
 func TestAddForwardWithRetryBackoff(t *testing.T) {
-	for _, tc := range forwardRetryCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := installFakeSSH(t, tc.responses...)
-			var waits []time.Duration
-			after := func(delay time.Duration) <-chan time.Time {
-				waits = append(waits, delay)
-				// Each wait follows a completed command, including the first wait.
-				require.Len(t, fake.calls(t), len(waits))
-				ready := make(chan time.Time, 1)
-				ready <- time.Time{}
-				return ready
-			}
-			err := addForwardWithRetry(forwardTestContext(t), "/control socket", "ssh://docker@fixture.invalid:2222", 15432, 5432, quietForwardLogger(), after)
-			requireRetryResult(t, tc, err, fake)
-			want := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
-			if tc.calls == 1 {
-				require.Empty(t, waits)
-			} else {
-				require.Equal(t, want[:tc.calls-1], waits)
-			}
-		})
-	}
+	master, dir := masterFixture(t)
+	failure := filepath.Join(dir, "fail")
+	t.Setenv("S12_MUX_OPEN_FAIL", failure)
+	require.NoError(t, os.WriteFile(failure, []byte("address already in use"), 0600))
+	require.NoError(t, master.Open(forwardTestContext(t)))
+	require.NoError(t, master.WithForwarding(forwardTestContext(t), func(f *Forwarding) error {
+		var waits []time.Duration
+		after := func(d time.Duration) <-chan time.Time {
+			waits = append(waits, d)
+			ready := make(chan time.Time, 1)
+			ready <- time.Time{}
+			return ready
+		}
+		effect, err := addForwardWithRetry(context.Background(), f, 15432, 5432, quietForwardLogger(), after)
+		require.Equal(t, ForwardRejected, effect)
+		require.ErrorIs(t, err, ErrPortInUse)
+		require.Equal(t, []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}, waits)
+		require.NoError(t, os.Remove(failure))
+		effect, err = AddForwardWithRetry(context.Background(), f, 15432, 5432, quietForwardLogger())
+		require.NoError(t, err)
+		require.Equal(t, ForwardAcknowledged, effect)
+		return nil
+	}))
 }
 
 func TestAddForwardWithRetryCanceledDuringBackoff(t *testing.T) {
-	fake := installFakeSSH(t, sshResponse{stderr: "address already in use", status: 7}, sshResponse{})
-	ctx, cancel := context.WithCancel(forwardTestContext(t))
-	defer cancel()
-	waits := 0
-	after := func(delay time.Duration) <-chan time.Time {
-		waits++
-		require.Equal(t, 100*time.Millisecond, delay)
-		require.Len(t, fake.calls(t), 1)
-		// The backoff is reached only after the owned process has been reaped.
-		// Leave its timer pending so only cancellation can release the select.
-		cancel()
-		return make(chan time.Time)
-	}
-	err := addForwardWithRetry(ctx, "/control socket", "ssh://docker@fixture.invalid:2222", 15432, 5432, quietForwardLogger(), after)
-	require.Same(t, context.Canceled, err)
-	require.Same(t, ctx.Err(), err)
-	require.Equal(t, 1, waits)
-	require.Len(t, fake.calls(t), 1, "cancellation must not start another SSH command")
+	master, dir := masterFixture(t)
+	failure := filepath.Join(dir, "fail")
+	t.Setenv("S12_MUX_OPEN_FAIL", failure)
+	require.NoError(t, os.WriteFile(failure, []byte("address already in use"), 0600))
+	require.NoError(t, master.Open(forwardTestContext(t)))
+	require.NoError(t, master.WithForwarding(forwardTestContext(t), func(f *Forwarding) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		count := 0
+		effect, err := addForwardWithRetry(ctx, f, 15432, 5432, quietForwardLogger(), func(d time.Duration) <-chan time.Time {
+			count++
+			require.Equal(t, 100*time.Millisecond, d)
+			cancel()
+			return make(chan time.Time)
+		})
+		require.Equal(t, ForwardRejected, effect)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, 1, count)
+		return nil
+	}))
 }
 
-func TestAddForwardWithRetryLogging(t *testing.T) {
-	for _, exhausted := range []bool{false, true} {
-		t.Run(fmt.Sprintf("exhausted_%t", exhausted), func(t *testing.T) {
-			responses := []sshResponse{{stderr: "address already in use", status: 7}, {}}
-			if exhausted {
-				responses = forwardRetryCases()[3].responses
-			}
-			installFakeSSH(t, responses...)
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-			after := func(time.Duration) <-chan time.Time {
-				ready := make(chan time.Time, 1)
-				ready <- time.Time{}
-				return ready
-			}
-			err := addForwardWithRetry(forwardTestContext(t), "/control socket", "ssh://docker@fixture.invalid", 15432, 5432, logger, after)
-			if exhausted {
-				require.ErrorIs(t, err, ErrPortInUse)
-			} else {
-				require.NoError(t, err)
-			}
-			var retryLogs []map[string]any
-			for _, record := range forwardLogRecords(t, &logs) {
-				switch record["msg"] {
-				case "port conflict detected, will retry", "retrying port forward after backoff", "port forward succeeded after retry", "port forward failed after max retries":
-					retryLogs = append(retryLogs, record)
+func TestCalculateBackoff(t *testing.T) {
+	for i, want := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond, 6400 * time.Millisecond, 10 * time.Second, 10 * time.Second} {
+		require.Equal(t, want, calculateBackoff(i))
+	}
+}
+func TestIsAddressInUse(t *testing.T) {
+	require.False(t, isAddressInUse(nil))
+	require.True(t, isAddressInUse(errors.New("address already in use")))
+	require.False(t, isAddressInUse(errors.New("Port forwarding failed")), "generic rejection is not bind-conflict proof")
+}
+
+// These fixtures speak literal frames, independent of the production encoder.
+func wireFrame(words ...uint32) []byte {
+	frame := make([]byte, 4+4*len(words))
+	binary.BigEndian.PutUint32(frame, uint32(4*len(words)))
+	for i, value := range words {
+		binary.BigEndian.PutUint32(frame[4+4*i:], value)
+	}
+	return frame
+}
+func readWireFrame(conn net.Conn) ([]byte, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	size := binary.BigEndian.Uint32(header[:])
+	if size > 65536 {
+		return nil, fmt.Errorf("fixture oversized frame")
+	}
+	data := make([]byte, int(size))
+	_, err := io.ReadFull(conn, data)
+	return data, err
+}
+func TestForwardMalformedAndLostReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		hello, reply []byte
+		want         ForwardEffect
+	}{
+		{"wrong-version", wireFrame(1, 5), nil, ForwardNotDispatched},
+		{"truncated-hello-extension", wireFrame(1, 4, 1), nil, ForwardNotDispatched},
+		{"trailing-ok-data", wireFrame(1, 4), wireFrame(0x80000001, 1, 0), ForwardUncertain},
+		{"malformed-rejection", wireFrame(1, 4), wireFrame(0x80000003, 1, 100), ForwardUncertain},
+		{"permission-rejected", wireFrame(1, 4), wireFrame(0x80000002, 1, 0), ForwardRejected},
+		{"wrong-id", wireFrame(1, 4), wireFrame(0x80000001, 2), ForwardUncertain},
+		{"wrong-type", wireFrame(1, 4), wireFrame(0x80000099, 1), ForwardUncertain},
+		{"truncated", wireFrame(1, 4), []byte{0, 0, 0, 8, 0x80}, ForwardUncertain},
+		{"oversized", wireFrame(1, 4), []byte{0, 2, 0, 0}, ForwardUncertain},
+		{"lost", wireFrame(1, 4), nil, ForwardUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer server.Close()
+				_, _ = readWireFrame(server)
+				_, _ = server.Write(tc.hello)
+				if tc.want == ForwardNotDispatched {
+					return
 				}
-			}
-			var want []map[string]any
-			for i, delay := range []string{"100ms", "200ms", "400ms", "800ms"}[:len(responses)-1] {
-				want = append(want,
-					map[string]any{"level": "DEBUG", "msg": "port conflict detected, will retry", "port": float64(15432), "attempt": float64(i + 1), "maxAttempts": float64(5)},
-					map[string]any{"level": "DEBUG", "msg": "retrying port forward after backoff", "port": float64(15432), "attempt": float64(i + 2), "maxAttempts": float64(5), "delay": delay})
-			}
-			if exhausted {
-				want = append(want, map[string]any{"level": "WARN", "msg": "port forward failed after max retries", "port": float64(15432), "maxAttempts": float64(5), "error": "port 15432 already in use locally"})
-			} else {
-				want = append(want, map[string]any{"level": "INFO", "msg": "port forward succeeded after retry", "port": float64(15432), "attempts": float64(2)})
-			}
-			require.Equal(t, want, retryLogs)
+				_, _ = readWireFrame(server)
+				if tc.reply != nil {
+					_, _ = server.Write(tc.reply)
+				}
+			}()
+			effect, err := exchangeForward(forwardTestContext(t), client, muxOpenForward, 15432, 5432)
+			require.Error(t, err)
+			require.Equal(t, tc.want, effect)
+			<-done
 		})
 	}
+}
+
+type partialForwardConn struct {
+	net.Conn
+	requestBytes int
+	writes       int
+}
+
+func (c *partialForwardConn) Write(data []byte) (int, error) {
+	c.writes++
+	if c.writes != 2 {
+		return c.Conn.Write(data)
+	}
+	if c.requestBytes > 0 {
+		n, err := c.Conn.Write(data[:c.requestBytes])
+		if err != nil {
+			return n, err
+		}
+	}
+	return c.requestBytes, io.ErrClosedPipe
+}
+func TestMuxFrameRangeGuards(t *testing.T) {
+	for _, size := range []int{0, muxForwardFrameLimit + 1, muxForwardFrameLimit} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			n, err := writeMuxFrame(io.Discard, make([]byte, size))
+			if size < 4 || size > muxForwardFrameLimit {
+				require.Error(t, err, "MUX_OUTBOUND_FRAME_MUST_BE_PROTOCOL_BOUNDED")
+				require.Zero(t, n)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, size+4, n)
+			}
+		})
+	}
+	for _, body := range [][]byte{{0, 0, 0}, {0, 0, 0, 1}, {0, 1, 0, 1}} {
+		_, _, err := muxString(body)
+		require.Error(t, err)
+	}
+}
+
+func TestForwardPartialDispatchEffect(t *testing.T) {
+	for _, written := range []int{0, 3, 12} {
+		t.Run(fmt.Sprint(written), func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer server.Close()
+				_, _ = readWireFrame(server)
+				_, _ = server.Write(wireFrame(1, 4))
+				if written > 0 {
+					_, _ = io.ReadFull(server, make([]byte, written))
+				}
+			}()
+			effect, err := exchangeForward(forwardTestContext(t), &partialForwardConn{Conn: client, requestBytes: written}, muxOpenForward, 15432, 5432)
+			require.ErrorIs(t, err, io.ErrClosedPipe)
+			want := ForwardUncertain
+			if written == 0 {
+				want = ForwardNotDispatched
+			}
+			require.Equal(t, want, effect)
+			<-done
+		})
+	}
+}
+func TestForwardUnresponsiveReplyBound(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		_, _ = readWireFrame(server)
+		_, _ = server.Write(wireFrame(1, 4))
+		_, _ = readWireFrame(server)
+		_, _ = io.Copy(io.Discard, server)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	effect, err := exchangeForward(ctx, client, muxOpenForward, 15432, 5432)
+	require.Error(t, err)
+	require.Equal(t, ForwardUncertain, effect)
+	require.Less(t, time.Since(started), time.Second)
+	require.NoError(t, client.Close())
+	<-done
+}
+
+func TestForwardCancellationJoinsIO(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		_, _ = readWireFrame(server)
+		_, _ = server.Write(wireFrame(1, 4))
+		_, _ = readWireFrame(server)
+		cancel()
+		_, _ = io.Copy(io.Discard, server)
+	}()
+	effect, err := exchangeForward(ctx, client, muxCloseForward, 15432, 5432)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, ForwardUncertain, effect)
+	require.NoError(t, client.Close())
+	<-done
+}
+
+func TestForwardNoFallbackOnMissingOrForeignPeer(t *testing.T) {
+	master, dir := masterFixture(t)
+	t.Setenv("S12_MUX_RECORD", filepath.Join(dir, "forwards"))
+	require.NoError(t, master.Open(forwardTestContext(t)))
+	require.NoError(t, master.WithForwarding(forwardTestContext(t), func(f *Forwarding) error {
+		original := master.controlPath
+		defer func() { master.controlPath = original }()
+		master.controlPath = filepath.Join(dir, "missing")
+		effect, err := f.Open(context.Background(), 15432, 5432)
+		require.Error(t, err)
+		require.Equal(t, ForwardNotDispatched, effect)
+		foreign, err := net.Listen("unix", master.controlPath)
+		require.NoError(t, err)
+		defer foreign.Close()
+		effect, err = f.Open(context.Background(), 15432, 5432)
+		require.ErrorContains(t, err, "does not belong")
+		require.Equal(t, ForwardNotDispatched, effect)
+		return nil
+	}))
+	require.NoFileExists(t, filepath.Join(dir, "forwards"))
+}
+
+func TestForwardRejectionDoesNotRetryUnknown(t *testing.T) {
+	master, dir := masterFixture(t)
+	record, lost := filepath.Join(dir, "calls"), filepath.Join(dir, "lost")
+	t.Setenv("S12_MUX_RECORD", record)
+	t.Setenv("S12_MUX_LOST_REPLY", lost)
+	require.NoError(t, os.WriteFile(lost, nil, 0600))
+	require.NoError(t, master.Open(forwardTestContext(t)))
+	require.NoError(t, master.WithForwarding(forwardTestContext(t), func(f *Forwarding) error {
+		effect, err := AddForwardWithRetry(context.Background(), f, 15432, 5432, quietForwardLogger())
+		require.Error(t, err)
+		require.Equal(t, ForwardUncertain, effect)
+		return nil
+	}))
+	data, err := os.ReadFile(record)
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(string(data), "OPEN"))
 }

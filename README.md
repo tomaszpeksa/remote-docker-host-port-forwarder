@@ -1,6 +1,6 @@
 # Remote Docker Host Port Forwarder (rdhpf)
 
-[![CI](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Go](https://img.shields.io/badge/go-1.27.2%2B-00ADD8?logo=go)](go.mod) [![Coverage](https://img.shields.io/badge/coverage-%E2%80%94-informational.svg)](docs/ci-cd.md)
+[![CI](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Go](https://img.shields.io/badge/go-1.27.3%2B-00ADD8?logo=go)](go.mod) [![Coverage](https://img.shields.io/badge/coverage-%E2%80%94-informational.svg)](docs/ci-cd.md)
 
 A lightweight CLI that automatically forwards published container ports from a remote Docker host (ssh://) to your local machine via SSH. When containers on the remote host publish ports, rdhpf makes those services available on your localhost so apps that assume "localhost" keep working unchanged.
 
@@ -71,7 +71,7 @@ sudo mv rdhpf /usr/local/bin/
 # Extract the zip file and add rdhpf.exe to your PATH
 ```
 
-### From Source (Go 1.27.2+)
+### From Source (Go 1.27.3+)
 
 New macOS binaries require macOS 13+. Repository builds use the pinned
 [project tools](CONTRIBUTING.md#initial-setup); no global mise settings change is needed.
@@ -160,7 +160,7 @@ rdhpf is primarily configured via CLI flags with a small set of optional environ
 
 ## Requirements
 
-- Go 1.27.2+ (to build from source)
+- Go 1.27.3+ (to build from source)
 - OpenSSH client available on PATH
 - SSH access to the remote Docker host (`ssh://user@host`), with keys/agent configured and host key known
 - Docker installed on the remote host (for auto-discovery mode)

@@ -31,6 +31,9 @@ type State struct {
 
 	// actual maps containerID -> port -> ForwardState
 	actual map[string]map[int]ForwardState
+
+	// Resource effects are independent of readiness and desired intent.
+	resources map[string]map[int]ForwardResource
 }
 
 // NewState creates a new State instance with initialized maps.
@@ -41,8 +44,9 @@ type State struct {
 //	state.SetDesired("container123", []int{8080, 9090})
 func NewState() *State {
 	return &State{
-		desired: make(map[string][]int),
-		actual:  make(map[string]map[int]ForwardState),
+		desired:   make(map[string][]int),
+		actual:    make(map[string]map[int]ForwardState),
+		resources: make(map[string]map[int]ForwardResource),
 	}
 }
 
@@ -265,6 +269,9 @@ func (s *State) GetAllContainers() []string {
 func (s *State) InvalidateConnection(at time.Time) []ForwardState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The caller holds Master's gate and has observed proven retirement.
+	// No old known or uncertain resource may be replayed in its successor.
+	s.resources = make(map[string]map[int]ForwardResource)
 	var retired []ForwardState
 	for containerID, ports := range s.actual {
 		desired := make(map[int]bool, len(s.desired[containerID]))

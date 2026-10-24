@@ -178,7 +178,7 @@ jobs:
         run: |
           export RDHPF_WATCHDOG_BINARY="$PWD/test-evidence/bin/rdhpf"
           set +e
-          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cli.coverage -run '^TestWatchdogOwnedCLISilentStream$' ./cmd/rdhpf 2> test-evidence/watchdog-cli.stderr | tee test-evidence/watchdog-cli.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cli.coverage -run '^Test(WatchdogOwnedCLISilentStream|ForwardingOwnedCLIConflict)$' ./cmd/rdhpf 2> test-evidence/watchdog-cli.stderr | tee test-evidence/watchdog-cli.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-cli.exit
           test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
@@ -300,6 +300,26 @@ jobs:
             . as $events | ($required | split("\n") | map(select(length > 0))) |
             all(.[]; . as $name | any($events[]; .Action == "pass" and .Test == $name))
           ' test-evidence/all.jsonl test-evidence/trust-internal.jsonl
+
+      - name: Owned app-only forwarding and resource obligations
+        timeout-minutes: 4
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -timeout=3m -p 1 -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/forwarding-owned.coverage -run '^TestManagerForwardingOwned' ./internal/manager 2> test-evidence/forwarding-owned.stderr | tee test-evidence/forwarding-owned.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/forwarding-owned.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0 || exit 1
+          jq -e -s --rawfile required .github/required-forwarding-tests.txt '
+            . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
+            ($names | length) == 5 and all($names[]; . as $name |
+              [$events[] | select(.Test == $name)] as $matches |
+              ($matches | last | .Action) == "pass") and
+            all($events[] | select(.Action == "run"); . as $run |
+              any($events[]; .Package == $run.Package and .Test == $run.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) and
+            (any($events[]; .Action == "fail") | not)
+          ' test-evidence/forwarding-owned.jsonl test-evidence/watchdog-cli.jsonl
 
       - name: Owned discovery repair
         env:

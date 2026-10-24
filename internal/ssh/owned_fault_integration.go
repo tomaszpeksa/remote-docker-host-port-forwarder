@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// TestWaitReceipt captures the retained child, not a reported numeric PID. Call
+// its result only after owner cleanup; it waits for the original command Wait.
+func (m *Master) TestWaitReceipt() func() (int, error, *os.ProcessState) {
+	m.mu.Lock()
+	owned := m.connection
+	m.mu.Unlock()
+	return func() (int, error, *os.ProcessState) {
+		if owned == nil {
+			return 0, fmt.Errorf("no retained child"), nil
+		}
+		<-owned.done
+		return owned.cmd.Process.Pid, owned.waitErr, owned.cmd.ProcessState
+	}
+}
+
 // TestKillOwnedChild exists only in the integration test build, never in public
 // binaries. It faults the retained handle under the real gate; it does not
 // request recovery, publish retirement or signal a mux-reported numeric PID.

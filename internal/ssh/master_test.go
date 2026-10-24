@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/muxstub"
 )
 
 // TestMasterProcess is an owned, non-network SSH stand-in. Each process has its
@@ -145,6 +146,7 @@ func TestMasterProcess(t *testing.T) {
 	report("start")
 	startupCheckServed := false
 	startupAssociations := 0
+	var forwarding muxstub.Server
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -163,7 +165,13 @@ func TestMasterProcess(t *testing.T) {
 			}
 			startupCheckServed = false
 		}
-		command, _ := bufio.NewReader(conn).ReadString('\n')
+		reader := bufio.NewReader(conn)
+		if first, err := reader.Peek(1); err == nil && first[0] == 0 {
+			_ = forwarding.Serve(reader, conn)
+			conn.Close()
+			continue
+		}
+		command, _ := reader.ReadString('\n')
 		switch strings.TrimSpace(command) {
 		case "":
 			// associate closes this credential-only connection after verifying
@@ -225,6 +233,7 @@ func masterFixture(t *testing.T) (*Master, string) {
 	t.Setenv("PATH", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("S06_MASTER_PROCESS", "1")
+	t.Setenv("S12_MUX_ROOT", dir)
 	t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
 	t.Setenv("S06_START_MARKER", filepath.Join(dir, "args"))
 	m, err := NewMaster("ssh://owned-fixture.invalid", slog.New(slog.NewTextHandler(io.Discard, nil)))

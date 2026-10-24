@@ -10,8 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/reconcile"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
+
+func applyOwnedActions(ctx context.Context, master *ssh.Master, reconciler *reconcile.Reconciler, actions []reconcile.Action) error {
+	return master.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+		reconciler.RetireBefore(connection.Generation())
+		return reconciler.Apply(ctx, connection, actions)
+	})
+}
 
 // T046: Integration test - Occupied port scenario
 // TestConflict_OccupiedPort verifies that when a local port is already in use,
@@ -52,7 +60,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 	actions := append(toRemove, toAdd...)
 
 	// STEP 3: Apply actions - expect 6379 to fail, 8080 to succeed
-	err = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	err = applyOwnedActions(ctx, master, reconciler, actions)
 	// We expect an error because one port failed
 	assert.Error(t, err, "Apply should return error due to conflict on port 6379")
 	assert.Contains(t, err.Error(), "reconciliation completed with errors",
@@ -94,7 +102,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 	st.SetDesired(containerID, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	_ = applyOwnedActions(ctx, master, reconciler, actions)
 }
 
 // T047: Integration test - Port released scenario
@@ -133,7 +141,7 @@ func TestConflict_PortReleased(t *testing.T) {
 	actions := append(toRemove, toAdd...)
 
 	// First attempt should fail
-	err = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	err = applyOwnedActions(ctx, master, reconciler, actions)
 	assert.Error(t, err, "First apply should fail due to conflict")
 
 	// Verify conflict state
@@ -158,8 +166,13 @@ func TestConflict_PortReleased(t *testing.T) {
 	require.Len(t, toAdd, 1, "Should want to retry adding port 17070")
 
 	actions = append(toRemove, toAdd...)
-	err = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
-	assert.NoError(t, err, "Second apply should succeed after port released")
+	// This remains a manual Apply characterization, not automatic retry proof.
+	// Respect the resource's approved one-second eligibility after rejection.
+	require.Eventually(t, func() bool {
+		err = applyOwnedActions(ctx, master, reconciler, actions)
+		actual := st.GetByContainer(containerID)
+		return err == nil && len(actual) == 1 && actual[0].Status == "active"
+	}, 3*time.Second, 20*time.Millisecond)
 
 	// STEP 5: Verify port is now active
 	actualState = st.GetByContainer(containerID)
@@ -172,7 +185,7 @@ func TestConflict_PortReleased(t *testing.T) {
 	st.SetDesired(containerID, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	_ = applyOwnedActions(ctx, master, reconciler, actions)
 }
 
 // TestConflict_MultipleContainersOneConflict verifies that a conflict in one
@@ -213,7 +226,7 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	toAdd, toRemove := reconciler.Diff()
 	actions := append(toRemove, toAdd...)
 
-	err = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	err = applyOwnedActions(ctx, master, reconciler, actions)
 	// Expect error due to container1's conflict
 	assert.Error(t, err, "Should have error from container1")
 
@@ -239,5 +252,5 @@ func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	st.SetDesired(container2, []int{})
 	toAdd, toRemove = reconciler.Diff()
 	actions = append(toRemove, toAdd...)
-	_ = reconciler.Apply(ctx, sshHost, master.ControlPath(), actions)
+	_ = applyOwnedActions(ctx, master, reconciler, actions)
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/docker"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/instancepath"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/muxstub"
 )
 
 type watchdogRun struct {
@@ -48,9 +49,11 @@ func newWatchdogRun(t *testing.T) *watchdogRun {
 	// race runtime's artificial exit sleep in children, not detection or budgets.
 	t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
 	script := fmt.Sprintf(`#!/bin/sh
-if [ "$#" -eq 7 ] && [ "$1" = '-o' ] && [ "$2" = 'BatchMode=yes' ] &&
-   [ "$3" = '-S' ] && [ "$4" = %q ] && [ "$5" = '--' ] &&
-   [ "$6" = 'owned-fixture.invalid' ] && [ "$7" = "sh -c \"docker version --format '{{.Server.Version}}'\"" ]; then
+if [ "$#" -eq 11 ] && [ "$1" = '-o' ] && [ "$2" = 'BatchMode=yes' ] &&
+   [ "$3" = '-o' ] && [ "$4" = 'ClearAllForwardings=yes' ] &&
+   [ "$5" = '-o' ] && [ "$6" = 'Tunnel=no' ] &&
+   [ "$7" = '-S' ] && [ "$8" = %q ] && [ "$9" = '--' ] &&
+   [ "${10}" = 'owned-fixture.invalid' ] && [ "${11}" = "sh -c \"docker version --format '{{.Server.Version}}'\"" ]; then
     printf '{}\n'
     exit 0
 fi
@@ -122,7 +125,7 @@ func TestWatchdogRunConnectivityNativeWork(t *testing.T) {
 		}
 		return entries
 	}
-	args := []string{"-o", "BatchMode=yes", "-S", r.m.sshMaster.ControlPath(), "--", "owned-fixture.invalid", `sh -c "docker version --format '{{.Server.Version}}'"`}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", r.m.sshMaster.ControlPath(), "--", "owned-fixture.invalid", `sh -c "docker version --format '{{.Server.Version}}'"`}
 	originalLogger := r.m.logger
 	var versions []string
 	watchRunLogs(r.m, func(record slog.Record) {
@@ -166,9 +169,9 @@ func TestWatchdogRunConnectivityNativeWork(t *testing.T) {
 	require.Empty(t, readEntries(), "exact connectivity still uses a real shell child, not native exec")
 	near := [][]string{
 		append(append([]string(nil), args...), "extra"),
-		{"-S", args[3], "-o", "BatchMode=yes", "--", args[5], args[6]},
+		{"-S", args[7], "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "--", args[9], args[10]},
 	}
-	for i, replacement := range []string{"-x", "BatchMode=no", "-s", args[3] + "-other", "-", "other.invalid", args[6] + " "} {
+	for i, replacement := range []string{"-x", "BatchMode=no", "-x", "ClearAllForwardings=no", "-x", "Tunnel=yes", "-s", args[7] + "-other", "-", "other.invalid", args[10] + " "} {
 		variant := append([]string(nil), args...)
 		variant[i] = replacement
 		near = append(near, variant)
@@ -318,6 +321,7 @@ func TestWatchdogNativeSSH(t *testing.T) {
 		if err != nil {
 			os.Exit(21)
 		}
+		var forwarding muxstub.Server
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
@@ -326,8 +330,12 @@ func TestWatchdogNativeSSH(t *testing.T) {
 			// Kernel-peer association sends no data and owns the close. Only
 			// this fixture's explicit check client requests a PID response.
 			var request [1]byte
-			if _, err := io.ReadFull(conn, request[:]); err == nil && request[0] == 'c' {
-				_, _ = fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
+			if _, err := io.ReadFull(conn, request[:]); err == nil {
+				if request[0] == 'c' {
+					_, _ = fmt.Fprintf(conn, "Master running (pid=%d)\n", os.Getpid())
+				} else if request[0] == 0 {
+					_ = forwarding.Serve(io.MultiReader(bytes.NewReader(request[:]), conn), conn)
+				}
 			}
 			_ = conn.Close()
 		}

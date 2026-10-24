@@ -35,12 +35,24 @@ func TestControlRequestTrust(t *testing.T) {
 					f.PromptControl()
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					path := filepath.Join(f.Dir, "missing-mux")
 					switch operation {
-					case "forward":
-						require.Error(t, AddForward(ctx, path, f.Host, 18084, 18084, slog.Default()))
-					case "cancel":
-						require.NoError(t, CancelForward(ctx, path, f.Host, 18084, 18084, slog.Default()), "preserve noncritical cancellation")
+					case "forward", "cancel":
+						// No owned/ready connection means no helper handshake,
+						// regardless of inherited ControlMaster policy.
+						master, err := NewMaster(f.Host, slog.Default())
+						require.NoError(t, err)
+						defer func() { require.NoError(t, master.Close()) }()
+						require.NoError(t, master.WithForwarding(ctx, func(connection *Forwarding) error {
+							var effect ForwardEffect
+							if operation == "forward" {
+								effect, err = AddForward(ctx, connection, 18084, 18084, slog.Default())
+							} else {
+								effect, err = CancelForward(ctx, connection, 18084, 18084, slog.Default())
+							}
+							require.Error(t, err)
+							require.Equal(t, ForwardNotDispatched, effect)
+							return nil
+						}))
 					case "check":
 						require.Error(t, checkAfterOwnedSocketRemoval(t, f.Host, f.SSH, ctx))
 					}

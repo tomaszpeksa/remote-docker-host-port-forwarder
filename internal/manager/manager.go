@@ -45,7 +45,7 @@ func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
 	}
 	name := fmt.Sprintf("rdhpf-ping-%d", time.Now().UnixNano())
 	remoteCmd := "docker run --rm --name " + name + " --label rdhpf.health-check=true alpine:latest echo works"
-	args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", r.controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -860,19 +860,20 @@ func (m *Manager) triggerReconcile(ctx context.Context) error {
 	if m.stopping.Load() {
 		return context.Canceled
 	}
-	return m.sshMaster.WithConnection(ctx, func(generation uint64, ready bool) error {
-		return m.reconcileConnection(ctx, generation, ready)
+	return m.sshMaster.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+		return m.reconcileConnection(ctx, connection)
 	})
 }
 
 // reconcileConnection runs within WithConnection's gate. Keeping this operation
 // separate makes unavailable-connection and stale-wakeup handling explicit.
-func (m *Manager) reconcileConnection(ctx context.Context, generation uint64, ready bool) error {
+func (m *Manager) reconcileConnection(ctx context.Context, connection *ssh.Forwarding) error {
 	if m.stopping.Load() {
 		return context.Canceled
 	}
-	m.invalidateRetired(generation)
-	if !ready {
+	retired := connection.Generation() != m.retiredGeneration
+	m.invalidateRetired(connection.Generation())
+	if !connection.Ready() {
 		return fmt.Errorf("SSH connection unavailable")
 	}
 	if err := ctx.Err(); err != nil {
@@ -880,13 +881,17 @@ func (m *Manager) reconcileConnection(ctx context.Context, generation uint64, re
 	}
 	m.discovery.mu.Lock()
 	captured := m.discovery.request
+	full := retired || captured > m.discovery.attempted
 	m.discovery.mu.Unlock()
 	defer func() {
 		m.discovery.mu.Lock()
 		m.discovery.attempted = max(m.discovery.attempted, captured)
 		m.discovery.mu.Unlock()
 	}()
-	return m.reconcileLocked(ctx)
+	if full {
+		return m.reconcileLocked(ctx, connection)
+	}
+	return m.applyActions(ctx, connection, m.reconciler.RetryActions())
 }
 
 // invalidateRetired is called only inside the SSH lifecycle gate, before Diff.
@@ -906,7 +911,12 @@ func (m *Manager) invalidateRetired(generation uint64) {
 	m.retiredGeneration = generation
 }
 
-func (m *Manager) reconcileLocked(ctx context.Context) error {
+func (m *Manager) reconcileLocked(ctx context.Context, connection *ssh.Forwarding) error {
+	toAdd, toRemove := m.reconciler.Diff()
+	return m.applyActions(ctx, connection, append(toRemove, toAdd...))
+}
+
+func (m *Manager) applyActions(ctx context.Context, connection *ssh.Forwarding, actions []reconcile.Action) error {
 	startTime := time.Now()
 	defer func() {
 		duration := time.Since(startTime)
@@ -915,20 +925,15 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			"duration_ms", duration.Milliseconds())
 	}()
 
-	toAdd, toRemove := m.reconciler.Diff()
-
-	if len(toAdd) == 0 && len(toRemove) == 0 {
+	if len(actions) == 0 {
 		m.logger.Debug("reconciliation: no actions needed")
 		return nil
 	}
 
-	// Combine actions for Apply
-	actions := append(toRemove, toAdd...)
-
 	m.logger.Info("reconciliation starting",
 		"actions", len(actions))
 
-	if err := m.reconciler.Apply(ctx, m.cfg.Host, m.sshMaster.ControlPath(), actions); err != nil {
+	if err := m.reconciler.Apply(ctx, connection, actions); err != nil {
 		return fmt.Errorf("apply failed: %w", err)
 	}
 
@@ -1005,7 +1010,7 @@ func (m *Manager) listRunning(ctx context.Context) ([]string, error) {
 	// Build SSH command args
 	// Important: sh -c and the docker command must be passed as a single argument to SSH
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -1075,7 +1080,7 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 	}
 	remoteCmd := "sh -c " + quoted
 
-	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -1113,7 +1118,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	// Simple docker version command to test connectivity
 	dockerCmd := "docker version --format '{{.Server.Version}}'"
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -1176,29 +1181,17 @@ func (m *Manager) cleanupAllForwards(ctx context.Context) {
 	if m.stopRecovery != nil {
 		m.stopRecovery()
 	}
-	err := m.sshMaster.WithConnection(ctx, func(generation uint64, ready bool) error {
-		m.invalidateRetired(generation)
-		return m.cleanupForwardsLocked(ctx, ready)
+	err := m.sshMaster.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+		m.invalidateRetired(connection.Generation())
+		return m.cleanupForwardsLocked(ctx, connection)
 	})
 	if err != nil {
 		m.logger.Warn("cleanup reconciliation encountered errors", "error", err)
 	}
 }
 
-func (m *Manager) cleanupForwardsLocked(ctx context.Context, ready bool) error {
+func (m *Manager) cleanupForwardsLocked(ctx context.Context, connection *ssh.Forwarding) error {
 	m.logger.Info("cleaning up all port forwards on shutdown")
-
-	// Add all current forwards to history before removing them
-	for _, forward := range m.state.GetActual() {
-		m.history.Add(state.HistoryEntry{
-			ContainerID: forward.ContainerID,
-			Port:        forward.Port,
-			StartedAt:   forward.CreatedAt,
-			EndedAt:     time.Now(),
-			EndReason:   "rdhpf shutdown",
-			FinalStatus: forward.Status,
-		})
-	}
 
 	// Get all containers with active forwards
 	containers := m.state.GetAllContainers()
@@ -1209,8 +1202,12 @@ func (m *Manager) cleanupForwardsLocked(ctx context.Context, ready bool) error {
 	}
 
 	// The existing cleanup policy remains; this path cannot start a connection.
-	if !ready {
+	if !connection.Ready() {
 		return fmt.Errorf("SSH connection unavailable during cleanup")
 	}
-	return m.reconcileLocked(ctx)
+	_, remove := m.reconciler.Diff()
+	for i := range remove {
+		remove[i].EndReason = "rdhpf shutdown"
+	}
+	return m.applyActions(ctx, connection, remove)
 }

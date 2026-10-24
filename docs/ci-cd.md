@@ -22,7 +22,7 @@ The primary continuous integration workflow that runs on every code change.
   - `golangci-lint` - Comprehensive linting
 
 - **test**: Infrastructure-independent tests
-  - Runs on pinned Go 1.27.2 with race detection and uncached execution
+  - Runs on pinned Go 1.27.3 with race detection and uncached execution
   - Clears integration host/key variables; remote scenarios self-skip
   - Instruments production packages (`cmd/...`, `internal/...`) for coverage
   - Retains JSON results, stderr, exits, inventory and coverage even after failure

@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,375 +11,263 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/util"
 )
 
-// Action represents a single port forward operation to perform
 type Action struct {
-	Type        string // "add" or "remove"
+	Type        string
 	ContainerID string
 	Port        int
-	RemotePort  int // For add operations, the remote port to forward from
+	RemotePort  int
+	EndReason   string
 }
 
-// Reconciler compares desired and actual state to compute reconciliation actions
 type Reconciler struct {
-	state   *state.State
-	history *state.History
-	logger  *slog.Logger
+	state         *state.State
+	history       *state.History
+	logger        *slog.Logger
+	now           func() time.Time
+	probe         func(context.Context, int) error
+	cancelForward func(context.Context, *ssh.Forwarding, int, int, *slog.Logger) (ssh.ForwardEffect, error)
 }
 
-// safeLogID returns a short version of containerID for logging.
-// - For IDs >= 12 chars: returns first 12 chars (standard Docker format)
-// - For IDs < 12 chars: returns full ID
-// This prevents slice bounds panics with test fixtures.
 func safeLogID(id string) string {
 	if len(id) >= 12 {
 		return id[:12]
 	}
 	return id
 }
-
-// NewReconciler creates a new Reconciler instance.
-//
-// Parameters:
-//   - state: Shared state manager
-//   - history: History manager for tracking removed forwards
-//   - logger: Structured logger for operation logging
-//
-// Example usage:
-//
-//	reconciler := NewReconciler(state, history, logger)
-//	toAdd, toRemove := reconciler.Diff()
-func NewReconciler(state *state.State, history *state.History, logger *slog.Logger) *Reconciler {
-	return &Reconciler{
-		state:   state,
-		history: history,
-		logger:  logger,
+func NewReconciler(st *state.State, history *state.History, logger *slog.Logger) *Reconciler {
+	return &Reconciler{state: st, history: history, logger: logger, now: time.Now, probe: util.ProbePort, cancelForward: ssh.CancelForward}
+}
+func desiredPorts(desired []state.ContainerPorts) map[string]map[int]bool {
+	result := make(map[string]map[int]bool)
+	for _, owner := range desired {
+		result[owner.ContainerID] = make(map[int]bool)
+		for _, port := range owner.Ports {
+			result[owner.ContainerID][port] = true
+		}
 	}
+	return result
 }
 
-// Diff compares desired and actual state to determine what actions are needed.
-//
-// It implements container-scoped batching: all ports for a container are
-// processed together.
-//
-// "Last Event Wins" Semantics:
-// When a port conflict occurs (port claimed by different container), this
-// reconciler implements "last event wins" conflict resolution:
-//  1. If port P is currently forwarded for container A
-//  2. But container B now wants port P
-//  3. The reconciler will:
-//     a) First remove the forward for container A (oldest)
-//     b) Then add the forward for container B (newest)
-//
-// This ensures that the most recent desired state takes precedence, allowing
-// containers to "steal" ports from each other if needed during rapid churn.
-// The state tracks which container owns which port via the actualMap.
-//
-// Returns:
-//   - toAdd: Actions to add port forwards
-//   - toRemove: Actions to remove port forwards
-//
-// Example usage:
-//
-//	toAdd, toRemove := reconciler.Diff()
-//	for _, action := range toAdd {
-//	    fmt.Printf("Need to add: %s port %d\n", action.ContainerID, action.Port)
-//	}
+// Diff retains the existing desired-change transfer boundary. Transport ownership
+// is independent of readiness: a pending/unknown listener still blocks reuse.
 func (r *Reconciler) Diff() (toAdd, toRemove []Action) {
-	desired := r.state.GetDesired()
+	desired := desiredPorts(r.state.GetDesired())
 	actual := r.state.GetActual()
-
-	// Build maps for easier lookup
-	desiredMap := make(map[string]map[int]bool) // containerID -> port -> exists
-	for _, cp := range desired {
-		if desiredMap[cp.ContainerID] == nil {
-			desiredMap[cp.ContainerID] = make(map[int]bool)
-		}
-		for _, port := range cp.Ports {
-			desiredMap[cp.ContainerID][port] = true
+	resources := r.state.GetResources()
+	owner := make(map[int]string)
+	active := make(map[string]map[int]bool)
+	for _, resource := range resources {
+		if resource.Ownership != state.ForwardUnowned {
+			owner[resource.Port] = resource.ContainerID
 		}
 	}
-
-	actualMap := make(map[string]map[int]bool) // containerID -> port -> exists
-	portOwner := make(map[int]string)          // port -> containerID (tracks ownership for conflict detection)
-	for _, fs := range actual {
-		// Only count "active" forwards in actual state
-		// "pending" and "conflict" states don't count as ownership
-		if fs.Status == "active" {
-			if actualMap[fs.ContainerID] == nil {
-				actualMap[fs.ContainerID] = make(map[int]bool)
-			}
-			actualMap[fs.ContainerID][fs.Port] = true
-			portOwner[fs.Port] = fs.ContainerID // Track which container owns this port
+	for _, forward := range actual {
+		if active[forward.ContainerID] == nil {
+			active[forward.ContainerID] = make(map[int]bool)
+		}
+		active[forward.ContainerID][forward.Port] = forward.Status == "active"
+	}
+	removed := make(map[string]map[int]bool)
+	remove := func(id string, port, remote int) {
+		if removed[id] == nil {
+			removed[id] = make(map[int]bool)
+		}
+		if !removed[id][port] {
+			removed[id][port] = true
+			toRemove = append(toRemove, Action{Type: "remove", ContainerID: id, Port: port, RemotePort: remote})
 		}
 	}
-
-	// Compute actions
-	toAdd = make([]Action, 0)
-	toRemove = make([]Action, 0)
-
-	// Find ports to add (in desired but not in actual, or owned by different container)
-	for containerID, ports := range desiredMap {
+	for id, ports := range desired {
 		for port := range ports {
-			currentOwner, exists := portOwner[port]
-
-			if !exists {
-				// Port not currently forwarded by any container, add it
-				toAdd = append(toAdd, Action{
-					Type:        "add",
-					ContainerID: containerID,
-					Port:        port,
-					RemotePort:  port, // For now, local and remote ports are the same
-				})
-			} else if currentOwner != containerID {
-				// "Last event wins" conflict resolution:
-				// Port is owned by a different container, so we transfer ownership
-				// Remove from old owner (oldest)
-				toRemove = append(toRemove, Action{
-					Type:        "remove",
-					ContainerID: currentOwner,
-					Port:        port,
-					RemotePort:  port,
-				})
-				// Add for new owner (newest wins)
-				toAdd = append(toAdd, Action{
-					Type:        "add",
-					ContainerID: containerID,
-					Port:        port,
-					RemotePort:  port,
-				})
+			current := owner[port]
+			if current != "" && current != id {
+				remove(current, port, port)
 			}
-			// else: port is already active for this container, no action needed (idempotent)
-		}
-	}
-
-	// Find ports to remove (in actual but not in desired)
-	for containerID, ports := range actualMap {
-		desiredPorts := desiredMap[containerID]
-		for port := range ports {
-			if !desiredPorts[port] {
-				// Port is active but not desired anymore, remove it
-				toRemove = append(toRemove, Action{
-					Type:        "remove",
-					ContainerID: containerID,
-					Port:        port,
-					RemotePort:  port,
-				})
+			resource, exists := r.state.Resource(id, port)
+			if exists && resource.Ownership == state.ForwardUnknown {
+				continue
+			}
+			if current != id || !active[id][port] || (exists && resource.Remove) {
+				toAdd = append(toAdd, Action{Type: "add", ContainerID: id, Port: port, RemotePort: port})
 			}
 		}
 	}
-
-	r.logger.Debug("reconciliation diff computed",
-		"toAdd", len(toAdd),
-		"toRemove", len(toRemove))
-
+	for _, forward := range actual {
+		if !desired[forward.ContainerID][forward.Port] {
+			remove(forward.ContainerID, forward.Port, forward.Port)
+		}
+	}
 	return toAdd, toRemove
 }
 
-// Apply executes the provided actions using SSH forward operations.
-//
-// This method is designed to be idempotent:
-//   - Calling it multiple times with the same actions has the same effect as once
-//   - State is checked before each operation to avoid duplicate work
-//   - State is updated after each operation so subsequent calls see current state
-//   - Failed operations are marked in state to prevent infinite retries
-//
-// It processes actions in order:
-//  1. First removes all forwards that need to be removed
-//  2. Then adds all forwards that need to be added
-//  3. For each add, validates with ProbePort after creating the forward
-//
-// Updates state for each operation (success or failure).
-// Returns first error encountered but attempts all actions.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - host: SSH host string (ssh://user@host)
-//   - actions: Combined list of add and remove actions
-//
-// Example usage:
-//
-//	actions := append(toRemove, toAdd...)
-//	err := reconciler.Apply(ctx, "ssh://user@host", master.ControlPath(), actions)
-func (r *Reconciler) Apply(ctx context.Context, host, controlPath string, actions []Action) error {
-	if len(actions) == 0 {
-		r.logger.Debug("no actions to apply")
-		return nil
-	}
-
-	var firstError error
-
-	// Separate actions by type for ordered processing
-	var removeActions, addActions []Action
-	for _, action := range actions {
-		switch action.Type {
-		case "remove":
-			removeActions = append(removeActions, action)
-		case "add":
-			addActions = append(addActions, action)
+// NextRetry reports only eligible kinds of resource work, not discovery requests.
+func (r *Reconciler) NextRetry() (time.Time, bool) {
+	var next time.Time
+	for _, resource := range r.state.GetResources() {
+		if resource.Ownership != state.ForwardUnknown && !resource.RetryAt.IsZero() && (next.IsZero() || resource.RetryAt.Before(next)) {
+			next = resource.RetryAt
 		}
 	}
+	return next, !next.IsZero()
+}
 
-	r.logger.Info("applying reconciliation actions",
-		"removes", len(removeActions),
-		"adds", len(addActions))
-
-	// Process removals first
-	for _, action := range removeActions {
-		// Defensive check: skip if already removed
-		// This makes Apply() idempotent even if called multiple times
-		actualState := r.state.GetByContainer(action.ContainerID)
-		alreadyRemoved := true
-		var forwardToRemove *state.ForwardState
-		for _, fs := range actualState {
-			if fs.Port == action.Port && fs.Status == "active" {
-				alreadyRemoved = false
-				fsCopy := fs // Make a copy for history
-				forwardToRemove = &fsCopy
-				break
-			}
-		}
-
-		if alreadyRemoved {
-			r.logger.Debug("port forward already removed, skipping",
-				"container", safeLogID(action.ContainerID),
-				"port", action.Port)
+// RetryActions never re-runs claimant arbitration or invents new desired work.
+func (r *Reconciler) RetryActions() []Action {
+	desired := desiredPorts(r.state.GetDesired())
+	var actions []Action
+	now := r.now()
+	for _, resource := range r.state.GetResources() {
+		if resource.Ownership == state.ForwardUnknown || resource.RetryAt.IsZero() || resource.RetryAt.After(now) {
 			continue
 		}
-
-		r.logger.Debug("removing port forward",
-			"container", safeLogID(action.ContainerID),
-			"port", action.Port)
-
-		err := ssh.CancelForward(ctx, controlPath, host, action.Port, action.RemotePort, r.logger)
-		if err != nil {
-			r.logger.Warn("failed to remove port forward",
-				"container", safeLogID(action.ContainerID),
-				"port", action.Port,
-				"error", err.Error())
-			if firstError == nil {
-				firstError = err
-			}
+		kind := "add"
+		if resource.Remove || !desired[resource.ContainerID][resource.Port] {
+			kind = "remove"
 		}
+		actions = append(actions, Action{Type: kind, ContainerID: resource.ContainerID, Port: resource.Port, RemotePort: resource.RemotePort, EndReason: resource.EndReason})
+	}
+	return actions
+}
 
-		// Add to history before removing from state
-		if forwardToRemove != nil {
-			// Determine end reason based on context
-			endReason := "container stopped"
-			// Check if this is a port transfer (another container wants this port)
-			for _, addAction := range addActions {
-				if addAction.Port == action.Port && addAction.ContainerID != action.ContainerID {
-					endReason = fmt.Sprintf("port claimed by %s", safeLogID(addAction.ContainerID))
-					break
+// Apply runs inside Master's forwarding gate. Positive replies discharge only
+// the exact current request; unknown effects await natural generation retirement.
+func (r *Reconciler) Apply(ctx context.Context, connection *ssh.Forwarding, actions []Action) error {
+	if connection == nil || !connection.Ready() {
+		return fmt.Errorf("SSH connection unavailable")
+	}
+	var first error
+	for _, kind := range []string{"remove", "add"} {
+		for _, action := range actions {
+			if action.Type != kind {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				if first == nil {
+					first = err
+				}
+				return first
+			}
+			if kind == "remove" && action.EndReason == "" {
+				action.EndReason = "container stopped"
+				for _, add := range actions {
+					if add.Type == "add" && add.Port == action.Port && add.ContainerID != action.ContainerID {
+						action.EndReason = fmt.Sprintf("port claimed by %s", safeLogID(add.ContainerID))
+						break
+					}
 				}
 			}
-
-			r.history.Add(state.HistoryEntry{
-				ContainerID: forwardToRemove.ContainerID,
-				Port:        forwardToRemove.Port,
-				StartedAt:   forwardToRemove.CreatedAt,
-				EndedAt:     time.Now(),
-				EndReason:   endReason,
-				FinalStatus: forwardToRemove.Status,
-			})
+			if err := r.apply(ctx, connection, action); err != nil && first == nil {
+				first = err
+			}
 		}
-
-		// Remove only this specific port from state (not all container ports)
-		r.state.ClearPort(action.ContainerID, action.Port)
 	}
-
-	// Process additions with tracking for summary
-	// T051: Ensure other ports continue working despite conflicts
-	addedCount := 0
-	conflictCount := 0
-	pendingCount := 0
-
-	for _, action := range addActions {
-		// Defensive check: skip if already active
-		// This makes Apply() idempotent even if called multiple times
-		actualState := r.state.GetByContainer(action.ContainerID)
-		alreadyActive := false
-		for _, fs := range actualState {
-			if fs.Port == action.Port && fs.Status == "active" {
-				alreadyActive = true
-				break
-			}
-		}
-
-		if alreadyActive {
-			r.logger.Debug("port forward already active, skipping",
-				"container", safeLogID(action.ContainerID),
-				"port", action.Port)
-			addedCount++ // Count as added since it's active
-			continue
-		}
-
-		r.logger.Debug("adding port forward",
-			"container", safeLogID(action.ContainerID),
-			"port", action.Port)
-
-		// T050: Use retry logic with exponential backoff
-		err := ssh.AddForwardWithRetry(ctx, controlPath, host, action.Port, action.RemotePort, r.logger)
-		if err != nil {
-			// T048/T049: Check if this is a port conflict
-			var portErr *ssh.PortConflictError
-			if errors.As(err, &portErr) {
-				// Port conflict detected
-				conflictCount++
-				r.logger.Warn("port conflict - continuing with other ports",
-					"container", safeLogID(action.ContainerID),
-					"port", action.Port,
-					"error", err.Error())
-				r.state.MarkConflict(action.ContainerID, action.Port,
-					fmt.Sprintf("port already in use after %d retry attempts", 5))
-			} else {
-				// Other error
-				r.logger.Warn("failed to add port forward",
-					"container", safeLogID(action.ContainerID),
-					"port", action.Port,
-					"error", err.Error())
-				r.state.MarkConflict(action.ContainerID, action.Port, err.Error())
-				conflictCount++
-			}
-			if firstError == nil {
-				firstError = err
-			}
-			// T051: Continue processing other ports despite this failure
-			continue
-		}
-
-		// Validate the forward is actually active
-		if err := util.ProbePort(ctx, action.Port); err != nil {
-			r.logger.Warn("port forward created but not responding",
-				"container", safeLogID(action.ContainerID),
-				"port", action.Port,
-				"error", err.Error())
-			r.state.MarkPending(action.ContainerID, action.Port, "port not responding")
-			pendingCount++
-			if firstError == nil {
-				firstError = fmt.Errorf("port %d not responding after forward: %w", action.Port, err)
-			}
-			// T051: Continue processing other ports
-			continue
-		}
-
-		// Success! Update state so subsequent calls see this forward as active
-		r.state.MarkActive(action.ContainerID, action.Port)
-		addedCount++
-		r.logger.Info("port forward established",
-			"container", safeLogID(action.ContainerID),
-			"port", action.Port)
+	if first != nil {
+		return fmt.Errorf("reconciliation completed with errors: %w", first)
 	}
-
-	// T051: Provide summary of operations
-	r.logger.Info("reconciliation completed",
-		"removed", len(removeActions),
-		"added", addedCount,
-		"conflicts", conflictCount,
-		"pending", pendingCount)
-
-	if firstError != nil {
-		return fmt.Errorf("reconciliation completed with errors: %w", firstError)
-	}
-
 	return nil
+}
+
+func (r *Reconciler) apply(ctx context.Context, connection *ssh.Forwarding, action Action) error {
+	resource, exists := r.state.Resource(action.ContainerID, action.Port)
+	if !exists {
+		resource = state.ForwardResource{ContainerID: action.ContainerID, Port: action.Port, RemotePort: action.RemotePort, Generation: connection.Generation()}
+	}
+	if resource.Generation != connection.Generation() {
+		return fmt.Errorf("forward resource generation not retired")
+	}
+	if action.Type == "remove" {
+		resource.Remove = true
+		if resource.EndReason == "" {
+			resource.EndReason = action.EndReason
+		}
+		r.state.SetResource(resource)
+		if resource.Ownership == state.ForwardUnowned {
+			r.finish(resource)
+			return nil
+		}
+	} else {
+		desired := desiredPorts(r.state.GetDesired())
+		if !desired[action.ContainerID][action.Port] {
+			return nil
+		}
+	}
+	if resource.Ownership == state.ForwardUnknown {
+		r.state.MarkPending(resource.ContainerID, resource.Port, "forward effect uncertain; awaiting SSH generation retirement")
+		return fmt.Errorf("forward effect uncertain")
+	}
+	// New intent can request cleanup immediately, but repeated notifications
+	// cannot accelerate a returned failure's existing resource retry deadline.
+	if !resource.RetryAt.IsZero() && resource.RetryAt.After(r.now()) {
+		return nil
+	}
+	if resource.Remove {
+		effect, err := r.cancelForward(ctx, connection, resource.Port, resource.RemotePort, r.logger)
+		if effect == ssh.ForwardAcknowledged {
+			r.finish(resource)
+			return err
+		}
+		if effect == ssh.ForwardUncertain {
+			resource.Ownership = state.ForwardUnknown
+		}
+		return r.failed(resource, "forward cancellation failed; cleanup remains owed", err)
+	}
+	if resource.Ownership == state.ForwardUnowned {
+		for _, other := range r.state.GetResources() {
+			if other.Port == resource.Port && other.ContainerID != resource.ContainerID && other.Ownership != state.ForwardUnowned {
+				return r.failed(resource, "port replacement waiting for owned cleanup", fmt.Errorf("port replacement blocked by cleanup"))
+			}
+		}
+		effect, err := ssh.AddForwardWithRetry(ctx, connection, resource.Port, resource.RemotePort, r.logger)
+		switch effect {
+		case ssh.ForwardAcknowledged:
+			resource.Ownership = state.ForwardOwned
+			resource.RetryAt = time.Time{}
+			r.state.SetResource(resource) // Must precede the readiness probe.
+		case ssh.ForwardUncertain:
+			resource.Ownership = state.ForwardUnknown
+			return r.failed(resource, "forward creation effect uncertain", err)
+		default:
+			r.state.MarkConflict(resource.ContainerID, resource.Port, fmt.Sprint(err))
+			resource.RetryAt = r.now().Add(time.Second)
+			r.state.SetResource(resource)
+			return err
+		}
+	}
+	if err := r.probe(ctx, resource.Port); err != nil {
+		return r.failed(resource, "port not responding", err)
+	}
+	resource.RetryAt = time.Time{}
+	r.state.SetResource(resource)
+	r.state.MarkActive(resource.ContainerID, resource.Port)
+	return nil
+}
+func (r *Reconciler) failed(resource state.ForwardResource, reason string, err error) error {
+	resource.RetryAt = time.Time{}
+	if resource.Ownership != state.ForwardUnknown {
+		resource.RetryAt = r.now().Add(time.Second)
+	}
+	r.state.SetResource(resource)
+	r.state.MarkPending(resource.ContainerID, resource.Port, reason)
+	if err == nil {
+		return fmt.Errorf("%s", reason)
+	}
+	return err
+}
+
+// RetireBefore is called only with proven retirement from the Master gate.
+func (r *Reconciler) RetireBefore(generation uint64) {
+	at := r.now()
+	for _, forward := range r.state.RetireBefore(generation, at) {
+		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: at, EndReason: "container stopped", FinalStatus: forward.Status})
+	}
+}
+
+func (r *Reconciler) finish(resource state.ForwardResource) {
+	if forward, ok := r.state.FinishResource(resource); ok {
+		reason := resource.EndReason
+		if reason == "" {
+			reason = "container stopped"
+		}
+		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: r.now(), EndReason: reason, FinalStatus: forward.Status})
+	}
 }

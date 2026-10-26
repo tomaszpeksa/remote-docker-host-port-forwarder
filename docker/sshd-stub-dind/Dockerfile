@@ -4,10 +4,10 @@
 
 FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-# Install OpenSSH server and Docker CLI. Alpine r1 rebuilds the unchanged
-# Docker 29.8.2 source against Go 1.26.9; normal signed-repository verification
-# remains enabled (aports c02e0c037b032adc0301e2027ad0f3a1c0b98a7a).
-RUN apk add --no-cache openssh-server=10.3_p1-r1 docker-cli=29.8.2-r1
+# Install exact packages from the normal signed stable Alpine repository.
+# Docker CLI 29.9.2-r0: aports 0b8392c4e3a24608418ffde2d77923591f359ee3.
+# The owned fixture records the installed client/compiler/API provenance.
+RUN apk add --no-cache openssh-server=10.3_p1-r1 docker-cli=29.9.2-r0
 
 # Configure sshd for key-based authentication and allow port forwarding
 RUN sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \

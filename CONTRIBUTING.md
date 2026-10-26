@@ -240,7 +240,7 @@ ignores that test variable; configure `IdentityFile` (or your SSH agent) through
 OpenSSH configuration. The owned local launcher supplies its explicit `-F` config,
 and the disposable hosted fixture supplies account configuration.
 
-The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.8.2-r1
+The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.9.2-r0
 and nginx 1.30.5-alpine3.24. The isolated harness daemon must support Docker API
 1.40 or newer with negotiation enabled; this is not a production-daemon policy.
 No script upgrades your daemon. Startup refuses existing container/state rather

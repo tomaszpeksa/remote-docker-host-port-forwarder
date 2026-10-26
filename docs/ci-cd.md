@@ -532,13 +532,15 @@ cases and cleanup remain mandatory. Discovery adds evidence rather than replacin
 those requirements. Native compilation is not owned runtime proof, nor does this
 workflow imply release, cask/Gatekeeper or every-platform runtime clearance.
 
-The owned fixture pins Alpine's `docker-cli=29.8.2-r1`, a same-source rebuild of
-Docker CLI 29.8.2 against Alpine Go 1.26.9 (previous r0 used Go 1.26.8). The
-[official Alpine recipe change](https://gitlab.alpinelinux.org/alpine/aports/-/commit/c02e0c037b032adc0301e2027ad0f3a1c0b98a7a)
-changes only this recipe's package revision; the Docker upstream source commits
-are unchanged. This is the fixture CLI's distribution build, not the application's
-Go toolchain. Exact package/version assertions and normal apk signature checks
-remain enabled; no package ranges, mirror replacement or trust bypass is used.
+The owned fixture pins Alpine's indexed `docker-cli=29.9.2-r0` from the normal
+stable 3.24 repository. Its
+[official Alpine recipe](https://gitlab.alpinelinux.org/alpine/aports/-/blob/0b8392c4e3a24608418ffde2d77923591f359ee3/community/docker/APKBUILD)
+identifies the Docker CLI source revision. The installed client's compiler and
+API versions come from the owned fixture's actual `docker version` provenance,
+not inference from its package name or the application's Go toolchain. Exact
+package/version assertions and normal apk signature checks remain enabled;
+no package ranges, direct unindexed APK selection, mirror replacement or trust
+bypass is used.
 
 ### Mandatory processing-watchdog evidence
 

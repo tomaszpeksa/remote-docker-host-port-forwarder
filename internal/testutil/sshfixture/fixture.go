@@ -252,8 +252,12 @@ func (f *Fixture) PasswordChallenge() {
 // Backend registers label-checked cleanup before run; lost run replies retain a name.
 func (f *Fixture) Backend(image string, port int, labels ...string) string {
 	f.T.Helper()
-	f.backendSequence++
-	name := fmt.Sprintf("%s-%d-%d", f.Alias, port, f.backendSequence)
+	name := fmt.Sprintf("%s-%d", f.Alias, port)
+	if port == 0 {
+		f.backendSequence++
+		name = fmt.Sprintf("%s-%d", name, f.backendSequence)
+	}
+	// Published names retain deliberate same-port collision controls; unbound markers do not collide.
 	f.T.Cleanup(func() {
 		owner := f.Docker("inspect", "--format", `{{index .Config.Labels "rdhpf.trust"}}`, name)
 		require.Equal(f.T, f.Alias, owner)

@@ -194,6 +194,67 @@ func TestOnlyContainerStopCanRetainRestart(t *testing.T) {
 	}
 }
 
+func TestSupersedingClaimantSurvivesCloseRetry(t *testing.T) {
+	for _, rejectedAgain := range []bool{false, true} {
+		name := "BeforeRetryAt"
+		if rejectedAgain {
+			name = "RejectedAgain"
+		}
+		t.Run(name, func(t *testing.T) {
+			run := obligationFixture(t)
+			// This is transport-ledger proof, not HTTP or target-readiness proof.
+			run.r.probe = func(context.Context, int) error { return nil }
+			siblingPort := run.port%65535 + 1
+			run.st.SetDesired("owner", []int{run.port})
+			run.st.SetDesired("sibling", []int{siblingPort})
+			require.NoError(t, run.apply(false))
+			created := run.st.GetByContainer("owner")[0].CreatedAt
+			failure := run.fail(t, "CLOSE")
+			run.st.SetDesired("owner", nil)
+			require.Error(t, run.apply(false))
+			beforeTransfer := run.calls(t)
+			run.st.SetDesired("owner", []int{run.port})
+			run.st.SetDesired("replacement", []int{run.port})
+			if rejectedAgain {
+				run.now = run.now.Add(time.Second)
+			}
+			// Diff generates the actual claimant removal and competing add. No
+			// fabricated reason or resource mutation supplies the restriction.
+			require.Error(t, run.apply(false), "replacement must wait for owned cleanup")
+			if rejectedAgain {
+				require.Equal(t, 2, strings.Count(run.calls(t), "CLOSE"))
+			} else {
+				require.Equal(t, beforeTransfer, run.calls(t), "transfer cannot accelerate RetryAt")
+			}
+			resource, ok := run.st.Resource("owner", run.port)
+			require.True(t, ok)
+			require.True(t, resource.Remove)
+			require.Equal(t, containerStopped, resource.EndReason)
+			require.Empty(t, run.history.GetAll())
+			require.NoError(t, os.Remove(failure))
+			beforeRetry := run.calls(t)
+			require.NoError(t, run.apply(true))
+			require.Equal(t, beforeRetry, run.calls(t), "timer cannot accelerate RetryAt")
+			run.now = run.now.Add(time.Second)
+			require.NoError(t, run.apply(true))
+			_, exists := run.st.Resource("owner", run.port)
+			require.False(t, exists, "SUPERSEDING_CLAIMANT_MUST_SURVIVE_"+name)
+			require.Empty(t, run.st.GetByContainer("owner"))
+			require.Len(t, run.history.GetAll(), 1)
+			require.Equal(t, containerStopped, run.history.GetAll()[0].EndReason)
+			require.Equal(t, created, run.history.GetAll()[0].StartedAt)
+			require.Equal(t, "active", run.st.GetByContainer("replacement")[0].Status)
+			require.Equal(t, "active", run.st.GetByContainer("sibling")[0].Status)
+			require.Equal(t, 1, strings.Count(run.calls(t), fmt.Sprintf("OPEN %d %d\n", siblingPort, siblingPort)))
+			require.Equal(t, 2, strings.Count(run.calls(t), fmt.Sprintf("OPEN %d %d\n", run.port, run.port)))
+			run.now = run.now.Add(time.Second)
+			require.Empty(t, run.r.RetryActions(), "completed transfer must not retain old-owner retry work")
+			require.NoError(t, run.apply(true))
+			require.Len(t, run.history.GetAll(), 1)
+		})
+	}
+}
+
 func TestStoppedUnownedConflictNeverCancels(t *testing.T) {
 	run := obligationFixture(t)
 	run.fail(t, "OPEN")

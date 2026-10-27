@@ -13,6 +13,8 @@ import (
 
 const containerStopped = "container stopped"
 
+// Action is a desired or retry operation, not evidence of transport ownership.
+// A removal's EndReason can restrict renewal without rewriting prior history.
 type Action struct {
 	Type        string
 	ContainerID string
@@ -21,6 +23,8 @@ type Action struct {
 	EndReason   string
 }
 
+// Reconciler maintains transport obligations separately from forward readiness.
+// Callers serialize reconciliation and retirement with the Master's lifecycle gate.
 type Reconciler struct {
 	state         *state.State
 	history       *state.History
@@ -36,6 +40,8 @@ func safeLogID(id string) string {
 	}
 	return id
 }
+
+// NewReconciler binds resource transitions and consumptive history to the supplied stores.
 func NewReconciler(st *state.State, history *state.History, logger *slog.Logger) *Reconciler {
 	return &Reconciler{state: st, history: history, logger: logger, now: time.Now, probe: util.ProbePort, cancelForward: ssh.CancelForward}
 }
@@ -179,6 +185,11 @@ func (r *Reconciler) apply(ctx context.Context, connection *ssh.Forwarding, acti
 	}
 	if action.Type == "remove" {
 		resource.Remove = true
+		// Superseding cleanup intent survives deferral and failed CLOSEs.
+		// EndReason remains the original terminal-history reason.
+		if action.EndReason != "" && action.EndReason != containerStopped {
+			resource.PreventRenewal = true
+		}
 		if resource.EndReason == "" {
 			resource.EndReason = action.EndReason
 		}
@@ -205,7 +216,7 @@ func (r *Reconciler) apply(ctx context.Context, connection *ssh.Forwarding, acti
 	if resource.Remove {
 		effect, err := r.cancelForward(ctx, connection, resource.Port, resource.RemotePort, r.logger)
 		if effect == ssh.ForwardAcknowledged {
-			if r.finish(resource) && resource.EndReason == containerStopped && (action.EndReason == "" || action.EndReason == containerStopped) {
+			if r.finish(resource) && resource.EndReason == containerStopped && !resource.PreventRenewal {
 				// A stop's old CLOSE can outlive a same-owner restart. Only
 				// positive cleanup permits retaining its new creation work;
 				// claimant transfer and shutdown do not authorize this renewal.

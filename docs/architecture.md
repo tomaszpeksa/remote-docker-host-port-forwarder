@@ -157,6 +157,8 @@ If the same owner restarts while a container-stop CLOSE is still owed, the old
 CLOSE must be acknowledged before a fresh unowned creation obligation is retained.
 That new obligation uses the existing one-second resource retry, not immediate
 reopening. Claimant-transfer and shutdown removals do not enable this renewal.
+A superseding non-stop cleanup restriction persists across deferred or failed
+CLOSE attempts independently of the original terminal-history reason.
 
 The existing one-second reconciliation timer also schedules eligible resource
 work after a discovery request has been acknowledged. This permits eventless

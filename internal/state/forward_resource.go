@@ -21,9 +21,11 @@ type ForwardResource struct {
 	Ownership        ForwardOwnership
 	Remove           bool
 	RetryAt          time.Time
-	EndReason        string
+	EndReason        string // Original terminal-history reason, not superseding control intent.
+	PreventRenewal   bool   // Sticky non-stop cleanup intent for this obligation's lifetime.
 }
 
+// GetResources returns copied transport facts, not a readiness snapshot.
 func (s *State) GetResources() []ForwardResource {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -35,12 +37,17 @@ func (s *State) GetResources() []ForwardResource {
 	}
 	return result
 }
+
+// Resource returns a copy of the owner's resource under the State read lock.
 func (s *State) Resource(owner string, port int) (ForwardResource, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	resource, ok := s.resources[owner][port]
 	return resource, ok
 }
+
+// SetResource stores transport facts under the State lock. The caller must also
+// serialize lifecycle decisions with the Master gate and retain cleanup intent.
 func (s *State) SetResource(resource ForwardResource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

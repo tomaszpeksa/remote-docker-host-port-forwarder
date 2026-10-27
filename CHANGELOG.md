@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   natural Master retirement; terminal history is consumed once.
 - Retain desired restoration across an unavailable retired generation, and restore
   a same-owner restart after its previously failed stop cancellation is positively
-  acknowledged, without requiring another event or changed inventory.
+  acknowledged, without requiring another event or changed inventory. Superseding
+  claimant cleanup remains non-renewing across deferred and failed CLOSE retries,
+  without replacing the original terminal-history reason.
 
 - Pace clean Docker event-stream EOF with a cancelable one-second wait after
   accepted events drain and owned workers join. Preserve clean-EOF forgiveness,

@@ -57,6 +57,37 @@ func TestFixtureRejectsMalformedOwnerBeforeDocker(t *testing.T) {
 	}
 }
 
+func TestBackendUnboundNamesAreDistinct(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	// Record the actual Backend argv; no Docker daemon or target traffic.
+	script := `#!/bin/sh
+case "$1" in
+run) printf 'run %s\n' "$4" >> "$BACKEND_CALLS"; printf '%064d\n' 1 ;;
+inspect) printf '%s\n' "$BACKEND_OWNER" ;;
+rm) printf 'rm %s\n' "$3" >> "$BACKEND_CALLS" ;;
+*) exit 23 ;;
+esac
+`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0700))
+	t.Setenv("PATH", root)
+	t.Setenv("BACKEND_CALLS", calls)
+	t.Setenv("BACKEND_OWNER", "owned-name-fixture")
+	t.Run("create-and-clean", func(t *testing.T) {
+		f := &Fixture{T: t, Alias: "owned-name-fixture"}
+		f.Backend(Alpine, 0)
+		f.Backend(Alpine, 0)
+	})
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 4)
+	first, second := strings.TrimPrefix(lines[0], "run "), strings.TrimPrefix(lines[1], "run ")
+	require.NotEqual(t, first, second, "UNBOUND_BACKEND_NAMES_MUST_BE_DISTINCT")
+	require.Equal(t, "rm "+second, lines[2])
+	require.Equal(t, "rm "+first, lines[3])
+}
+
 func TestAuthorizedKeysExactBytes(t *testing.T) {
 	for _, original := range []string{"", "  ssh-ed25519 original comment  ", "ssh-ed25519 original\n\n", "\t# comment\r\nssh-ed25519 original\r\n"} {
 		t.Run(strings.ReplaceAll(original, "\n", "_"), func(t *testing.T) {

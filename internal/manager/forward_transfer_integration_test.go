@@ -15,6 +15,22 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/sshfixture"
 )
 
+func (h *discoveryOwned) transferBackend(image string, port int, labels ...string) string {
+	h.t.Helper()
+	created := false
+	defer func() {
+		// Backend retains cleanup before run, including a lost/failed reply.
+		// Fatal/Goexit must join the Master before those cleanups can execute.
+		if !created {
+			h.close()
+		}
+	}()
+	id := h.f.Backend(image, port, labels...)
+	h.t.Cleanup(h.close)
+	created = true
+	return id
+}
+
 // This controlled Reconciler journey uses real inspection, mux operations and
 // HTTP, not Manager.Run or event-stream scheduling. Two unbound label markers
 // share one independent backend; neither marker is itself the HTTP server.
@@ -29,17 +45,16 @@ func TestManagerForwardingOwnedClaimantTransfer(t *testing.T) {
 			forwardingRetirement(t, h)
 			t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
 			port := forwardingPort(t)
-			backend := h.f.Backend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
-			t.Cleanup(h.close)
+			backend := h.transferBackend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
 			body := "transfer-" + h.f.Alias
 			h.f.Docker("exec", backend, "sh", "-c", "printf %s "+body+" > /usr/share/nginx/html/index.html")
-			marker := h.f.Backend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
-			t.Cleanup(h.close)
-			replacement := h.f.Backend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
-			t.Cleanup(h.close)
+			marker := h.transferBackend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
+			replacement := h.transferBackend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
 			target := discoveryBackend{id: marker, body: body, port: port}
 			next := discoveryBackend{id: replacement, body: body, port: port}
-			sibling := h.backend()
+			siblingPort := forwardingPort(t)
+			sibling := discoveryBackend{id: h.transferBackend(sshfixture.Nginx, siblingPort), port: siblingPort, body: body + "-sibling"}
+			h.f.Docker("exec", sibling.id, "sh", "-c", "printf %s "+sibling.body+" > /usr/share/nginx/html/index.html")
 			observe := func(b discoveryBackend) []int {
 				h.verify(b.id)
 				require.Equal(t, "true", h.f.Docker("inspect", "--format", "{{.State.Running}}", b.id))

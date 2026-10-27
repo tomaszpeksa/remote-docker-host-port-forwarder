@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,7 +248,9 @@ func TestInspectNamedLabelFallback(t *testing.T) {
 	f.Configure("yes", f.PublicKey, "", f.Key, "no")
 	id := f.Backend(sshfixture.Alpine, 0, "rdhpf.forward.18090=80")
 	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
-	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", f.Alias + "-0"}} {
+	name := strings.TrimPrefix(f.Docker("inspect", "--format", "{{.Name}}", id), "/")
+	require.Equal(t, id, f.Docker("inspect", "--format", "{{.Id}}", name))
+	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", name}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()

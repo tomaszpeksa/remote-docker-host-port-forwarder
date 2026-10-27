@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -35,10 +36,13 @@ func TestControlRequestTrust(t *testing.T) {
 					f.PromptControl()
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
+					invocation := ""
 					switch operation {
 					case "forward", "cancel":
 						// No owned/ready connection means no helper handshake,
-						// regardless of inherited ControlMaster policy.
+						// regardless of inherited ControlMaster policy. The native
+						// positive prompt control above precedes this observer.
+						invocation = observeApplicationSSH(t, f.SSH)
 						master, err := NewMaster(f.Host, slog.Default())
 						require.NoError(t, err)
 						defer func() { require.NoError(t, master.Close()) }()
@@ -58,10 +62,74 @@ func TestControlRequestTrust(t *testing.T) {
 					}
 					require.NoError(t, ctx.Err(), "deadline kill is not nonprompt proof")
 					f.NoPrompt()
+					if invocation != "" {
+						require.NoFileExists(t, invocation, strings.ToUpper(operation)+"_MUST_NOT_START_SSH_WITHOUT_OWNED_READY_CONNECTION")
+					}
 				})
 			}
 		}
 	}
+}
+
+// observeApplicationSSH records an actual application invocation before execing
+// the already captured native executable with its argv unchanged. It is installed
+// only after PromptControl, so it cannot stand in for the positive prompt proof.
+func observeApplicationSSH(t *testing.T, executable string) string {
+	t.Helper()
+	require.True(t, filepath.IsAbs(executable))
+	root := t.TempDir()
+	info, err := os.Lstat(root)
+	require.NoError(t, err)
+	require.True(t, info.IsDir() && info.Mode()&os.ModeSymlink == 0)
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	require.Equal(t, uint32(os.Getuid()), owner.Uid)
+	entries, err := os.ReadDir(root)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+	t.Logf("observer owned empty root before writes: uid=%d mode=%04o", owner.Uid, info.Mode().Perm())
+	// TempDir's numbered leaf uses 0777 subject to umask; create our own
+	// explicitly private child rather than assuming that leaf is 0700.
+	dir := filepath.Join(root, "ssh-observer")
+	require.NoError(t, os.Mkdir(dir, 0700))
+	info, err = os.Lstat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	record := filepath.Join(dir, "application-ssh.argv")
+	launcher := filepath.Join(dir, "ssh")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$$\" \"$@\" > %q\nexec %q \"$@\"\n", record, executable)
+	require.NoError(t, os.WriteFile(launcher, []byte(script), 0700))
+	info, err = os.Lstat(launcher)
+	require.NoError(t, err)
+	require.True(t, info.Mode().IsRegular())
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return record
+}
+
+func TestApplicationSSHObserver(t *testing.T) {
+	dir := t.TempDir()
+	nativeRecord := filepath.Join(dir, "native.argv")
+	executable := filepath.Join(dir, "captured-native-command")
+	require.NoError(t, os.WriteFile(executable, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\n", nativeRecord)), 0700))
+	record := observeApplicationSSH(t, executable)
+	require.NoFileExists(t, record)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "one argument", "--", "fixture.invalid")
+	require.NoError(t, cmd.Run())
+	require.NoError(t, ctx.Err())
+	require.NotNil(t, cmd.ProcessState, "original helper Wait must precede private-directory cleanup")
+	var status syscall.WaitStatus
+	_, waitErr := syscall.Wait4(cmd.Process.Pid, &status, syscall.WNOHANG, nil)
+	require.ErrorIs(t, waitErr, syscall.ECHILD)
+	observed, err := os.ReadFile(record)
+	require.NoError(t, err)
+	native, err := os.ReadFile(nativeRecord)
+	require.NoError(t, err)
+	require.Equal(t, "-o\nBatchMode=yes\none argument\n--\nfixture.invalid\n", string(native))
+	require.Equal(t, fmt.Sprintf("%d\n%s", cmd.Process.Pid, native), string(observed))
+	t.Logf("observer original helper Wait: pid=%d state=%s ECHILD=%v before cleanup", cmd.Process.Pid, cmd.ProcessState.String(), waitErr)
 }
 
 // checkAfterOwnedSocketRemoval is mixed proof, not a real Master lifetime.

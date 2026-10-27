@@ -120,13 +120,18 @@ The production launch inventory is explicit (all invoke SSH with BatchMode=yes):
 | Source | Actual launch methods |
 | --- | --- |
 | `internal/ssh/master.go` | `openConnection`, `checkConnection` |
-| `internal/ssh/forward.go` | `AddForward`, `CancelForward` |
 | `internal/docker/events.go` | `EventReader.stream` (owned by `Stream`) |
 | `internal/docker/inspect.go` | `InspectPorts`, `inspectPortsFromLabels` |
 | `internal/manager/manager.go` | `listRunning`, `hasTestInfrastructureLabel`, `validateDockerConnectivity`, `remoteDockerPingRunner.Ping` |
 
-The eleven launch sites have actual argv and individual native BatchMode-removal
-controls. A generic AST launch guard is deferred; this inventory is not a guarantee
+The nine launch sites have actual argv and individual native BatchMode-removal
+controls. `AddForward` and `CancelForward` instead use the gate-scoped, peer-verified
+mux connection; they do not launch helper SSH. Their unready-connection scenarios
+retain error/NotDispatched, context and NoPrompt assertions, plus a private
+invocation observer installed only after the native positive prompt control. Two
+counterfactual controls actually launch and join helper SSH while retaining
+BatchMode and forwarding suppression; the invocation-absence assertions must fail.
+A generic AST launch guard is deferred; this inventory is not a guarantee
 about arbitrary future launch sites. The ping cases also require a real event on
 the application's remote stream and no residual ping container, despite hostile
 local Docker endpoint settings. The unchanged production `alpine:latest` ping
@@ -140,12 +145,24 @@ are independently quoted; NUL is refused before launch. Marker-only mutations
 prove both boundaries are sensitive. This does not impose a strict hex-ID policy
 or repair separate malformed-event/short-ID display behavior.
 
-A separate bounded diagnostic step preserves source diffs/hashes and expected red
-outcomes for the accepted-A Master overlay and each individual BatchMode removal.
-These are not frozen-candidate passes: each must fail its named scenario for the
-expected reason, not a compile error or deadline kill. The script restores exact
-candidate source after every control. Cleanup results are retained alongside the
-scenario artifacts, without private keys or account configuration backups. The
+A separate bounded diagnostic step retains all fourteen controls: three historical
+policy overlays, nine individual BatchMode removals and two no-helper controls.
+The policy overlays derive only `StrictHostKeyChecking=accept-new` and
+`UserKnownHostsFile=/dev/null` from the verified immutable accepted-A Master, then
+inject those options into the current `Master.openConnection`. They preserve its
+current interfaces, lifecycle, authentication and forwarding suppression; this is
+not historical whole-file execution or optional test-key injection.
+
+These are not frozen-candidate passes: each must execute and fail its named
+scenario for the expected reason, not a compile/load error, skip or deadline kill.
+Every row snapshots candidate bytes/mode, records its actual diff/hash and pipeline
+statuses, restores and verifies source/index state, then requires the selected
+restored scenario to pass. The EXIT receipt records restoration even after failure
+and never replaces the primary error with cleanup success. Local unit tests run
+the actual script with isolated command boundaries, including invalid evidence and
+restoration failures; they do not substitute for the hosted SSH counterfactuals.
+Cleanup results are retained alongside the scenario artifacts, without private keys
+or account configuration backups. The
 same disposable runner also exercises the documented Make fixture lifecycle:
 up, a named Manager test in its per-invocation runtime HOME, down, a second up,
 both real stability cases, and down. Named PASS guards reject skips; uncertain

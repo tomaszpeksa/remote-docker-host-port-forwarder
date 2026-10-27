@@ -871,7 +871,6 @@ func (m *Manager) reconcileConnection(ctx context.Context, connection *ssh.Forwa
 	if m.stopping.Load() {
 		return context.Canceled
 	}
-	retired := connection.Generation() != m.retiredGeneration
 	m.invalidateRetired(connection.Generation())
 	if !connection.Ready() {
 		return fmt.Errorf("SSH connection unavailable")
@@ -881,7 +880,7 @@ func (m *Manager) reconcileConnection(ctx context.Context, connection *ssh.Forwa
 	}
 	m.discovery.mu.Lock()
 	captured := m.discovery.request
-	full := retired || captured > m.discovery.attempted
+	full := captured > m.discovery.attempted
 	m.discovery.mu.Unlock()
 	defer func() {
 		m.discovery.mu.Lock()
@@ -909,6 +908,12 @@ func (m *Manager) invalidateRetired(generation uint64) {
 		})
 	}
 	m.retiredGeneration = generation
+	// Retirement invalidation is immediate, but restoration remains owed even
+	// when this observation is unavailable. A ready attempt consumes only its
+	// captured request, using the existing eventless reconciliation timer.
+	m.discovery.mu.Lock()
+	m.requestReconcile()
+	m.discovery.mu.Unlock()
 }
 
 func (m *Manager) reconcileLocked(ctx context.Context, connection *ssh.Forwarding) error {

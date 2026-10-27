@@ -82,8 +82,12 @@ func forwardingSubscribed(h *discoveryOwned) {
 }
 
 func TestManagerForwardingOwnedCancellation(t *testing.T) {
-	for _, pending := range []bool{false, true} {
-		t.Run(map[bool]string{false: "FailedCancel", true: "PendingOwnedStop"}[pending], func(t *testing.T) {
+	for _, scenario := range []struct {
+		name             string
+		pending, restart bool
+	}{{name: "FailedCancel"}, {name: "PendingOwnedStop", pending: true}, {name: "RestartDuringClose", restart: true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			pending := scenario.pending
 			h := newDiscoveryOwned(t)
 			forwardingRetirement(t, h)
 			t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
@@ -101,6 +105,18 @@ func TestManagerForwardingOwnedCancellation(t *testing.T) {
 			attempts := make(chan struct{}, 1)
 			h.m.reconciler.TestCancelFailure(port, &cancelFault, attempts)
 			h.m.reconciler.TestProbeFailure(port, &probeFault)
+			var freezeEvents atomic.Bool
+			if scenario.restart {
+				realStream := h.m.discovery.openStream
+				h.m.discovery.openStream = func(ctx context.Context, deliver func(context.Context, docker.Event) error) <-chan docker.StreamResult {
+					return realStream(ctx, func(ctx context.Context, event docker.Event) error {
+						if freezeEvents.Load() {
+							return nil
+						}
+						return deliver(ctx, event)
+					})
+				}
+			}
 			realList := h.m.discovery.list
 			var lists atomic.Int64
 			h.m.discovery.list = func(ctx context.Context) ([]string, error) {
@@ -148,15 +164,61 @@ func TestManagerForwardingOwnedCancellation(t *testing.T) {
 			})
 			require.Empty(t, h.m.history.GetAll(), "S12_NO_HISTORY_BEFORE_CANCEL_ACK")
 			require.NoError(t, h.active(sibling))
-			// The only release is at the exact helper call seam. No event, inventory
-			// success, target lifecycle action, desired mutation or manual Apply follows.
+			if scenario.restart {
+				h.verify(marker)
+				h.f.Docker("start", marker)
+				h.wait("S12_RESTART_DESIRE_ACKNOWLEDGED_DURING_CLOSE", func() error {
+					for _, owner := range h.m.state.GetDesired() {
+						if owner.ContainerID == marker && len(owner.Ports) == 1 && owner.Ports[0] == port && !h.m.hasUnapplied() {
+							return nil
+						}
+					}
+					return fmt.Errorf("restart not yet handled and acknowledged")
+				})
+				freezeEvents.Store(true)
+				h.wait("S12_RESTART_ACCEPTED_EVENTS_DRAINED", func() error {
+					h.m.discovery.mu.Lock()
+					defer h.m.discovery.mu.Unlock()
+					if h.m.discovery.pending != 0 || h.m.discovery.request != h.m.discovery.attempted {
+						return fmt.Errorf("accepted restart still pending")
+					}
+					return nil
+				})
+				target.body += "-restarted"
+				h.f.Docker("exec", backend, "sh", "-c", "printf %s "+target.body+" > /usr/share/nginx/html/index.html")
+				require.NoError(t, forwardingHTTP(h, target), "old listener still owned before CLOSE acknowledgment")
+			}
+			// The only release is at the exact helper call seam. No delivered event,
+			// successful inventory, desired mutation or manual Apply follows.
 			cancelFault.Store(false)
-			h.wait("S12_CANCEL_RETRY_WITHOUT_EVENT", func() error {
-				if err := h.absent(target); err != nil {
-					return err
-				}
-				return h.active(sibling)
-			})
+			if scenario.restart {
+				h.wait("S12_RESTART_CLOSE_ACK_BEFORE_REOPEN", func() error {
+					resource, ok := h.m.state.Resource(marker, port)
+					if !ok || resource.Remove || resource.Ownership != state.ForwardUnowned || len(h.m.history.GetAll()) != 1 {
+						return fmt.Errorf("old CLOSE not yet acknowledged: %+v", resource)
+					}
+					if forwardingHTTP(h, target) == nil {
+						return fmt.Errorf("old listener still serves HTTP after CLOSE")
+					}
+					return h.active(sibling)
+				})
+				h.wait("S12_RESTART_DURING_CLOSE_EVENTLESS_HTTP", func() error {
+					if err := h.active(target); err != nil {
+						return err
+					}
+					return h.active(sibling)
+				})
+				require.NoError(t, forwardingHTTP(h, target))
+				require.False(t, h.m.hasUnapplied())
+				t.Logf("S12_RESTART_CLOSE_PROOF full-ID=%s old-CLOSE-ack-before-new-OPEN=true delivered-events-after-release=0 list_calls=%d history=1", marker, lists.Load())
+			} else {
+				h.wait("S12_CANCEL_RETRY_WITHOUT_EVENT", func() error {
+					if err := h.absent(target); err != nil {
+						return err
+					}
+					return h.active(sibling)
+				})
+			}
 			h.history(target, created)
 			t.Logf("S12_CANCEL_PROOF pending=%t marker=%s backend=%s generation=%d tuple=127.0.0.1:%d:localhost:%d sibling=%s", pending, marker, backend, resource.Generation, port, port, sibling.id)
 			h.close()

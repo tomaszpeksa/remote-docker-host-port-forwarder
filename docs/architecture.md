@@ -153,6 +153,10 @@ replies are never replayed or treated as absence; affected replacement waits for
 proven natural generation retirement, without retiring a shared Master to clear
 one forward. Unrelated ports can progress. Never-owned conflicts can be forgotten
 on stop without CLOSE. Confirmed terminal removal/retirement consumes history once.
+If the same owner restarts while a container-stop CLOSE is still owed, the old
+CLOSE must be acknowledged before a fresh unowned creation obligation is retained.
+That new obligation uses the existing one-second resource retry, not immediate
+reopening. Claimant-transfer and shutdown removals do not enable this renewal.
 
 The existing one-second reconciliation timer also schedules eligible resource
 work after a discovery request has been acknowledged. This permits eventless
@@ -203,10 +207,14 @@ Related code: internal/ssh/master.go
 
 ### Exponential backoff for port conflicts
 
-- Problem: local “address already in use” during forward creation
-- Strategy: retry AddForward with exponential backoff
-  - Base delay: 100ms; doubles each retry; max delay 10s; up to 5 attempts
-- Non-retryable errors fail fast; conflicts log guidance and continue with other ports
+- A rejected OPEN that specifically identifies a bind conflict uses the
+  five-attempt AddForward burst: base delay 100ms, doubling between attempts,
+  with a 10s delay cap.
+- A generic rejection such as `Port forwarding failed` is not address-in-use
+  evidence. It returns without the conflict burst; the retained unowned resource
+  becomes eligible for the ordinary one-second reconciliation retry.
+- Unknown effects are not replayed. Eligible resource retries progress without a
+  new event or changed inventory, and unrelated ports continue independently.
 
 Related code: internal/ssh/forward.go (AddForwardWithRetry)
 
@@ -242,8 +250,10 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
    replacement and retains cleanup responsibility.
 3. `Changes()` coalesces connection-change notifications. Manager observes the
    current generation inside `WithForwarding`, invalidates retired actual state,
-   then runs Diff/Apply only if the connection is ready. Desired ports and logical
-   creation times survive recovery; notification ordering is not state authority.
+   then runs Diff/Apply only if the connection is ready. Invalidation records a
+   restoration request even while unavailable; a later ready attempt at the same
+   generation consumes that request. Desired ports and logical creation times
+   survive recovery; notification ordering is not state authority.
 
 ### Shutdown and cleanup
 

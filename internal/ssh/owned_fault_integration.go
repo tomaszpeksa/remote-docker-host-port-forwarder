@@ -24,6 +24,30 @@ func (m *Master) TestWaitReceipt() func() (int, error, *os.ProcessState) {
 	}
 }
 
+// TestRetireExitedChild isolates the unavailable interval after an already
+// reaped owned child. It never signals a live child or starts its successor.
+func (m *Master) TestRetireExitedChild(ctx context.Context) error {
+	err := m.WithConnection(ctx, func(_ uint64, _ bool) error {
+		owned := m.connection
+		if owned == nil {
+			return fmt.Errorf("no retained child to retire")
+		}
+		select {
+		case <-owned.done:
+		default:
+			return fmt.Errorf("retained child is still live")
+		}
+		if owned.cmd.ProcessState == nil {
+			return fmt.Errorf("original Wait did not prove child completion")
+		}
+		return m.retireConnection()
+	})
+	if err == nil {
+		m.notify()
+	}
+	return err
+}
+
 // TestKillOwnedChild exists only in the integration test build, never in public
 // binaries. It faults the retained handle under the real gate; it does not
 // request recovery, publish retirement or signal a mux-reported numeric PID.

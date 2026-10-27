@@ -11,6 +11,8 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/util"
 )
 
+const containerStopped = "container stopped"
+
 type Action struct {
 	Type        string
 	ContainerID string
@@ -148,7 +150,7 @@ func (r *Reconciler) Apply(ctx context.Context, connection *ssh.Forwarding, acti
 				return first
 			}
 			if kind == "remove" && action.EndReason == "" {
-				action.EndReason = "container stopped"
+				action.EndReason = containerStopped
 				for _, add := range actions {
 					if add.Type == "add" && add.Port == action.Port && add.ContainerID != action.ContainerID {
 						action.EndReason = fmt.Sprintf("port claimed by %s", safeLogID(add.ContainerID))
@@ -203,7 +205,19 @@ func (r *Reconciler) apply(ctx context.Context, connection *ssh.Forwarding, acti
 	if resource.Remove {
 		effect, err := r.cancelForward(ctx, connection, resource.Port, resource.RemotePort, r.logger)
 		if effect == ssh.ForwardAcknowledged {
-			r.finish(resource)
+			if r.finish(resource) && resource.EndReason == containerStopped && (action.EndReason == "" || action.EndReason == containerStopped) {
+				// A stop's old CLOSE can outlive a same-owner restart. Only
+				// positive cleanup permits retaining its new creation work;
+				// claimant transfer and shutdown do not authorize this renewal.
+				desired := desiredPorts(r.state.GetDesired())
+				if desired[resource.ContainerID][resource.Port] {
+					resource.Ownership = state.ForwardUnowned
+					resource.Remove, resource.EndReason = false, ""
+					resource.RetryAt = r.now().Add(time.Second)
+					r.state.SetResource(resource)
+					r.state.MarkPending(resource.ContainerID, resource.Port, "waiting to restore restarted container")
+				}
+			}
 			return err
 		}
 		if effect == ssh.ForwardUncertain {
@@ -258,16 +272,18 @@ func (r *Reconciler) failed(resource state.ForwardResource, reason string, err e
 func (r *Reconciler) RetireBefore(generation uint64) {
 	at := r.now()
 	for _, forward := range r.state.RetireBefore(generation, at) {
-		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: at, EndReason: "container stopped", FinalStatus: forward.Status})
+		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: at, EndReason: containerStopped, FinalStatus: forward.Status})
 	}
 }
 
-func (r *Reconciler) finish(resource state.ForwardResource) {
+func (r *Reconciler) finish(resource state.ForwardResource) bool {
 	if forward, ok := r.state.FinishResource(resource); ok {
 		reason := resource.EndReason
 		if reason == "" {
-			reason = "container stopped"
+			reason = containerStopped
 		}
 		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: r.now(), EndReason: reason, FinalStatus: forward.Status})
+		return true
 	}
+	return false
 }

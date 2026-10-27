@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncertain cancellation, remove owned-pending listeners on stop, and retry known
   conflicts after release without another event. Unknown effects wait for proven
   natural Master retirement; terminal history is consumed once.
+- Retain desired restoration across an unavailable retired generation, and restore
+  a same-owner restart after its previously failed stop cancellation is positively
+  acknowledged, without requiring another event or changed inventory.
 
 - Pace clean Docker event-stream EOF with a cancelable one-second wait after
   accepted events drain and owned workers join. Preserve clean-EOF forgiveness,

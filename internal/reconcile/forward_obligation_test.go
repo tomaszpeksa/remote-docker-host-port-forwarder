@@ -141,6 +141,13 @@ func TestUnknownForwardEffectWaitsForNaturalRetirement(t *testing.T) {
 			require.NoError(t, run.apply(true))
 			require.Equal(t, before, run.calls(t), "unknown work must never replay")
 			require.Empty(t, run.history.GetAll())
+			if operation == "CLOSE" {
+				run.st.SetDesired("owner", []int{run.port})
+				require.NoError(t, run.apply(false))
+				require.Equal(t, before, run.calls(t), "same-owner restart cannot reopen an uncertain CLOSE")
+				require.Empty(t, run.history.GetAll())
+				run.st.SetDesired("owner", nil)
+			}
 			run.st.SetDesired("replacement", []int{run.port})
 			require.Error(t, run.apply(false))
 			require.Equal(t, before, run.calls(t), "unknown owner blocks same-port replacement")
@@ -151,6 +158,39 @@ func TestUnknownForwardEffectWaitsForNaturalRetirement(t *testing.T) {
 			require.Equal(t, "active", run.st.GetByContainer("replacement")[0].Status)
 			require.Len(t, run.history.GetAll(), 1, "retirement consumes stopped unknown once")
 		})
+	}
+}
+
+func TestOnlyContainerStopCanRetainRestart(t *testing.T) {
+	for _, reason := range []string{"port claimed by replacement", "rdhpf shutdown"} {
+		for _, retainedStop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retained-stop=%t", reason, retainedStop), func(t *testing.T) {
+				run := obligationFixture(t)
+				run.st.SetDesired("owner", []int{run.port})
+				require.NoError(t, run.apply(false))
+				if retainedStop {
+					failure := run.fail(t, "CLOSE")
+					run.st.SetDesired("owner", nil)
+					require.Error(t, run.apply(false))
+					run.st.SetDesired("owner", []int{run.port})
+					run.now = run.now.Add(time.Second)
+					require.NoError(t, os.Remove(failure))
+				}
+				require.NoError(t, run.master.WithForwarding(context.Background(), func(connection *ssh.Forwarding) error {
+					return run.r.Apply(context.Background(), connection, []Action{{Type: "remove", ContainerID: "owner", Port: run.port, RemotePort: run.port, EndReason: reason}})
+				}))
+				require.Empty(t, run.st.GetResources(), "current non-stop cleanup must not create renewal work")
+				require.Empty(t, run.st.GetActual())
+				require.Len(t, run.history.GetAll(), 1)
+				if retainedStop {
+					require.Equal(t, containerStopped, run.history.GetAll()[0].EndReason, "original stop history remains truthful")
+				} else {
+					require.Equal(t, reason, run.history.GetAll()[0].EndReason)
+				}
+				_, pending := run.r.NextRetry()
+				require.False(t, pending)
+			})
+		}
 	}
 }
 

@@ -313,7 +313,7 @@ jobs:
           test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0 || exit 1
           jq -e -s --rawfile required .github/required-forwarding-tests.txt '
             . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
-            ($names | length) == 5 and all($names[]; . as $name |
+            ($names | length) == 7 and all($names[]; . as $name |
               [$events[] | select(.Test == $name)] as $matches |
               ($matches | last | .Action) == "pass") and
             all($events[] | select(.Action == "run"); . as $run |

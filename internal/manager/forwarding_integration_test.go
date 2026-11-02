@@ -92,12 +92,10 @@ func TestManagerForwardingOwnedCancellation(t *testing.T) {
 			forwardingRetirement(t, h)
 			t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
 			port := forwardingPort(t)
-			backend := h.f.Backend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
-			t.Cleanup(h.close)
+			backend := h.transferBackend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
 			body := "forwarding-" + h.f.Alias + "-target"
 			h.f.Docker("exec", backend, "sh", "-c", "printf %s "+body+" > /usr/share/nginx/html/index.html")
-			marker := h.f.Backend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
-			t.Cleanup(h.close)
+			marker := h.transferBackend(sshfixture.Alpine, 0, fmt.Sprintf("rdhpf.forward.%d=ignored", port))
 			target := discoveryBackend{id: marker, body: body, port: port}
 			sibling := h.backend()
 			var cancelFault, probeFault atomic.Bool
@@ -323,8 +321,7 @@ func TestManagerForwardingOwnedConfiguredCollateral(t *testing.T) {
 	absent(target.port)
 	assertSuppressed()
 	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
-	marker := h.f.Backend(sshfixture.Alpine, 0, "rdhpf.test-infrastructure=true", fmt.Sprintf("rdhpf.forward.%d=ignored", local))
-	t.Cleanup(h.close)
+	marker := h.transferBackend(sshfixture.Alpine, 0, "rdhpf.test-infrastructure=true", fmt.Sprintf("rdhpf.forward.%d=ignored", local))
 	ports, err := docker.InspectPorts(h.ctx, h.f.Host, h.m.sshMaster.ControlPath(), marker)
 	require.NoError(t, err)
 	require.Equal(t, []int{local}, ports)

@@ -116,8 +116,7 @@ func (h *discoveryOwned) backend() discoveryBackend {
 	require.NoError(h.t, err)
 	port := listener.Addr().(*net.TCPAddr).Port
 	require.NoError(h.t, listener.Close())
-	id := h.f.Backend(sshfixture.Nginx, port)
-	h.t.Cleanup(h.close)
+	id := h.transferBackend(sshfixture.Nginx, port)
 	body := fmt.Sprintf("discovery-%s-%d", h.f.Alias, port)
 	h.f.Docker("exec", id, "sh", "-c", "printf %s "+body+" > /usr/share/nginx/html/index.html")
 	h.verify(id)

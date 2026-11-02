@@ -9,8 +9,10 @@ import (
 	"time"
 )
 
+// ErrPortInUse identifies a local port binding conflict.
 var ErrPortInUse = errors.New("port already in use")
 
+// PortConflictError describes a local port binding conflict.
 type PortConflictError struct {
 	Port        int
 	ContainerID string

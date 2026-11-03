@@ -287,6 +287,30 @@ func (r *Reconciler) RetireBefore(generation uint64) {
 	}
 }
 
+// FinalizeShutdown consumes actual records once. The final owner must first
+// prove whole-Master retirement and join every state producer. This is not a
+// substitute for an uncertain CLOSE during continued operation.
+func (r *Reconciler) FinalizeShutdown() {
+	reasons := make(map[string]map[int]string)
+	for _, resource := range r.state.GetResources() {
+		if reasons[resource.ContainerID] == nil {
+			reasons[resource.ContainerID] = make(map[int]string)
+		}
+		reasons[resource.ContainerID][resource.Port] = resource.EndReason
+	}
+	for _, id := range r.state.GetAllContainers() {
+		r.state.SetDesired(id, nil)
+	}
+	at := r.now()
+	for _, forward := range r.state.InvalidateConnection(at) {
+		reason := reasons[forward.ContainerID][forward.Port]
+		if reason == "" {
+			reason = "rdhpf shutdown"
+		}
+		r.history.Add(state.HistoryEntry{ContainerID: forward.ContainerID, Port: forward.Port, StartedAt: forward.CreatedAt, EndedAt: at, EndReason: reason, FinalStatus: forward.Status})
+	}
+}
+
 func (r *Reconciler) finish(resource state.ForwardResource) bool {
 	if forward, ok := r.state.FinishResource(resource); ok {
 		reason := resource.EndReason

@@ -847,10 +847,7 @@ func TestManagerWatchdogParentCancelPreflightCleanup(t *testing.T) {
 	}
 	require.NoError(t, r.err, "parent cancellation retains nil convention")
 	require.Empty(t, r.stream, "parent-canceled preflight must not open replacement")
-	desired := r.m.state.GetDesired()
-	require.Len(t, desired, 1)
-	require.Equal(t, discoveryA, desired[0].ContainerID)
-	require.Empty(t, desired[0].Ports, "PARENT_PREFLIGHT_MUST_CLEAN_DESIRED")
+	require.Empty(t, r.m.state.GetDesired(), "PARENT_PREFLIGHT_MUST_CLEAN_DESIRED: no remaining obligations")
 	require.Empty(t, r.m.state.GetActual(), "PARENT_PREFLIGHT_MUST_CLEAN_ACTUAL")
 	shutdownRecords := 0
 	for _, entry := range r.m.history.GetAll() {
@@ -858,7 +855,8 @@ func TestManagerWatchdogParentCancelPreflightCleanup(t *testing.T) {
 			shutdownRecords++
 		}
 	}
-	require.Equal(t, 1, shutdownRecords, "cleanup must run exactly once; reconciliation also records container stopped")
+	require.Equal(t, 1, shutdownRecords, "terminal history must be consumed exactly once")
+	require.Len(t, r.m.history.GetAll(), 1)
 	_, fatal := r.m.watchdog.terminalResult()
 	require.False(t, fatal)
 }

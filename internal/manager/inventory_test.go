@@ -44,7 +44,7 @@ func TestManagerDiscoveryInventory(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, committed, "PARTIAL_AUTHORITY")
 		require.True(t, changed)
-		require.ElementsMatch(t, []state.ContainerPorts{{ContainerID: discoveryA, Ports: []int{}}, {ContainerID: discoveryB, Ports: []int{2002}}, {ContainerID: discoveryC, Ports: []int{3001}}}, m.state.GetDesired(), "PARTIAL_PRESERVE")
+		require.ElementsMatch(t, []state.ContainerPorts{{ContainerID: discoveryB, Ports: []int{2002}}, {ContainerID: discoveryC, Ports: []int{3001}}}, m.state.GetDesired(), "PARTIAL_PRESERVE")
 		require.True(t, c.incomplete)
 		fail = false
 		c = m.inventoryPass(context.Background(), inventoryFence{}, c.cursor)

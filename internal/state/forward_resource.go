@@ -93,6 +93,7 @@ func (s *State) RetireBefore(generation uint64, at time.Time) []ForwardState {
 		if len(s.actual[id]) == 0 {
 			delete(s.actual, id)
 		}
+		s.pruneEmptyDesired(id)
 	}
 	return retired
 }
@@ -115,5 +116,6 @@ func (s *State) FinishResource(resource ForwardResource) (ForwardState, bool) {
 	if len(s.actual[resource.ContainerID]) == 0 {
 		delete(s.actual, resource.ContainerID)
 	}
+	s.pruneEmptyDesired(resource.ContainerID)
 	return forward, ok
 }

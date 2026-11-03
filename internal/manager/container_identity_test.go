@@ -78,7 +78,7 @@ exit 91
 				require.NoError(t, m.handleStopEvent(ctx, docker.Event{Type: kind, ContainerID: identityContainerID}, 0))
 				require.NoError(t, m.triggerReconcile(ctx))
 				require.Empty(t, st.GetActual(), "full-ID stop must remove startup owner")
-				require.Equal(t, []state.ContainerPorts{{ContainerID: identityContainerID, Ports: []int{}}}, st.GetDesired())
+				require.Empty(t, st.GetDesired(), "acknowledged stop retires empty desired owner")
 				require.Len(t, history.GetAll(), 1)
 				require.Equal(t, identityContainerID, history.GetAll()[0].ContainerID)
 				require.Equal(t, "container stopped", history.GetAll()[0].EndReason)

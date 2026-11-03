@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/muxstub"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/pipehold"
 )
 
 // TestMasterProcess is an owned, non-network SSH stand-in. Each process has its
@@ -68,6 +69,9 @@ func TestMasterProcess(t *testing.T) {
 		}
 		fmt.Fprint(os.Stderr, line)
 		conn.Close()
+		if gate := os.Getenv("S13_CHECK_PIPE"); gate != "" {
+			require.NoError(t, pipehold.Send(gate))
+		}
 		os.Exit(0)
 	}
 	if gate := os.Getenv("S06_START_GATE"); gate != "" {

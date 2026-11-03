@@ -335,10 +335,10 @@ func TestManagerDiscoveryOwnedInventoryOverlap(t *testing.T) {
 	b := h.backend()
 	h.wait("DISCOVERY_ACCEPTED_EVENTS", func() error {
 		desired := h.m.state.GetDesired()
-		emptyA, fullB := false, false
+		emptyA, fullB := true, false
 		for _, cp := range desired {
-			if cp.ContainerID == a.id && len(cp.Ports) == 0 {
-				emptyA = true
+			if cp.ContainerID == a.id {
+				emptyA = len(cp.Ports) == 0
 			}
 			if cp.ContainerID == b.id && len(cp.Ports) == 1 && cp.Ports[0] == b.port {
 				fullB = true
@@ -354,7 +354,11 @@ func TestManagerDiscoveryOwnedInventoryOverlap(t *testing.T) {
 	close(release)
 	<-completed
 	require.False(t, listExpired.Load(), "owned overlap gate exceeded list observation budget")
-	require.Contains(t, h.m.state.GetDesired(), state.ContainerPorts{ContainerID: a.id, Ports: []int{}}, "DISCOVERY_STALE_FENCE")
+	for _, cp := range h.m.state.GetDesired() {
+		if cp.ContainerID == a.id {
+			require.Empty(t, cp.Ports, "DISCOVERY_STALE_FENCE: retired empty owners may be pruned, never resurrected")
+		}
+	}
 	require.Contains(t, h.m.state.GetDesired(), state.ContainerPorts{ContainerID: b.id, Ports: []int{b.port}}, "DISCOVERY_STALE_FENCE")
 	close(next)
 	h.wait("DISCOVERY_OVERLAP_TRAFFIC", func() error {

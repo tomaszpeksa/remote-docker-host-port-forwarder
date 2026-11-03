@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Use one Manager-owned shutdown finalizer across startup, monitoring, signals and
+  failures. Share one first-terminal ten-second budget through original child and
+  worker joins, history/publication cleanup, admission and signal completion;
+  repeated requests never renew it. Cleanup errors or overruns remain exit 1.
+- Retire the whole private Master once during terminal teardown, then consume
+  actual history once after retirement and producer quiescence. Preserve original
+  creation times/reasons, interrupt and join accepted status socket handlers, and
+  prune empty desired owners only when no actual/resource obligations remain.
+  Noncooperative completion retains ownership until proved; no hard forced-exit
+  guarantee, foreign cleanup or orphan adoption is introduced.
+
 - Manage only app-created local TCP forwards. Suppress configured forwarding and
   Tunnel on all app SSH invocations without discarding host aliases, authentication
   or trust. Use bounded, peer-verified mux-v4 OPEN/CLOSE replies instead of SSH

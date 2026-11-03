@@ -20,6 +20,7 @@ func (e *ShutdownError) Unwrap() error { return e.cause }
 type managerShutdown struct {
 	mu                sync.Mutex
 	ctx               context.Context
+	parent            context.Context
 	cancel            context.CancelFunc
 	parentStop        func() bool
 	parentDone        chan struct{}
@@ -37,6 +38,7 @@ func (m *Manager) bindLifetimeLocked(parent context.Context) {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 	}
 	if s.parentStop == nil {
+		s.parent = parent
 		s.parentDone = make(chan struct{})
 		s.parentStop = context.AfterFunc(parent, func() { defer close(s.parentDone); m.requestShutdown() })
 	}
@@ -84,7 +86,15 @@ func (m *Manager) beginRun(parent context.Context) (context.Context, chan struct
 	s := &m.shutdown
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done != nil || s.runDone != nil {
+	if s.runDone != nil {
+		return nil, nil, fmt.Errorf("manager monitoring unavailable")
+	}
+	if s.done != nil {
+		// An initial Run after cancellation of Open's bound lifetime starts no
+		// workers, but its caller still owns joining that same finalizer.
+		if s.openDone != nil && s.parent.Err() != nil {
+			return nil, nil, s.parent.Err()
+		}
 		return nil, nil, fmt.Errorf("manager monitoring unavailable")
 	}
 	s.runDone = make(chan struct{})

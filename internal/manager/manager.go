@@ -361,6 +361,11 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	parent := ctx
 	ctx, runDone, err := m.beginRun(parent)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// beginRun has released the lifecycle mutex; finalization needs it.
+			_, cleanupErr := m.Shutdown()
+			return errors.Join(err, cleanupErr)
+		}
 		return err
 	}
 	defer func() {

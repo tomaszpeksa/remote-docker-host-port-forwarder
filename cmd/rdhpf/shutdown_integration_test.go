@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -66,6 +67,7 @@ func TestShutdownOwnedCLISignals(t *testing.T) {
 				}
 				return true
 			}
+			var accounting sync.Once
 			for generation := 0; generation < 2; generation++ {
 				var logs watchdogCLILog
 				cmd := exec.Command(binary, "run", "--host", f.Host, "--log-level", "debug")
@@ -77,17 +79,8 @@ func TestShutdownOwnedCLISignals(t *testing.T) {
 				go func() { result = cmd.Wait(); close(done) }()
 				// Own release and original CLI Wait before any traffic assertion.
 				t.Cleanup(func() {
-					select {
-					case <-done:
-					default:
-						_ = cmd.Process.Signal(syscall.SIGTERM)
-						f.Close()
-					}
-					select {
-					case <-done:
-					case <-time.After(15 * time.Second):
-						t.Fatal("S13_CLI_JOIN_PENDING: retain fixture ownership")
-					}
+					defer func() { accounting.Do(func() { f.SchedulePingAccounting(false, true) }) }()
+					joinShutdownCLI(t, cmd, done, func() {}, f.Close, time.After(15*time.Second))
 				})
 				require.Eventually(t, traffic, 20*time.Second, 25*time.Millisecond, "two real HTTP tokens before shutdown/successor")
 				requested := time.Now()

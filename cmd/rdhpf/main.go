@@ -134,7 +134,7 @@ func runMain(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create logger
-	logger := logging.NewLogger(cfg.LogLevel)
+	logger := withShutdownProofLogger(logging.NewLogger(cfg.LogLevel))
 	logger.Info("rdhpf starting",
 		"version", version,
 		"host", cfg.Host)
@@ -268,6 +268,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) (deadline
 			runErr = errors.Join(runErr, cleanupErr)
 		}
 	}()
+	bindShutdownProof(logger, mgr)
 	if err := mgr.Open(ctx); err != nil {
 		return time.Time{}, fmt.Errorf("failed to open SSH master: %w", err)
 	}

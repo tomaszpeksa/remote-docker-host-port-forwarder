@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -18,6 +19,59 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/statefile"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/pipehold"
 )
+
+func TestRunCanceledAfterOpenJoinsSameFinalizer(t *testing.T) {
+	for _, cleanupFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint(cleanupFailure), func(t *testing.T) {
+			m, _, _ := recoveryManager(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			require.NoError(t, m.Open(ctx))
+			entered, release, gateDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			go func() {
+				gateDone <- m.sshMaster.WithConnection(context.Background(), func(uint64, bool) error { close(entered); <-release; return nil })
+			}()
+			<-entered
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			var result error
+			done := make(chan struct{})
+			t.Cleanup(func() { unblock(); <-gateDone; <-done; _, _ = m.Shutdown() })
+			cause := fmt.Errorf("owned publication cleanup failed")
+			if cleanupFailure {
+				m.shutdown.publicationErr = cause
+			}
+			cancel()
+			m.requestShutdown()
+			go func() { result = m.Run(ctx, nil); close(done) }()
+			select {
+			case <-done:
+				t.Error("canceled Open-to-Run refusal abandoned the same finalizer")
+			case <-time.After(50 * time.Millisecond):
+			}
+			unblock()
+			<-done
+			require.ErrorIs(t, result, context.Canceled, "bound lifetime cancellation must remain the primary refusal cause")
+			require.Equal(t, cleanupFailure, errors.Is(result, cause), "genuine cleanup failure must remain attached")
+			require.Nil(t, m.stateWriter)
+			require.Nil(t, m.socketServer)
+			require.False(t, m.watchdog.armed)
+		})
+	}
+}
+
+func TestRunDuplicateCancellationStillUnavailable(t *testing.T) {
+	r := newWatchdogRun(t)
+	r.start()
+	r.awaitStream(t)
+	r.cancel()
+	<-r.done
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := r.m.Run(ctx, nil)
+	require.ErrorContains(t, err, "monitoring unavailable")
+	require.NotErrorIs(t, err, context.Canceled, "duplicate Run is not an initial canceled transition")
+}
 
 func TestRunAdmissionFailureRetiresConstructedMaster(t *testing.T) {
 	m, _, _ := recoveryManager(t)

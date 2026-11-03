@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -84,7 +85,7 @@ func setupManager(t *testing.T, ctx context.Context, sshHost string) *manager.Ma
 	t.Helper()
 
 	// Create logger
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 
 	// Admit before any SSH/publication. Cleanup registration order keeps this last.
 	owner := admitPublisher(t, sshHost)

@@ -196,7 +196,7 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	// #nosec G204 -- Fixed ssh executable, separate port/control-path operands, destination after --; no local shell.
 	// Host and inherited SSH configuration are operator-configured; this is not general SSH input/configuration safety.
 	cmd := exec.Command("ssh", args...)
-	cmd.Stderr = os.Stderr
+	// Nil Stderr sends untrusted child diagnostics to the null device without a copier.
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start SSH ControlMaster: %w", err)
 	}
@@ -233,7 +233,7 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 				return errors.Join(err, m.retireConnection())
 			}
 			m.ready = true
-			m.logger.Info("SSH ControlMaster established", "controlPath", m.controlPath, "pid", cmd.Process.Pid)
+			m.logger.Info("SSH ControlMaster established", "pid", cmd.Process.Pid)
 			return nil
 		} else if !os.IsNotExist(err) {
 			return errors.Join(err, m.retireConnection())
@@ -560,7 +560,7 @@ func (m *Master) StartHealthMonitor(ctx context.Context, interval time.Duration)
 				return
 			case <-ticker.C:
 				if err := m.EnsureAlive(healthCtx); err != nil {
-					m.logger.Warn("SSH health check failed", "error", err)
+					m.logger.Warn("SSH health check failed")
 				} else {
 					m.logger.Debug("SSH health check passed")
 				}

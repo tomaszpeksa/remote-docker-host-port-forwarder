@@ -248,7 +248,7 @@ parent remains alive is separate and automatic.
 
 - `--host` string (required): SSH host in format `ssh://user@host`
 - `--log-level` string (default: `info`): `trace`, `debug`, `info`, `warn`, `error`
-- `--trace` (boolean): enable maximum verbosity (equivalent to `--log-level trace`)
+- `--trace` (boolean): select trace above environment/level flags; false forces nothing
 
 ### CLI flags (rdhpf status)
 
@@ -258,6 +258,27 @@ parent remains alive is separate and automatic.
 ### Environment variables
 
 - `RDHPF_LOG_LEVEL=debug`
+- `RDHPF_ENABLE_LABEL_PORTS=1` (optional; see below)
+
+Log precedence is true trace > nonempty environment > supplied flag/default INFO.
+All supplied levels must be valid, including shadowed inputs. Existing names are
+case-insensitive without trimming. Empty environment is absent; explicitly empty
+`--log-level` is invalid. Environment is captured once before resource acquisition.
+There is no `RDHPF_HOST` environment setting; use `--host`.
+
+### Label port hints
+
+Label hints are opt-in: `RDHPF_ENABLE_LABEL_PORTS` unset/empty/`0` means off, `1`
+means on, and any other value fails startup without trimming. The resolved choice
+applies to both event inspection and inventory; later environment changes do not
+alter it. Programmatic Config values are authoritative; validation is pure.
+
+A label `rdhpf.forward.8080=80` hints at SSH-side `localhost:8080`, not container
+port 80. Values are ignored, and the service may be unrelated to the labeled
+container. The current inspection fallback runs when no host ports were extracted
+from HostConfig.PortBindings; it does not yet certify runtime endpoint identity
+or absence of unsupported/malformed publications. Do not rely on labels to bypass
+that limitation or to discover container-network endpoints.
 
 ### Exit codes
 
@@ -300,7 +321,22 @@ configuration or remote-shell sanitizer.
 rdhpf run --host ssh://user@host --log-level debug
 rdhpf run --host ssh://user@host --trace
 ```
-Logs are structured; sensitive values are redacted. Use debug to diagnose port conflicts and reconciling actions.
+Logs use omission-first summaries, not a generic redaction filter. At every level,
+including trace, producers omit hosts/users/IPs/control paths, arbitrary payloads,
+wrapped error text and captured child output. The foreground SSH child writes its
+stderr to the null device, without an extra copy worker. Private parsing, error
+classification and owned-child joins remain intact.
+
+Safe operation/outcome, exit status, timing/counts, ports/PIDs and fixed conflict
+guidance remain. Docker ID prefixes appear only at the fixed Docker-result decode
+boundary with canonical full-ID shape; generic Manager IDs are omitted. Trace is
+still level -8, but currently emits the same production content as debug: no extra
+payload, goroutine or correlation instrumentation is promised.
+
+This intentionally loses detailed SSH/Docker explanations. Use normal external
+SSH/Docker commands privately when needed, and review their output before sharing.
+Diagnostics are not anonymous. Full functional status identities and schema are
+unchanged, and previously saved logs/history are not rewritten.
 
 ### Performance tuning
 
@@ -352,7 +388,7 @@ sudo systemctl start rdhpf
 
 - rdhpf binds only on `127.0.0.1` by design
 - Do not weaken SSH host key checking in production
-- Logs are structured with redaction, but review before sharing
+- Logs omit sensitive diagnostic inputs, but are not anonymous; review before sharing
 
 ### Monitoring
 

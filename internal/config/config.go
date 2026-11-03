@@ -2,9 +2,9 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/logging"
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
 )
 
@@ -13,12 +13,11 @@ type Config struct {
 	// Host is the SSH connection string in ssh://user@host format (required)
 	Host string
 
-	// LogLevel controls logging verbosity: debug, info, warn, error (default: "info")
+	// LogLevel controls verbosity: trace, debug, info, warn, error; empty means INFO.
 	LogLevel string
 
-	// EnableLabelPorts enables port discovery from rdhpf.forward.* labels
-	// This is primarily for testing scenarios where containers don't publish ports
-	// Set via RDHPF_ENABLE_LABEL_PORTS=1 environment variable
+	// EnableLabelPorts enables same-number SSH-side localhost hints from label
+	// suffixes. Values are ignored; the hinted service may be unrelated.
 	EnableLabelPorts bool
 }
 
@@ -26,7 +25,7 @@ type Config struct {
 func (c *Config) Validate() error {
 	// Host is required and must be ssh:// format
 	if c.Host == "" {
-		return fmt.Errorf("host is required (set via --host flag or RDHPF_HOST env var)")
+		return fmt.Errorf("host is required (set via --host flag)")
 	}
 	if !strings.HasPrefix(c.Host, "ssh://") {
 		return fmt.Errorf("host must be in ssh://user@host format, got: %s", c.Host)
@@ -43,8 +42,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("IPv6 addresses must use bracket notation: ssh://user@[::1]:port")
 	}
 
-	// Read label ports flag from environment
-	c.EnableLabelPorts = os.Getenv("RDHPF_ENABLE_LABEL_PORTS") == "1"
+	if c.LogLevel != "" {
+		if _, err := logging.ParseLevel(c.LogLevel); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

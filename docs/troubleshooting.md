@@ -338,10 +338,16 @@ docker inspect <container_id> --format '{{json .HostConfig.PortBindings}}'
    ```
    Look for messages like:
    ```
-   container ports discovered: containerID=abc123 ports=[8080, 9090]
+   msg="container ports discovered" ports="[8080 9090]"
    ```
 
 ---
+
+Diagnostic summaries omit raw SSH/Docker output and host/user/path details at all
+levels, including trace. Trace currently has debug-equivalent content. For a
+failed connection, check your configured SSH trust/authentication privately with
+normal external SSH commands; do not disable host-key checking to obtain logs.
+Review external output and status identities before sharing them.
 
 ## Orphaned SSH Processes
 

@@ -33,9 +33,17 @@ var (
 )
 
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if executeCommand(context.Background()) != nil {
 		os.Exit(1)
 	}
+}
+
+func executeCommand(ctx context.Context) error {
+	err := rootCmd.ExecuteContext(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", cliErrorMessage(err))
+	}
+	return err
 }
 
 var rootCmd = &cobra.Command{
@@ -45,7 +53,8 @@ var rootCmd = &cobra.Command{
 		"to your local machine via SSH.\n\n" +
 		"When a container starts with published ports, rdhpf detects it and establishes \n" +
 		"SSH port forwards so you can access the services on localhost.",
-	SilenceUsage: true,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 var runCmd = &cobra.Command{
@@ -108,36 +117,15 @@ func init() {
 	}
 }
 func runMain(cmd *cobra.Command, args []string) error {
-	// Validate host format
-	if flagHost == "" {
-		return fmt.Errorf("--host is required")
+	// Capture environment exactly once, before any owner, command or worker.
+	envLevel, envLabels := os.Getenv("RDHPF_LOG_LEVEL"), os.Getenv("RDHPF_ENABLE_LABEL_PORTS")
+	cfg, level, err := resolveRunConfig(flagHost, flagLogLevel, cmd.Flags().Changed("log-level"), flagTrace, envLevel, envLabels)
+	if err != nil {
+		return err
 	}
 
-	// Determine log level (check environment variable, then flag, then trace flag)
-	logLevel := flagLogLevel
-	if envLevel := os.Getenv("RDHPF_LOG_LEVEL"); envLevel != "" {
-		logLevel = envLevel
-	}
-	if flagTrace {
-		logLevel = "trace"
-	}
-
-	// Create base config
-	cfg := &config.Config{
-		Host:     flagHost,
-		LogLevel: logLevel,
-	}
-
-	// Validate config
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
-	}
-
-	// Create logger
-	logger := withShutdownProofLogger(logging.NewLogger(cfg.LogLevel))
-	logger.Info("rdhpf starting",
-		"version", version,
-		"host", cfg.Host)
+	logger := withShutdownProofLogger(logging.NewLogger(level))
+	logger.Info("rdhpf starting")
 
 	// Create context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
@@ -286,7 +274,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Validate format
 	validFormats := map[string]bool{"table": true, "json": true, "yaml": true}
 	if !validFormats[flagFormat] {
-		return fmt.Errorf("invalid format: %s (valid: table, json, yaml)", flagFormat)
+		return &cliGuidance{message: "invalid format (valid: table, json, yaml)"}
 	}
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
@@ -295,7 +283,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Observe the socket or stored snapshot within one shared budget.
 	forwards, err := getActiveForwards(ctx, flagHost)
 	if err != nil {
-		return fmt.Errorf("failed to get active forwards: %w", err)
+		return &cliGuidance{message: "status snapshot unavailable or invalid", cause: err}
 	}
 
 	// Sort by most recent activity (current forwards first, then by most recent end time for history)

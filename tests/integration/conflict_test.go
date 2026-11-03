@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func applyOwnedActions(ctx context.Context, master *ssh.Master, reconciler *reco
 func TestConflict_OccupiedPort(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
@@ -111,7 +112,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 func TestConflict_PortReleased(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
@@ -193,7 +194,7 @@ func TestConflict_PortReleased(t *testing.T) {
 func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 

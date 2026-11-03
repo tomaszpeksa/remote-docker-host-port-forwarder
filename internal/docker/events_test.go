@@ -67,12 +67,15 @@ printf tail >&2
 	var logs streamLogBuffer
 	_, errs := collectStream(t, "ssh://owned-fixture.invalid", "/unused", slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	require.Empty(t, errs)
+	found := false
 	for _, record := range logs.records(t) {
-		if stderr, ok := record["stderr"].(string); ok {
-			require.LessOrEqual(t, len(stderr), 64<<10, "STREAM_DIAGNOSTICS_BOUNDED")
-			require.True(t, strings.HasSuffix(stderr, "tail"))
+		require.NotContains(t, record, "stderr", "STREAM_DIAGNOSTICS_PRIVATE")
+		if record["msg"] == "docker events stream ended" {
+			found = true
+			require.Equal(t, true, record["diagnostics_truncated"], "STREAM_DIAGNOSTICS_BOUNDED")
 		}
 	}
+	require.True(t, found)
 }
 
 func TestEventReaderCompletionOwnsWorkers(t *testing.T) {
@@ -219,8 +222,9 @@ func TestEventReaderStreamMalformedThenValid(t *testing.T) {
 			}
 			require.Len(t, warnings, 1)
 			require.Equal(t, "WARN", warnings[0]["level"])
-			require.Equal(t, malformed, warnings[0]["line"])
-			require.NotEmpty(t, warnings[0]["error"])
+			require.NotContains(t, warnings[0], "line")
+			require.NotContains(t, warnings[0], "error")
+			require.Equal(t, float64(1), warnings[0]["rejected"])
 		})
 	}
 }
@@ -251,10 +255,9 @@ func TestEventReaderStreamArgvAndLogging(t *testing.T) {
 			require.Len(t, commandLogs, 1)
 			record := commandLogs[0]
 			require.Equal(t, "INFO", record["level"])
-			require.Equal(t, tc.destination, record["host"])
-			require.Equal(t, tc.port, record["port"])
-			require.Equal(t, `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`, record["dockerCmd"])
-			require.Equal(t, fmt.Sprint(want), record["args"])
+			for _, key := range []string{"host", "port", "dockerCmd", "args"} {
+				require.NotContains(t, record, key)
+			}
 		})
 	}
 }
@@ -274,7 +277,7 @@ func TestEventReaderStreamCommandFailure(t *testing.T) {
 	}
 	require.Len(t, failures, 1)
 	require.Equal(t, float64(7), failures[0]["exitCode"])
-	require.Equal(t, "fixture failure\n", failures[0]["stderr"])
+	require.NotContains(t, failures[0], "stderr")
 }
 
 func TestEventReaderCanceledBeforeStart(t *testing.T) {

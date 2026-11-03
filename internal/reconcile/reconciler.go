@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -32,13 +33,6 @@ type Reconciler struct {
 	now           func() time.Time
 	probe         func(context.Context, int) error
 	cancelForward func(context.Context, *ssh.Forwarding, int, int, *slog.Logger) (ssh.ForwardEffect, error)
-}
-
-func safeLogID(id string) string {
-	if len(id) >= 12 {
-		return id[:12]
-	}
-	return id
 }
 
 // NewReconciler binds resource transitions and consumptive history to the supplied stores.
@@ -159,7 +153,7 @@ func (r *Reconciler) Apply(ctx context.Context, connection *ssh.Forwarding, acti
 				action.EndReason = containerStopped
 				for _, add := range actions {
 					if add.Type == "add" && add.Port == action.Port && add.ContainerID != action.ContainerID {
-						action.EndReason = fmt.Sprintf("port claimed by %s", safeLogID(add.ContainerID))
+						action.EndReason = "port claimed by another container"
 						break
 					}
 				}
@@ -252,7 +246,11 @@ func (r *Reconciler) apply(ctx context.Context, connection *ssh.Forwarding, acti
 			resource.Ownership = state.ForwardUnknown
 			return r.failed(resource, "forward creation effect uncertain", err)
 		default:
-			r.state.MarkConflict(resource.ContainerID, resource.Port, fmt.Sprint(err))
+			reason := "forward creation failed"
+			if errors.Is(err, ssh.ErrPortInUse) {
+				reason = fmt.Sprintf("port %d already in use locally", resource.Port)
+			}
+			r.state.MarkConflict(resource.ContainerID, resource.Port, reason)
 			resource.RetryAt = r.now().Add(time.Second)
 			r.state.SetResource(resource)
 			return err

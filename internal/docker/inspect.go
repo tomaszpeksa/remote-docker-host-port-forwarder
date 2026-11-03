@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -33,6 +32,7 @@ type portBindingJSON map[string][]struct {
 //   - sshHost: SSH connection string in ssh://user@host format
 //   - controlPath: Path to SSH control socket
 //   - containerID: Full or short container ID
+//   - enableLabelPorts: Resolved opt-in to same-number SSH-side localhost hints
 //
 // Returns:
 //   - Slice of published port numbers (integers)
@@ -42,12 +42,12 @@ type portBindingJSON map[string][]struct {
 // Example usage:
 //
 //	ctx := context.Background()
-//	ports, err := InspectPorts(ctx, "ssh://user@host", "/tmp/rdhpf-abc.sock", "container123")
+//	ports, err := InspectPorts(ctx, "ssh://user@host", "/tmp/rdhpf-abc.sock", "container123", false)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //	fmt.Printf("Published ports: %v\n", ports) // [8080, 9090]
-func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string) ([]int, error) {
+func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string, enableLabelPorts bool) ([]int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -137,9 +137,9 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 	}
 
 	// If no published ports found, check for rdhpf.forward.* labels
-	// This supports test containers that don't publish ports to avoid conflicts
-	// Only enabled if RDHPF_ENABLE_LABEL_PORTS=1 is set
-	if len(ports) == 0 && os.Getenv("RDHPF_ENABLE_LABEL_PORTS") == "1" {
+	// Values are ignored and the target service may be unrelated to this container.
+	// Enablement is resolved by the caller, never read from ambient environment.
+	if len(ports) == 0 && enableLabelPorts {
 		labelPorts, err := inspectPortsFromLabels(ctx, sshHost, controlPath, containerID)
 		if err != nil {
 			return nil, err
@@ -156,8 +156,8 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 }
 
 // inspectPortsFromLabels retrieves port mappings from rdhpf.forward.* labels.
-// Labels format: rdhpf.forward.LOCAL_PORT=CONTAINER_PORT
-// Returns the LOCAL_PORT values (what to forward to on localhost).
+// Labels format: rdhpf.forward.HOST_PORT=ignored
+// Returns suffixes as same-number SSH-side localhost host-port hints.
 func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, containerID string) ([]int, error) {
 	sshHostClean, port, err := ssh.ParseHost(sshHost)
 	if err != nil {

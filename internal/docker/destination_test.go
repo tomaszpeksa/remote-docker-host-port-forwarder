@@ -37,7 +37,7 @@ func TestDockerDestinationBoundary(t *testing.T) {
 					require.Empty(t, got)
 					require.Empty(t, errs)
 				case "ports":
-					got, err := InspectPorts(ctx, tc.host, "/control socket", "abc123def456")
+					got, err := InspectPorts(ctx, tc.host, "/control socket", "abc123def456", false)
 					require.NoError(t, err)
 					require.Empty(t, got)
 				case "labels":

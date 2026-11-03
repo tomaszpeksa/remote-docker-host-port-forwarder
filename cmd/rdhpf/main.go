@@ -69,8 +69,8 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show status of active port forwards",
 	Long: "Display the current status of all active port forwards.\n\t\n" +
-		"This command queries the SSH ControlMaster to determine which forwards\n" +
-		"are currently active and displays them in the requested format.",
+		"This command reads the local status socket or a stored snapshot.\n" +
+		"Stored active state does not verify that rdhpf or application traffic is running.",
 	RunE: runStatus,
 }
 
@@ -289,10 +289,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid format: %s (valid: table, json, yaml)", flagFormat)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 	defer cancel()
 
-	// Get active forwards from SSH ControlMaster
+	// Observe the socket or stored snapshot within one shared budget.
 	forwards, err := getActiveForwards(ctx, flagHost)
 	if err != nil {
 		return fmt.Errorf("failed to get active forwards: %w", err)
@@ -338,34 +338,40 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 // getActiveForwards queries status via socket or state file
 func getActiveForwards(ctx context.Context, host string) ([]status.Forward, error) {
-	// Try socket first (real-time)
-	client, err := socket.NewClient(host)
-	if err == nil {
-		snapshot, err := client.GetStatus()
-		if err == nil {
-			return convertSnapshotToForwards(snapshot), nil
-		}
-		// Socket failed, fall back to file
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-
-	// Fallback to state file
+	client, err := socket.NewClient(host)
+	if err != nil {
+		return nil, errors.New("status socket unavailable")
+	}
+	snapshot, socketErr := client.GetStatusContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if socketErr == nil {
+		return convertSnapshotToForwards(snapshot), nil
+	}
+	absent := errors.Is(socketErr, os.ErrNotExist) || errors.Is(socketErr, syscall.ECONNREFUSED)
 	reader, err := statefile.NewReader(host)
 	if err != nil {
-		return nil, fmt.Errorf("no running rdhpf instance found: %w", err)
+		return nil, errors.New("status file unavailable")
 	}
-
-	snapshot, err := reader.Read()
+	snapshot, err = reader.ReadContext(ctx)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && absent {
 			return []status.Forward{}, nil
 		}
-		return nil, fmt.Errorf("failed to read state file: %w", err)
+		return nil, errors.New("status snapshot unavailable or invalid")
 	}
 
 	// Check staleness
 	if snapshot.IsStale() {
 		age := time.Since(snapshot.UpdatedAt)
-		fmt.Fprintf(os.Stderr, "Warning: State is %v old (rdhpf may not be running)\n",
+		fmt.Fprintf(os.Stderr, "Warning: stale state is %v old; rdhpf is not verified running\n",
 			age.Round(time.Second))
 	}
 

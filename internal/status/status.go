@@ -87,7 +87,8 @@ func FormatTable(forwards []Forward) string {
 	sb.WriteString(strings.Repeat("-", 100))
 	sb.WriteString("\n")
 
-	// Rows
+	// Rows share one observation time.
+	now := time.Now()
 	for _, f := range forwards {
 		// Truncate container ID to 16 chars or first 12 chars
 		containerID := f.ContainerID
@@ -101,10 +102,14 @@ func FormatTable(forwards []Forward) string {
 
 		port := fmt.Sprintf("%d", f.LocalPort)
 		status := f.State
-		started := formatTimeAgo(f.Duration, f.IsHistory)
+		startedAge := f.Duration
+		if f.IsHistory && f.EndedAt != nil {
+			startedAge += now.Sub(*f.EndedAt)
+		}
+		started := formatTimeAgo(startedAge)
 		ended := "-"
 		if f.EndedAt != nil {
-			ended = formatTimeAgo(time.Since(*f.EndedAt), false)
+			ended = formatTimeAgo(now.Sub(*f.EndedAt))
 		}
 		reason := f.Reason
 
@@ -142,7 +147,7 @@ func FormatYAML(forwards []Forward) string {
 }
 
 // formatTimeAgo formats a duration as "X ago" for display
-func formatTimeAgo(d time.Duration, isLifetime bool) string {
+func formatTimeAgo(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds ago", int(d.Seconds()))
 	}

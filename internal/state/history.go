@@ -22,7 +22,7 @@ type History struct {
 	entries []HistoryEntry
 	maxSize int
 	maxAge  time.Duration
-	mu      sync.RWMutex
+	mu      sync.Mutex
 }
 
 // NewHistory creates a new History instance with default limits:
@@ -46,8 +46,11 @@ func (h *History) Add(entry HistoryEntry) {
 	// Add to end
 	h.entries = append(h.entries, entry)
 
-	// Trim entries older than maxAge
-	now := time.Now()
+	h.trim(time.Now())
+}
+
+// trim requires mu and removes entries at the exact retention boundary.
+func (h *History) trim(now time.Time) {
 	cutoff := now.Add(-h.maxAge)
 
 	filtered := make([]HistoryEntry, 0, len(h.entries))
@@ -67,8 +70,9 @@ func (h *History) Add(entry HistoryEntry) {
 // GetAll returns all history entries as a copy.
 // The returned slice is safe to modify without affecting the internal state.
 func (h *History) GetAll() []HistoryEntry {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.trim(time.Now())
 
 	result := make([]HistoryEntry, len(h.entries))
 	copy(result, h.entries)
@@ -85,8 +89,9 @@ func (h *History) Clear() {
 
 // Count returns the current number of history entries.
 func (h *History) Count() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.trim(time.Now())
 
 	return len(h.entries)
 }

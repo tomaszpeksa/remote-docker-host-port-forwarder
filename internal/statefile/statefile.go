@@ -1,6 +1,7 @@
 package statefile
 
 import (
+	"errors"
 	"time"
 
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
@@ -97,4 +98,15 @@ func FromHistoryEntry(he state.HistoryEntry) HistorySnapshot {
 func (sf *StateFile) IsStale() bool {
 	age := time.Since(sf.UpdatedAt)
 	return age > MaxStateAge
+}
+
+// Validate rejects incompatible snapshots without exposing their contents.
+func (sf *StateFile) Validate(host string) error {
+	if sf.Version != CurrentVersion {
+		return errors.New("unsupported status snapshot version")
+	}
+	if sf.Host != host {
+		return errors.New("status snapshot host mismatch")
+	}
+	return nil
 }

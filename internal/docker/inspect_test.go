@@ -72,7 +72,11 @@ func TestInspectPortsBindings(t *testing.T) {
 				require.ElementsMatch(t, tc.want, got)
 			}
 			// Exactly one invocation: empty results must not consult ambient label settings.
-			require.Len(t, argv(), 7)
+			gotArgs := argv()
+			require.Len(t, gotArgs, 11)
+			require.Equal(t, []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", "/control socket", "--", "docker@fixture.invalid"}, gotArgs[:10])
+			require.Contains(t, gotArgs[10], "HostConfig.PortBindings")
+			require.Contains(t, gotArgs[10], eventContainerID)
 		})
 	}
 }
@@ -82,8 +86,8 @@ func TestInspectPortsArgv(t *testing.T) {
 		name, host string
 		want       []string
 	}{
-		{"default_port", "ssh://docker@fixture.invalid", []string{"-o", "BatchMode=yes", "-S", "/control socket", "--", "docker@fixture.invalid"}},
-		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-o", "BatchMode=yes", "-S", "/control socket", "-p", "2222", "--", "user@fixture.invalid"}},
+		{"default_port", "ssh://docker@fixture.invalid", []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", "/control socket", "--", "docker@fixture.invalid"}},
+		{"explicit_port", "ssh://user@fixture.invalid:2222", []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", "/control socket", "-p", "2222", "--", "user@fixture.invalid"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			argv := installFakeSSH(t, `{}`, "", 0)

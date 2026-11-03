@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +105,11 @@ func TestSSHTrust(t *testing.T) {
 					return
 				}
 				require.NoError(t, err)
-				require.NoError(t, ssh.AddForward(ctx, m.ControlPath(), f.Host, port, port, slog.Default()))
+				require.NoError(t, m.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+					effect, err := ssh.AddForward(ctx, connection, port, port, slog.Default())
+					require.Equal(t, ssh.ForwardAcknowledged, effect)
+					return err
+				}))
 				client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}}
 				response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 				require.NoError(t, err)
@@ -243,7 +248,9 @@ func TestInspectNamedLabelFallback(t *testing.T) {
 	f.Configure("yes", f.PublicKey, "", f.Key, "no")
 	id := f.Backend(sshfixture.Alpine, 0, "rdhpf.forward.18090=80")
 	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
-	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", f.Alias + "-0"}} {
+	name := strings.TrimPrefix(f.Docker("inspect", "--format", "{{.Name}}", id), "/")
+	require.Equal(t, id, f.Docker("inspect", "--format", "{{.Id}}", name))
+	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", name}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()

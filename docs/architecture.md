@@ -121,13 +121,53 @@ Process:
    - If owned by others → remove from current owner, then add for new owner ("last event wins")
    - If already owned by same container → no-op (idempotent)
 4. For any port no longer in desired → remove
-5. Apply add/remove actions through SSH `-O forward` / `-O cancel`
+5. Apply add/remove actions through the gate-scoped, same-FD mux forwarding helper.
 
 Properties:
 - Idempotent: repeated application yields no changes after convergence
 - Batched per container: all ports added/removed together for lifecycle consistency
 
 Related code: internal/reconcile/reconciler.go, internal/ssh/forward.go
+
+### App-only forwarding obligations
+
+Every app SSH launch supplies `ClearAllForwardings=yes` and `Tunnel=no`, including
+Master startup/checks, Docker reads/events and ordinary missing-mux read fallbacks.
+Host aliases, configured authentication/trust and forced BatchMode remain in use;
+external SSH commands are unchanged. There is no startup configuration parser.
+
+`Master.WithForwarding` supplies a concrete capability valid only inside the
+existing lifecycle gate. Each OPEN/CLOSE uses the same kernel-peer-verified Unix
+FD for bounded mux-v4 HELLO and one correlated request for the exact tuple
+`127.0.0.1:local:localhost:remote`. No mutation subprocess or SSH fallback exists.
+Not-dispatched, rejected, acknowledged and uncertain effects are distinct.
+An OPEN_OK reply can be idempotent: it does not prove exclusive creation. Ownership
+relies on the cooperative private-Master/sole-producer boundary and resource ledger,
+not protection from a same-user process deliberately issuing its own mux requests.
+
+The ledger stores owner, tuple and generation separately from public readiness.
+Acknowledged OPEN is recorded before probing; owned-pending retry probes rather
+than repeating OPEN, and stopping owned-pending work still requires CLOSE. Failed
+CLOSE retains the obligation and produces no terminal history. Unknown/partial/lost
+replies are never replayed or treated as absence; affected replacement waits for
+proven natural generation retirement, without retiring a shared Master to clear
+one forward. Unrelated ports can progress. Never-owned conflicts can be forgotten
+on stop without CLOSE. Confirmed terminal removal/retirement consumes history once.
+If the same owner restarts while a container-stop CLOSE is still owed, the old
+CLOSE must be acknowledged before a fresh unowned creation obligation is retained.
+That new obligation uses the existing one-second resource retry, not immediate
+reopening. Claimant-transfer and shutdown removals do not enable this renewal.
+A superseding non-stop cleanup restriction persists across deferred or failed
+CLOSE attempts independently of the original terminal-history reason.
+
+The existing one-second reconciliation timer also schedules eligible resource
+work after a discovery request has been acknowledged. This permits eventless
+conflict-release and known failed-cancel retries without changing S09 request
+capture/acknowledgement or the existing candidate-selection policy. Public status
+remains readiness information, not an authoritative cleanup ledger.
+
+Related code: internal/ssh/mux_forward.go, internal/state/forward_resource.go,
+internal/reconcile/reconciler.go, internal/manager/discovery.go.
 
 ### Debouncing (200ms window)
 
@@ -169,10 +209,14 @@ Related code: internal/ssh/master.go
 
 ### Exponential backoff for port conflicts
 
-- Problem: local “address already in use” during forward creation
-- Strategy: retry AddForward with exponential backoff
-  - Base delay: 100ms; doubles each retry; max delay 10s; up to 5 attempts
-- Non-retryable errors fail fast; conflicts log guidance and continue with other ports
+- A rejected OPEN that specifically identifies a bind conflict uses the
+  five-attempt AddForward burst: base delay 100ms, doubling between attempts,
+  with a 10s delay cap.
+- A generic rejection such as `Port forwarding failed` is not address-in-use
+  evidence. It returns without the conflict burst; the retained unowned resource
+  becomes eligible for the ordinary one-second reconciliation retry.
+- Unknown effects are not replayed. Eligible resource retries progress without a
+  new event or changed inventory, and unrelated ports continue independently.
 
 Related code: internal/ssh/forward.go (AddForwardWithRetry)
 
@@ -187,7 +231,7 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
 3. Manager:
    - Starts Docker event stream over SSH (start/die/stop)
    - Starts independent bounded startup inventory/audits (partial desired merge)
-4. Reconciler computes add actions and applies via SSH -O forward
+4. Reconciler computes add actions and applies via the owned mux forwarding capability
 5. State reflects active forwards; logs emitted with correlation IDs
 
 ### Event processing
@@ -207,15 +251,18 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
    Proven retirement advances the generation; uncertain retirement blocks
    replacement and retains cleanup responsibility.
 3. `Changes()` coalesces connection-change notifications. Manager observes the
-   current generation inside `WithConnection`, invalidates retired actual state,
-   then runs Diff/Apply only if the connection is ready. Desired ports and logical
-   creation times survive recovery; notification ordering is not state authority.
+   current generation inside `WithForwarding`, invalidates retired actual state,
+   then runs Diff/Apply only if the connection is ready. Invalidation records a
+   restoration request even while unavailable; a later ready attempt at the same
+   generation consumes that request. Desired ports and logical creation times
+   survive recovery; notification ordering is not state authority.
 
 ### Shutdown and cleanup
 
 1. SIGINT/SIGTERM cancels the run context. Manager fences and joins its recovery
    worker/health monitor; forwarding cleanup uses the lifecycle gate and sends
-   SSH `-O cancel` only when the transport is ready.
+   correlated mux CLOSE only when the transport is ready; failed/unknown effects
+   remain obligations rather than being announced as removed.
 2. Final status publication and socket pathname cleanup are joined before
    publisher admission is released. This is not a join of every socket handler.
 3. CLI cleanup calls Master `Close`, which signals the retained child with SIGTERM,

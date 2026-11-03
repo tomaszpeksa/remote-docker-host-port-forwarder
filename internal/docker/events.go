@@ -79,7 +79,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 	}
 	dockerCmd := `docker events --format '{{json .}}' --filter type=container --filter event=start --filter event=die --filter event=stop`
 	remoteCmd := fmt.Sprintf("sh -c %q", dockerCmd)
-	args := []string{"-o", "BatchMode=yes", "-S", r.controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", r.controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

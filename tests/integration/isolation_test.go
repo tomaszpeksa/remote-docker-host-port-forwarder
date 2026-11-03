@@ -341,7 +341,11 @@ func TestIsolationMasterProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	require.NoError(t, m.Open(ctx))
-	require.NoError(t, ssh.AddForward(ctx, m.ControlPath(), host, port, port, slog.Default()))
+	require.NoError(t, m.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
+		effect, err := ssh.AddForward(ctx, connection, port, port, slog.Default())
+		require.Equal(t, ssh.ForwardAcknowledged, effect)
+		return err
+	}))
 	require.NoError(t, m.Check())
 	ready, err := json.Marshal(map[string]any{"isolation_ready": m.ControlPath(), "pid": os.Getpid()})
 	require.NoError(t, err)

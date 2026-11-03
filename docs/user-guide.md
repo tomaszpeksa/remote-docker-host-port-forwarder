@@ -17,7 +17,7 @@ This guide helps you install, configure, and use rdhpf for remote Docker develop
 - Local machine with OpenSSH client (ssh) on PATH
 - Remote Docker host reachable over SSH (ssh://user@host) with key-based auth
 - Docker installed on the remote host
-- Optional: Go 1.27.2+ to build from source; new macOS binaries require macOS 13+.
+- Optional: Go 1.27.3+ to build from source; new macOS binaries require macOS 13+.
   Repository development uses the pinned [project tools](../CONTRIBUTING.md#initial-setup).
 
 ### Install
@@ -56,7 +56,7 @@ sudo mv rdhpf /usr/local/bin/
 # Windows - extract zip and add to PATH
 ```
 
-#### From Source (Go 1.27.2+)
+#### From Source (Go 1.27.3+)
 
 ```bash
 go install github.com/tomaszpeksa/remote-docker-host-port-forwarder/cmd/rdhpf@latest

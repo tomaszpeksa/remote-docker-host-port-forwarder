@@ -11,7 +11,7 @@ auto_install = false
 GOTOOLCHAIN = "local"
 
 [tools]
-"core:go" = "1.27.2"
+"core:go" = "1.27.3"
 "aqua:golangci/golangci-lint" = "2.14.0"
 "aqua:jqlang/jq" = "1.8.2"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"

@@ -39,7 +39,7 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	t.Logf("host Docker create client/server:\n%s", f.Docker("version"))
 	t.Logf("application Docker client/server:\n%s", remoteDocker("version"))
 	t.Logf("owned server packages:\n%s", f.Docker("exec", f.Container, "apk", "info", "-v"))
-	require.Equal(t, "29.8.2", remoteDocker("version", "--format", "{{.Client.Version}}"))
+	require.Equal(t, "29.9.2", remoteDocker("version", "--format", "{{.Client.Version}}"))
 	require.Empty(t, os.Getenv("DOCKER_API_VERSION"), "preserve API negotiation")
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	require.NoError(t, err)

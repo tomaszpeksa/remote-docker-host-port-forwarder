@@ -1,0 +1,268 @@
+package reconcile
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/ssh"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
+	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/testutil/muxstub"
+)
+
+func TestMuxProcess(t *testing.T) { muxstub.Process(t) }
+
+type obligationRun struct {
+	r       *Reconciler
+	st      *state.State
+	history *state.History
+	master  *ssh.Master
+	port    int
+	dir     string
+	now     time.Time
+}
+
+func obligationFixture(t *testing.T) *obligationRun {
+	t.Helper()
+	dir := muxstub.Install(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	master, err := ssh.NewMaster("ssh://fixture.invalid", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, master.Close(), "owned Master Wait before fixture retirement") })
+	require.NoError(t, master.Open(context.Background()))
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	run := &obligationRun{st: state.NewState(), history: state.NewHistory(), master: master, port: listener.Addr().(*net.TCPAddr).Port, dir: dir, now: time.Now()}
+	run.r = NewReconciler(run.st, run.history, logger)
+	run.r.now = func() time.Time { return run.now }
+	return run
+}
+func (r *obligationRun) apply(retry bool) error {
+	return r.master.WithForwarding(context.Background(), func(connection *ssh.Forwarding) error {
+		r.r.RetireBefore(connection.Generation())
+		actions := r.r.RetryActions()
+		if !retry {
+			add, remove := r.r.Diff()
+			actions = append(remove, add...)
+		}
+		return r.r.Apply(context.Background(), connection, actions)
+	})
+}
+func (r *obligationRun) calls(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.dir, "calls"))
+	if os.IsNotExist(err) {
+		return ""
+	}
+	require.NoError(t, err)
+	return string(b)
+}
+func (r *obligationRun) fail(t *testing.T, operation string) string {
+	t.Helper()
+	path := filepath.Join(r.dir, "fail-"+operation)
+	// The Master inherits variables at startup, so use its existing parent-owned
+	// control directory rather than mutating a child environment after Open.
+	require.NoError(t, os.WriteFile(path, []byte("injected rejection"), 0600))
+	return path
+}
+
+func TestFailedCancelKeepsOwnership(t *testing.T) {
+	run := obligationFixture(t)
+	run.st.SetDesired("owner", []int{run.port})
+	require.NoError(t, run.apply(false))
+	created := run.st.GetByContainer("owner")[0].CreatedAt
+	failure := run.fail(t, "CLOSE")
+	run.st.SetDesired("owner", nil)
+	require.Error(t, run.apply(false), "FAILED_CANCEL_MUST_RETAIN_OBLIGATION")
+	require.Len(t, run.st.GetByContainer("owner"), 1, "FAILED_CANCEL_MUST_RETAIN_OBLIGATION")
+	require.Empty(t, run.history.GetAll(), "NO_HISTORY_BEFORE_CONFIRMED_REMOVAL")
+	resource, ok := run.st.Resource("owner", run.port)
+	require.True(t, ok)
+	require.Equal(t, state.ForwardOwned, resource.Ownership)
+	require.True(t, resource.Remove)
+	require.Equal(t, created, run.st.GetByContainer("owner")[0].CreatedAt)
+	require.NoError(t, os.Remove(failure))
+	before := run.calls(t)
+	require.NoError(t, run.apply(true))
+	require.Equal(t, before, run.calls(t), "retry not eligible yet")
+	run.now = run.now.Add(time.Second)
+	require.NoError(t, run.apply(true))
+	require.Empty(t, run.st.GetResources())
+	require.Empty(t, run.st.GetActual())
+	require.Len(t, run.history.GetAll(), 1)
+	require.NoError(t, run.apply(false))
+	require.Len(t, run.history.GetAll(), 1)
+}
+
+func TestPendingOwnedForwardRemovedOnStop(t *testing.T) {
+	run := obligationFixture(t)
+	run.r.probe = func(context.Context, int) error { return fmt.Errorf("injected readiness observation failure") }
+	run.st.SetDesired("owner", []int{run.port})
+	require.Error(t, run.apply(false))
+	require.Equal(t, "pending", run.st.GetByContainer("owner")[0].Status)
+	run.now = run.now.Add(time.Second)
+	require.Error(t, run.apply(true))
+	require.Equal(t, 1, strings.Count(run.calls(t), "OPEN"), "owned pending must retry probe, not OPEN")
+	run.st.SetDesired("owner", nil)
+	run.now = run.now.Add(time.Second)
+	require.NoError(t, run.apply(false))
+	require.Contains(t, run.calls(t), "CLOSE", "OWNED_PENDING_STOP_MUST_CANCEL")
+	require.Empty(t, run.st.GetActual())
+	require.Len(t, run.history.GetAll(), 1)
+}
+
+func TestUnknownForwardEffectWaitsForNaturalRetirement(t *testing.T) {
+	for _, operation := range []string{"OPEN", "CLOSE"} {
+		t.Run(operation, func(t *testing.T) {
+			run := obligationFixture(t)
+			run.st.SetDesired("owner", []int{run.port})
+			if operation == "CLOSE" {
+				require.NoError(t, run.apply(false))
+				run.st.SetDesired("owner", nil)
+			}
+			lost := filepath.Join(run.dir, "lost-reply")
+			require.NoError(t, os.WriteFile(lost, nil, 0600))
+			require.Error(t, run.apply(false))
+			resource, ok := run.st.Resource("owner", run.port)
+			require.True(t, ok)
+			require.Equal(t, state.ForwardUnknown, resource.Ownership)
+			require.NoError(t, os.Remove(lost))
+			before := run.calls(t)
+			run.now = run.now.Add(time.Hour)
+			require.NoError(t, run.apply(true))
+			require.Equal(t, before, run.calls(t), "unknown work must never replay")
+			require.Empty(t, run.history.GetAll())
+			if operation == "CLOSE" {
+				run.st.SetDesired("owner", []int{run.port})
+				require.NoError(t, run.apply(false))
+				require.Equal(t, before, run.calls(t), "same-owner restart cannot reopen an uncertain CLOSE")
+				require.Empty(t, run.history.GetAll())
+				run.st.SetDesired("owner", nil)
+			}
+			run.st.SetDesired("replacement", []int{run.port})
+			require.Error(t, run.apply(false))
+			require.Equal(t, before, run.calls(t), "unknown owner blocks same-port replacement")
+			require.NoError(t, run.master.Close())
+			require.NoError(t, run.master.Open(context.Background()))
+			run.st.SetDesired("owner", nil)
+			require.NoError(t, run.apply(false))
+			require.Equal(t, "active", run.st.GetByContainer("replacement")[0].Status)
+			require.Len(t, run.history.GetAll(), 1, "retirement consumes stopped unknown once")
+		})
+	}
+}
+
+func TestOnlyContainerStopCanRetainRestart(t *testing.T) {
+	for _, reason := range []string{"port claimed by replacement", "rdhpf shutdown"} {
+		for _, retainedStop := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retained-stop=%t", reason, retainedStop), func(t *testing.T) {
+				run := obligationFixture(t)
+				run.st.SetDesired("owner", []int{run.port})
+				require.NoError(t, run.apply(false))
+				if retainedStop {
+					failure := run.fail(t, "CLOSE")
+					run.st.SetDesired("owner", nil)
+					require.Error(t, run.apply(false))
+					run.st.SetDesired("owner", []int{run.port})
+					run.now = run.now.Add(time.Second)
+					require.NoError(t, os.Remove(failure))
+				}
+				require.NoError(t, run.master.WithForwarding(context.Background(), func(connection *ssh.Forwarding) error {
+					return run.r.Apply(context.Background(), connection, []Action{{Type: "remove", ContainerID: "owner", Port: run.port, RemotePort: run.port, EndReason: reason}})
+				}))
+				require.Empty(t, run.st.GetResources(), "current non-stop cleanup must not create renewal work")
+				require.Empty(t, run.st.GetActual())
+				require.Len(t, run.history.GetAll(), 1)
+				if retainedStop {
+					require.Equal(t, containerStopped, run.history.GetAll()[0].EndReason, "original stop history remains truthful")
+				} else {
+					require.Equal(t, reason, run.history.GetAll()[0].EndReason)
+				}
+				_, pending := run.r.NextRetry()
+				require.False(t, pending)
+			})
+		}
+	}
+}
+
+func TestSupersedingClaimantSurvivesCloseRetry(t *testing.T) {
+	for _, rejectedAgain := range []bool{false, true} {
+		name := "BeforeRetryAt"
+		if rejectedAgain {
+			name = "RejectedAgain"
+		}
+		t.Run(name, func(t *testing.T) {
+			run := obligationFixture(t)
+			// This is transport-ledger proof, not HTTP or target-readiness proof.
+			run.r.probe = func(context.Context, int) error { return nil }
+			siblingPort := run.port%65535 + 1
+			run.st.SetDesired("owner", []int{run.port})
+			run.st.SetDesired("sibling", []int{siblingPort})
+			require.NoError(t, run.apply(false))
+			created := run.st.GetByContainer("owner")[0].CreatedAt
+			failure := run.fail(t, "CLOSE")
+			run.st.SetDesired("owner", nil)
+			require.Error(t, run.apply(false))
+			beforeTransfer := run.calls(t)
+			run.st.SetDesired("owner", []int{run.port})
+			run.st.SetDesired("replacement", []int{run.port})
+			if rejectedAgain {
+				run.now = run.now.Add(time.Second)
+			}
+			// Diff generates the actual claimant removal and competing add. No
+			// fabricated reason or resource mutation supplies the restriction.
+			require.Error(t, run.apply(false), "replacement must wait for owned cleanup")
+			if rejectedAgain {
+				require.Equal(t, 2, strings.Count(run.calls(t), "CLOSE"))
+			} else {
+				require.Equal(t, beforeTransfer, run.calls(t), "transfer cannot accelerate RetryAt")
+			}
+			resource, ok := run.st.Resource("owner", run.port)
+			require.True(t, ok)
+			require.True(t, resource.Remove)
+			require.Equal(t, containerStopped, resource.EndReason)
+			require.Empty(t, run.history.GetAll())
+			require.NoError(t, os.Remove(failure))
+			beforeRetry := run.calls(t)
+			require.NoError(t, run.apply(true))
+			require.Equal(t, beforeRetry, run.calls(t), "timer cannot accelerate RetryAt")
+			run.now = run.now.Add(time.Second)
+			require.NoError(t, run.apply(true))
+			_, exists := run.st.Resource("owner", run.port)
+			require.False(t, exists, "SUPERSEDING_CLAIMANT_MUST_SURVIVE_"+name)
+			require.Empty(t, run.st.GetByContainer("owner"))
+			require.Len(t, run.history.GetAll(), 1)
+			require.Equal(t, containerStopped, run.history.GetAll()[0].EndReason)
+			require.Equal(t, created, run.history.GetAll()[0].StartedAt)
+			require.Equal(t, "active", run.st.GetByContainer("replacement")[0].Status)
+			require.Equal(t, "active", run.st.GetByContainer("sibling")[0].Status)
+			require.Equal(t, 1, strings.Count(run.calls(t), fmt.Sprintf("OPEN %d %d\n", siblingPort, siblingPort)))
+			require.Equal(t, 2, strings.Count(run.calls(t), fmt.Sprintf("OPEN %d %d\n", run.port, run.port)))
+			run.now = run.now.Add(time.Second)
+			require.Empty(t, run.r.RetryActions(), "completed transfer must not retain old-owner retry work")
+			require.NoError(t, run.apply(true))
+			require.Len(t, run.history.GetAll(), 1)
+		})
+	}
+}
+
+func TestStoppedUnownedConflictNeverCancels(t *testing.T) {
+	run := obligationFixture(t)
+	run.fail(t, "OPEN")
+	run.st.SetDesired("owner", []int{run.port})
+	require.Error(t, run.apply(false))
+	run.st.SetDesired("owner", nil)
+	require.NoError(t, run.apply(false))
+	require.NotContains(t, run.calls(t), "CLOSE")
+	require.Empty(t, run.st.GetActual())
+	require.Len(t, run.history.GetAll(), 1)
+}

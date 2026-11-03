@@ -54,7 +54,7 @@ func TestRemoteDockerPing(t *testing.T) {
 				data, err := os.ReadFile(filepath.Join(dir, "ssh-args"))
 				require.NoError(t, err)
 				args := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
-				want := append([]string{"-o", "BatchMode=yes", "-S", master.ControlPath()}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", master.ControlPath()}, tc.port...)
 				want = append(want, "--", tc.destination)
 				require.Equal(t, want, args[:len(args)-1])
 				data, err = os.ReadFile(filepath.Join(dir, "docker-args"))

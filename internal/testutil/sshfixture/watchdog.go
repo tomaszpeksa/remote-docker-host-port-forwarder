@@ -216,7 +216,7 @@ func watchdogOptions(args []string) bool {
 				switch value {
 				case "BatchMode=yes":
 					batch = true
-				case "ControlMaster=yes", "ForkAfterAuthentication=no", "ControlPersist=no", "ServerAliveInterval=15", "ServerAliveCountMax=2", "TCPKeepAlive=yes", "ExitOnForwardFailure=yes":
+				case "ControlMaster=yes", "ForkAfterAuthentication=no", "ControlPersist=no", "ServerAliveInterval=15", "ServerAliveCountMax=2", "TCPKeepAlive=yes", "ExitOnForwardFailure=yes", "ClearAllForwardings=yes", "Tunnel=no":
 				default:
 					if !strings.HasPrefix(value, "ControlPath=") || !filepath.IsAbs(strings.TrimPrefix(value, "ControlPath=")) {
 						return false

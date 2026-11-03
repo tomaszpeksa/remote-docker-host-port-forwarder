@@ -187,7 +187,7 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	}
 	args := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 		"-o", "ControlPath=" + m.controlPath, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"}
+		"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -247,54 +247,68 @@ var masterPIDPattern = regexp.MustCompile(`(?m)^Master running \(pid=([0-9]+)\)\
 // child, and checks that the pathname did not change during connection. Never
 // trust a mux-reported PID as authority to signal or unlink anything.
 func (m *Master) associate(ctx context.Context) error {
-	if err := m.namespace.verify(); err != nil {
+	conn, err := m.associatedConnection(ctx)
+	if err != nil {
 		return err
+	}
+	return conn.Close()
+}
+
+// associatedConnection transfers the same peer-verified FD to its caller.
+func (m *Master) associatedConnection(ctx context.Context) (verified *net.UnixConn, err error) {
+	if err := m.namespace.verify(); err != nil {
+		return nil, err
 	}
 	c := m.connection
 	if c == nil {
-		return fmt.Errorf("no owned SSH child")
+		return nil, fmt.Errorf("no owned SSH child")
 	}
 	select {
 	case <-c.done:
-		return fmt.Errorf("owned SSH child exited")
+		return nil, fmt.Errorf("owned SSH child exited")
 	default:
 	}
 	before, err := os.Lstat(m.controlPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if before.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("SSH endpoint is not a socket")
+		return nil, fmt.Errorf("SSH endpoint is not a socket")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", m.controlPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer conn.Close()
-	pid, err := unixPeerPID(conn.(*net.UnixConn))
+	defer func() {
+		if verified == nil {
+			err = errors.Join(err, conn.Close())
+		}
+	}()
+	unixConn := conn.(*net.UnixConn)
+	pid, err := unixPeerPID(unixConn)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	after, err := os.Lstat(m.controlPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if pid != c.cmd.Process.Pid || !os.SameFile(before, after) || (c.socket != nil && !os.SameFile(c.socket, after)) {
-		return fmt.Errorf("SSH endpoint does not belong to the owned child")
+		return nil, fmt.Errorf("SSH endpoint does not belong to the owned child")
 	}
 	// Process.Signal uses the retained handle's done state as well as the
 	// kernel process. This also rejects the interval between Wait reaping the
 	// child and publishing done; a reused numeric PID is not ownership.
 	if err := c.cmd.Process.Signal(syscall.Signal(0)); err != nil {
-		return fmt.Errorf("owned SSH child no longer live: %w", err)
+		return nil, fmt.Errorf("owned SSH child no longer live: %w", err)
 	}
 	select {
 	case <-c.done:
-		return fmt.Errorf("owned SSH child exited during association")
+		return nil, fmt.Errorf("owned SSH child exited during association")
 	default:
 	}
 	c.socket = after
-	return nil
+	return unixConn, nil
 }
 
 func (m *Master) checkConnection(ctx context.Context) error {
@@ -307,7 +321,7 @@ func (m *Master) checkConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	args := []string{"-o", "BatchMode=yes", "-S", m.controlPath, "-O", "check"}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", m.controlPath, "-O", "check"}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

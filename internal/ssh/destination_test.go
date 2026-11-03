@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,44 +36,29 @@ func TestMasterDestinationBoundary(t *testing.T) {
 			require.NoError(t, err)
 			want := []string{"-MN", "-o", "ControlMaster=yes", "-o", "ForkAfterAuthentication=no", "-o", "ControlPersist=no",
 				"-o", "ControlPath=" + m.ControlPath(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
-				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"}
+				"-o", "TCPKeepAlive=yes", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no"}
 			want = append(want, tc.port...)
 			want = append(want, "--", tc.destination)
 			assert.Equal(t, want, strings.Split(string(data), "\n"))
 			require.NoError(t, m.Check())
 			data, err = os.ReadFile(filepath.Join(dir, "check-args"))
 			require.NoError(t, err)
-			want = append([]string{"-o", "BatchMode=yes", "-S", m.ControlPath(), "-O", "check"}, tc.port...)
+			want = append([]string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", m.ControlPath(), "-O", "check"}, tc.port...)
 			want = append(want, "--", tc.destination)
 			require.Equal(t, want, strings.Split(string(data), "\x00"))
 		})
 	}
 }
 
+// Forward control has no destination parser or handshake fallback anymore.
 func TestForwardDestinationBoundary(t *testing.T) {
-	for _, operation := range []string{"forward", "cancel"} {
-		for _, tc := range []struct {
-			name, host, destination string
-			port                    []string
-		}{
-			{"default", "ssh://docker@fixture.invalid", "docker@fixture.invalid", nil},
-			{"port", "ssh://user@fixture.invalid:2222", "user@fixture.invalid", []string{"-p", "2222"}},
-			{"ipv6", "ssh://user@[::1]:2222", "user@[::1]", []string{"-p", "2222"}},
-			{"option", "ssh://-oProxyCommand=false", "-oProxyCommand=false", nil},
-		} {
-			t.Run(operation+"/"+tc.name, func(t *testing.T) {
-				fake := installFakeSSH(t, sshResponse{})
-				call := AddForward
-				if operation == "cancel" {
-					call = CancelForward
-				}
-				require.NoError(t, call(forwardTestContext(t), "/control socket", tc.host, 15432, 5432, quietForwardLogger()))
-				want := append([]string{"-o", "BatchMode=yes", "-S", "/control socket"}, tc.port...)
-				want = append(want, "-O", operation, "-L", "127.0.0.1:15432:localhost:5432", "--", tc.destination)
-				require.Equal(t, [][]string{want}, fake.calls(t))
-			})
-		}
+	fake := installFakeSSH(t)
+	for _, call := range []func(context.Context, *Forwarding, int, int, *slog.Logger) (ForwardEffect, error){AddForward, CancelForward} {
+		effect, err := call(forwardTestContext(t), nil, 15432, 5432, quietForwardLogger())
+		require.Error(t, err)
+		require.Equal(t, ForwardNotDispatched, effect)
 	}
+	require.Empty(t, fake.calls(t), "forward helper must never launch ordinary SSH")
 }
 
 // -G exits after parsing; -F disables both user and system configuration. The

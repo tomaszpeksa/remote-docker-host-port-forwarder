@@ -37,7 +37,7 @@ while IFS='|' read -r mode package name joined flag failure; do
       [range(0; $lines|length) | select($lines[.] | contains("removed owned backend name=" + $backend.name + " "))] as $removed |
       ($errors|length)==2 and ($removed|length)==1 and
       ($lines[$errors[0]] | contains("Conflict.") and contains($backend.name) and contains($backend.id)) and
-      ($lines[$errors[1]] | contains("No such object: " + $backend.name)) and
+      ($lines[$errors[1]] | contains("No such object: " + $backend.name) or contains("no such object: " + $backend.name)) and
       $errors[0] < $removed[0] and $removed[0] < $errors[1]
     ' "$evidence/$mode.jsonl" > "$evidence/$mode.backend-failure-valid"
   fi

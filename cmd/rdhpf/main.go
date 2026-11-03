@@ -257,7 +257,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		// Continue with shutdown even if cleanup had errors
 	}
 
-	logger.Info("shutdown complete, all forwards removed")
+	logger.Info("forward cleanup attempt complete; closing owned SSH connection")
 	return nil
 }
 
@@ -404,15 +404,16 @@ func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMas
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	return sshMaster.WithConnection(cleanupCtx, func(_ uint64, ready bool) error {
-		if !ready {
+	return sshMaster.WithForwarding(cleanupCtx, func(connection *ssh.Forwarding) error {
+		reconciler.RetireBefore(connection.Generation())
+		if !connection.Ready() {
 			return fmt.Errorf("SSH connection unavailable during cleanup")
 		}
-		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, host, sshMaster.ControlPath(), logger)
+		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, connection, logger)
 	})
 }
 
-func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, host, controlPath string, logger *slog.Logger) error {
+func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, connection *ssh.Forwarding, logger *slog.Logger) error {
 	logger.Info("removing all active forwards")
 
 	// Clear all desired state (this will make reconciler want to remove everything)
@@ -432,9 +433,15 @@ func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State
 	logger.Info("removing forwards during shutdown",
 		"count", len(toRemove))
 
-	// Apply removal actions
-	if err := reconciler.Apply(cleanupCtx, host, controlPath, toRemove); err != nil {
+	// Apply removal actions; an ineligible/uncertain obligation is not removal.
+	for i := range toRemove {
+		toRemove[i].EndReason = "rdhpf shutdown"
+	}
+	if err := reconciler.Apply(cleanupCtx, connection, toRemove); err != nil {
 		return fmt.Errorf("failed to remove forwards: %w", err)
+	}
+	if len(stateManager.GetResources()) != 0 {
+		return fmt.Errorf("forward cleanup obligations remain")
 	}
 
 	logger.Info("all forwards removed successfully",

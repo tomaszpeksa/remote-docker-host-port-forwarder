@@ -61,7 +61,7 @@ func TestManagerDestinationBoundary(t *testing.T) {
 				}
 				data, err := os.ReadFile(filepath.Join(dir, "args"))
 				require.NoError(t, err)
-				want := append([]string{"-o", "BatchMode=yes", "-S", master.ControlPath()}, tc.port...)
+				want := append([]string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", master.ControlPath()}, tc.port...)
 				want = append(want, "--", tc.destination, operation.command)
 				require.Equal(t, want, strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00"))
 			})

@@ -10,6 +10,12 @@ import (
 	"github.com/tomaszpeksa/remote-docker-host-port-forwarder/internal/state"
 )
 
+// markOwnedActive is Diff-only fixture data, not proof of production Apply.
+func markOwnedActive(st *state.State, owner string, port int) {
+	st.SetResource(state.ForwardResource{ContainerID: owner, Port: port, RemotePort: port, Ownership: state.ForwardOwned})
+	st.MarkActive(owner, port)
+}
+
 // TestReconciler_Diff_Idempotent verifies that calling Diff() multiple times
 // with the same state returns the same actions each time
 func TestReconciler_Diff_Idempotent(t *testing.T) {
@@ -50,9 +56,9 @@ func TestReconciler_Diff_NoOpWhenEqual(t *testing.T) {
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
-	// Setup: Container wants port 8080 and it's already active
+	// Setup: Container wants port 8080 and owns an active forward.
 	st.SetDesired("container1", []int{8080})
-	st.MarkActive("container1", 8080)
+	markOwnedActive(st, "container1", 8080)
 
 	// Diff should show no actions needed
 	toAdd, toRemove := reconciler.Diff()
@@ -70,11 +76,11 @@ func TestReconciler_Diff_NoOpMultipleContainers(t *testing.T) {
 
 	// Setup: Two containers, each with their ports already active
 	st.SetDesired("container1", []int{8080, 8081})
-	st.MarkActive("container1", 8080)
-	st.MarkActive("container1", 8081)
+	markOwnedActive(st, "container1", 8080)
+	markOwnedActive(st, "container1", 8081)
 
 	st.SetDesired("container2", []int{9090})
-	st.MarkActive("container2", 9090)
+	markOwnedActive(st, "container2", 9090)
 
 	// Diff should show no actions
 	toAdd, toRemove := reconciler.Diff()
@@ -98,8 +104,8 @@ func TestReconciler_Apply_IdempotentDecisions(t *testing.T) {
 	toAdd1, _ := reconciler.Diff()
 	assert.Len(t, toAdd1, 1, "First diff should want to add port 8080")
 
-	// Simulate successful apply by marking port active
-	st.MarkActive("container1", 8080)
+	// Diff fixture only: record both ownership and readiness, not Apply proof.
+	markOwnedActive(st, "container1", 8080)
 
 	// Second reconciliation cycle - should be no-op
 	toAdd2, toRemove2 := reconciler.Diff()
@@ -119,9 +125,9 @@ func TestReconciler_Diff_SkipsAlreadyCompleted(t *testing.T) {
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
-	// Container wants ports 8080 and 808, but 8080 is already active
+	// Container wants ports 8080 and 8081, but 8080 is already active
 	st.SetDesired("container1", []int{8080, 8081})
-	st.MarkActive("container1", 8080)
+	markOwnedActive(st, "container1", 8080)
 
 	toAdd, toRemove := reconciler.Diff()
 
@@ -229,11 +235,11 @@ func TestReconciler_Diff_RemoveOneKeepAnother(t *testing.T) {
 
 	// Setup: Two containers with active forwards
 	st.SetDesired("container1", []int{8080, 8081})
-	st.MarkActive("container1", 8080)
-	st.MarkActive("container1", 8081)
+	markOwnedActive(st, "container1", 8080)
+	markOwnedActive(st, "container1", 8081)
 
 	st.SetDesired("container2", []int{9090})
-	st.MarkActive("container2", 9090)
+	markOwnedActive(st, "container2", 9090)
 
 	// Now remove container1 (set desired to empty)
 	st.SetDesired("container1", []int{})
@@ -264,12 +270,12 @@ func TestReconciler_Diff_OperationsGroupedByContainer(t *testing.T) {
 
 	// Container2: add 1 port, remove 1 port
 	st.SetDesired("container2", []int{9090})
-	st.MarkActive("container2", 9091) // This port is no longer desired
+	markOwnedActive(st, "container2", 9091) // This port is no longer desired
 
 	// Container3: remove all ports
 	st.SetDesired("container3", []int{})
-	st.MarkActive("container3", 7070)
-	st.MarkActive("container3", 7071)
+	markOwnedActive(st, "container3", 7070)
+	markOwnedActive(st, "container3", 7071)
 
 	toAdd, toRemove := reconciler.Diff()
 
@@ -303,11 +309,11 @@ func TestReconciler_Diff_MixedOperationsMultipleContainers(t *testing.T) {
 
 	// Container1: has 8080, wants 8080 and 8081 (add 8081)
 	st.SetDesired("container1", []int{8080, 8081})
-	st.MarkActive("container1", 8080)
+	markOwnedActive(st, "container1", 8080)
 
 	// Container2: has 9090, wants nothing (remove 9090)
 	st.SetDesired("container2", []int{})
-	st.MarkActive("container2", 9090)
+	markOwnedActive(st, "container2", 9090)
 
 	// Container3: has nothing, wants 7070 (add 7070)
 	st.SetDesired("container3", []int{7070})

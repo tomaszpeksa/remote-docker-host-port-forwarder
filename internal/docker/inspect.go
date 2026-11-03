@@ -68,7 +68,7 @@ func InspectPorts(ctx context.Context, sshHost, controlPath, containerID string)
 		return nil, err
 	}
 	remoteCmd := "sh -c " + quoted
-	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}
@@ -174,7 +174,7 @@ func inspectPortsFromLabels(ctx context.Context, sshHost, controlPath, container
 		return nil, err
 	}
 	remoteCmd := "sh -c " + quoted
-	args := []string{"-o", "BatchMode=yes", "-S", controlPath}
+	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", controlPath}
 	if port != "" {
 		args = append(args, "-p", port)
 	}

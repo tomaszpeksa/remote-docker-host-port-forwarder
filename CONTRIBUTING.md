@@ -20,7 +20,7 @@ This project follows the standard open source code of conduct. Be respectful, in
 
 ### Prerequisites
 
-- **Go 1.27.2 or newer** for source consumers; repository builds pin **1.27.2**.
+- **Go 1.27.3 or newer** for source consumers; repository builds pin **1.27.3**.
 - **Linux or macOS 13+**, amd64 or arm64, for the managed development tools.
   Newly built macOS binaries also require macOS 13; the module directive is not
   an independent promise of older binary OS compatibility.
@@ -240,7 +240,7 @@ ignores that test variable; configure `IdentityFile` (or your SSH agent) through
 OpenSSH configuration. The owned local launcher supplies its explicit `-F` config,
 and the disposable hosted fixture supplies account configuration.
 
-The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.8.2-r1
+The owned harness pins Alpine 3.24.2, OpenSSH 10.3_p1-r1, Docker CLI 29.9.2-r0
 and nginx 1.30.5-alpine3.24. The isolated harness daemon must support Docker API
 1.40 or newer with negotiation enabled; this is not a production-daemon policy.
 No script upgrades your daemon. Startup refuses existing container/state rather

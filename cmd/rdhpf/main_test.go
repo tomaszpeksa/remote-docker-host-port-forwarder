@@ -58,7 +58,10 @@ func TestRunFailedStartupOwnsCleanup(t *testing.T) {
 	var logs bytes.Buffer
 	host := "ssh://" + filepath.Base(dir) + ".invalid"
 	result := make(chan error, 1)
-	go func() { result <- run(ctx, &config.Config{Host: host}, slog.New(slog.NewTextHandler(&logs, nil))) }()
+	go func() {
+		_, err := run(ctx, &config.Config{Host: host}, slog.New(slog.NewTextHandler(&logs, nil)))
+		result <- err
+	}()
 	require.NoError(t, gate.(*net.UnixListener).SetDeadline(time.Now().Add(5*time.Second)))
 	child, err := gate.Accept()
 	require.NoError(t, err)
@@ -79,7 +82,7 @@ func TestRunFailedStartupOwnsCleanup(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	_, err = bufio.NewReader(child).ReadByte()
 	require.Error(t, err, "child must release owned pipe before Run returns")
-	require.Contains(t, logs.String(), "closing SSH ControlMaster connection", "CLI cleanup owner must exist even when Open fails")
+	require.NotContains(t, logs.String(), "starting manager", "failed Open must not launch monitoring or publishers")
 	_, err = os.Lstat(filepath.Dir(path))
 	require.True(t, os.IsNotExist(err), "failed startup must release the allocated directory")
 }

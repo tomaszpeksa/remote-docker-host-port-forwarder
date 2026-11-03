@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,7 +42,11 @@ func TestPublicationJoinsFinalWriterBeforeCleanup(t *testing.T) {
 	defer cancel()
 	stop := m.startPublishers(ctx)
 	done := make(chan struct{})
-	go func() { stop(); _ = owner.Close(); close(done) }()
+	var stopErr error
+	var once sync.Once
+	release := func() { once.Do(func() { close(blocked.release) }) }
+	t.Cleanup(func() { release(); <-done })
+	go func() { stopErr = errors.Join(stop(), owner.Close()); close(done) }()
 	<-blocked.entered // actual cancellation reached final Write, held at the barrier
 	// This is a bounded negative assertion while a known operation is blocked,
 	// not a sleep guessing when startup/IO completed. A missing join releases
@@ -57,8 +63,9 @@ func TestPublicationJoinsFinalWriterBeforeCleanup(t *testing.T) {
 	if admissionErr == nil {
 		t.Error("successor admitted while final publication was blocked")
 	}
-	close(blocked.release)
+	release()
 	<-done
+	require.NoError(t, stopErr)
 	<-blocked.finished
 	path, err := statefile.GetStateFilePath(m.cfg.Host)
 	require.NoError(t, err)

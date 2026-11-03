@@ -28,9 +28,8 @@ func TestRunStartupErrorJoinsPublicationBeforeAdmissionRelease(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			require.ErrorIs(t, m.Run(ctx, owner), context.Canceled)
-			if !fileOnly {
-				require.NotNil(t, m.socketServer)
-			}
+			require.Nil(t, m.socketServer, "pre-canceled Run must not create a late publisher")
+			require.Nil(t, m.stateWriter)
 			_, err = os.Stat(statePath)
 			require.True(t, os.IsNotExist(err))
 			require.NoError(t, owner.Close())
@@ -38,8 +37,6 @@ func TestRunStartupErrorJoinsPublicationBeforeAdmissionRelease(t *testing.T) {
 			require.NoError(t, err)
 			defer next.Close()
 			require.NoError(t, os.WriteFile(statePath, []byte("successor"), 0600))
-			require.Error(t, m.stateWriter.Write(nil, nil))
-			require.NoError(t, m.stateWriter.Close())
 			data, err := os.ReadFile(statePath)
 			require.NoError(t, err)
 			require.Equal(t, "successor", string(data))

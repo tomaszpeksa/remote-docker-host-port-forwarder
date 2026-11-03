@@ -77,6 +77,10 @@ var temporaryMuxName = regexp.MustCompile(`^mux\.[a-zA-Z0-9]{16}$`)
 // reclaim runs only after the retained child was reaped. This also covers
 // startup before association and temporary-only or hard-linked mux artifacts.
 func (n *masterNamespace) reclaim() error {
+	return n.reclaimContext(context.Background())
+}
+
+func (n *masterNamespace) reclaimContext(parent context.Context) error {
 	if err := n.verify(); err != nil {
 		return err
 	}
@@ -88,7 +92,7 @@ func (n *masterNamespace) reclaim() error {
 		if (entry.Name() != "mux" && !temporaryMuxName.MatchString(entry.Name())) || entry.Type()&os.ModeSocket == 0 {
 			return fmt.Errorf("unexpected SSH namespace entry: %s", entry.Name())
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), masterCheckTimeout)
+		ctx, cancel := context.WithTimeout(parent, masterCheckTimeout)
 		conn, dialErr := (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(n.dir, entry.Name()))
 		cancel()
 		if dialErr == nil {

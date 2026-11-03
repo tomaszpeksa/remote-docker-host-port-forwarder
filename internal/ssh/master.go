@@ -206,9 +206,14 @@ func (m *Master) openConnection(ctx context.Context, life *masterLifetime) error
 	m.ready = false
 	go func() { c.waitErr = cmd.Wait(); close(c.done) }()
 	startup, cancel := context.WithTimeout(ctx, masterStartupTimeout)
-	stop := context.AfterFunc(life.ctx, cancel)
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(life.ctx, func() { defer close(callbackDone); cancel() })
 	defer cancel()
-	defer stop()
+	defer func() {
+		if !stop() {
+			<-callbackDone
+		}
+	}()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -327,7 +332,9 @@ func (m *Master) checkConnection(ctx context.Context) error {
 	}
 	args = append(args, "--", host)
 	// #nosec G204 - Existing SSH host/input policy; arguments remain separate.
-	output, err := exec.CommandContext(check, "ssh", args...).CombinedOutput()
+	cmd := exec.CommandContext(check, "ssh", args...)
+	cmd.WaitDelay = 2 * time.Second
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("SSH check: %w", err)
 	}
@@ -355,6 +362,10 @@ func (m *Master) Check() error {
 // retireConnection runs under the lifecycle gate. Only the retained child
 // handle is signaled. Completion precedes generation advance/socket cleanup.
 func (m *Master) retireConnection() error {
+	return m.retireConnectionContext(context.Background(), false)
+}
+
+func (m *Master) retireConnectionContext(ctx context.Context, retain bool) error {
 	c := m.connection
 	if c == nil {
 		return nil
@@ -367,20 +378,29 @@ func (m *Master) retireConnection() error {
 		timer := time.NewTimer(masterRetireTimeout)
 		select {
 		case <-c.done:
-			if !timer.Stop() {
-				<-timer.C
-			}
 		case <-timer.C:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+		select {
+		case <-c.done:
+		default:
 			_ = c.cmd.Process.Kill()
 			timer.Reset(masterRetireTimeout)
 			select {
 			case <-c.done:
-				if !timer.Stop() {
-					<-timer.C
-				}
 			case <-timer.C:
-				return ErrRetirementUncertain
+				if !retain {
+					return ErrRetirementUncertain
+				}
+				<-c.done
+			case <-ctx.Done():
+				if !retain {
+					return ErrRetirementUncertain
+				}
+				<-c.done
 			}
+			timer.Stop()
 		}
 	}
 	if c.cmd.ProcessState == nil {
@@ -389,8 +409,15 @@ func (m *Master) retireConnection() error {
 	if !c.retired {
 		m.generation++
 		c.retired = true
+		m.logger.Debug("owned SSH child retired", "pid", c.cmd.Process.Pid, "generation", m.generation, "retired_at", time.Now())
 	}
-	if err := m.namespace.reclaim(); err != nil {
+	// After exceptional budget expiry, keep the original owner alive through
+	// safe namespace cleanup. This does not turn the expired outcome into success.
+	cleanupCtx := ctx
+	if retain && ctx.Err() != nil {
+		cleanupCtx = context.WithoutCancel(ctx)
+	}
+	if err := m.namespace.reclaimContext(cleanupCtx); err != nil {
 		return err
 	}
 	m.connection = nil
@@ -474,6 +501,29 @@ func (m *Master) Close() error {
 	return err
 }
 
+// CloseContext retires the original owned child without abandoning its Wait.
+// retired is independent of namespace refusal; expiry remains an error even
+// when an exceptionally late Wait eventually permits safe cleanup.
+func (m *Master) CloseContext(ctx context.Context) (retired bool, err error) {
+	life := m.lifetime.Load()
+	life.closeOnce.Do(func() { life.cancel(); m.StopHealthMonitor() })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if life != m.lifetime.Load() {
+		return true, nil
+	}
+	err = m.retireConnectionContext(ctx, true)
+	retired = m.connection == nil || m.connection.retired
+	if err == nil {
+		err = m.namespace.close()
+	}
+	if err == nil {
+		life.finished.Do(func() { close(life.closed) })
+	}
+	m.notify()
+	return retired, errors.Join(err, ctx.Err())
+}
+
 // StartHealthMonitor starts at most one monitor for the current lifecycle.
 func (m *Master) StartHealthMonitor(ctx context.Context, interval time.Duration) {
 	life := m.lifetime.Load()
@@ -490,12 +540,17 @@ func (m *Master) StartHealthMonitor(ctx context.Context, interval time.Duration)
 		}
 	}
 	healthCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(life.ctx, cancel)
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(life.ctx, func() { defer close(callbackDone); cancel() })
 	monitor := &healthMonitor{cancel: cancel, done: make(chan struct{})}
 	m.monitor = monitor
 	go func() {
 		defer close(monitor.done)
-		defer stop()
+		defer func() {
+			if !stop() {
+				<-callbackDone
+			}
+		}()
 		defer cancel()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

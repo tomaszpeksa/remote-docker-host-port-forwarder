@@ -15,7 +15,7 @@ func TestMergeInventory(t *testing.T) {
 	actual := s.GetActual()
 	observed := []ContainerPorts{{ContainerID: "known", Ports: []int{3003}}}
 	require.True(t, s.MergeInventory([]string{"unknown", "known", "new-unknown"}, observed), "ABSENCE_AND_PARTIAL_PROGRESS")
-	require.ElementsMatch(t, []ContainerPorts{{ContainerID: "absent", Ports: []int{}}, {ContainerID: "unknown", Ports: []int{2002}}, {ContainerID: "known", Ports: []int{3003}}}, s.GetDesired())
+	require.ElementsMatch(t, []ContainerPorts{{ContainerID: "unknown", Ports: []int{2002}}, {ContainerID: "known", Ports: []int{3003}}}, s.GetDesired())
 	observed[0].Ports[0] = 9999
 	require.ElementsMatch(t, actual, s.GetActual(), "inventory never retires actual ownership")
 	require.False(t, s.MergeInventory([]string{"unknown", "known"}, []ContainerPorts{{ContainerID: "known", Ports: []int{3003, 3003}}}), "port set equality, not order/duplicates")
@@ -33,6 +33,6 @@ func TestMergeInventoryKnownEmptyDoesNotInventOwner(t *testing.T) {
 	require.Empty(t, s.GetDesired(), "startup previously omitted infrastructure and portless owners")
 	s.SetDesired("infrastructure", []int{1001})
 	require.True(t, s.MergeInventory([]string{"infrastructure"}, empty), "authoritative empty must still clear an existing owner")
-	require.Contains(t, s.GetDesired(), ContainerPorts{ContainerID: "infrastructure", Ports: []int{}})
-	require.False(t, s.MergeInventory([]string{"infrastructure"}, empty), "existing event/absence tombstone remains unchanged")
+	require.Empty(t, s.GetDesired(), "empty owner has no actual or transport obligations")
+	require.False(t, s.MergeInventory([]string{"infrastructure"}, empty), "repeated empty observation must not recreate an owner")
 }

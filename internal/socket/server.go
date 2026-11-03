@@ -17,16 +17,24 @@ import (
 
 // Server serves status information over a Unix socket
 type Server struct {
-	listener   net.Listener
-	socketPath string
-	state      *state.State
-	history    *state.History
-	host       string
-	pid        int
-	startedAt  time.Time
-	logger     *slog.Logger
-	closeOnce  sync.Once
-	closeErr   error
+	listener    net.Listener
+	socketPath  string
+	state       *state.State
+	history     *state.History
+	host        string
+	pid         int
+	startedAt   time.Time
+	logger      *slog.Logger
+	closeOnce   sync.Once
+	closeErr    error
+	stopOnce    sync.Once
+	stopErr     error
+	mu          sync.Mutex
+	stopping    bool
+	started     bool
+	startDone   chan struct{}
+	connections map[net.Conn]struct{}
+	handlers    sync.WaitGroup
 }
 
 // NewServer resolves the legacy address wrapper. The caller must own publisher
@@ -60,19 +68,33 @@ func NewServerAtPath(host, socketPath string, stateManager *state.State, history
 
 	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 	return &Server{
-		listener:   listener,
-		socketPath: socketPath,
-		state:      stateManager,
-		history:    history,
-		host:       host,
-		pid:        os.Getpid(),
-		startedAt:  startedAt,
-		logger:     logger,
+		listener:    listener,
+		socketPath:  socketPath,
+		state:       stateManager,
+		history:     history,
+		host:        host,
+		pid:         os.Getpid(),
+		startedAt:   startedAt,
+		logger:      logger,
+		connections: make(map[net.Conn]struct{}),
+		startDone:   make(chan struct{}),
 	}, nil
 }
 
 // Start begins accepting connections on the socket
 func (s *Server) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.started {
+		s.mu.Unlock()
+		return fmt.Errorf("socket server already started")
+	}
+	s.started = true
+	s.mu.Unlock()
+	defer close(s.startDone)
 	s.logger.Debug("socket server listening", "path", s.socketPath)
 
 	stop, stopped := make(chan struct{}), make(chan struct{})
@@ -80,11 +102,16 @@ func (s *Server) Start(ctx context.Context) error {
 		defer close(stopped)
 		select {
 		case <-ctx.Done():
-			_ = s.listener.Close()
+			s.stop()
 		case <-stop:
 		}
 	}()
-	defer func() { close(stop); <-stopped }()
+	defer func() {
+		s.stop()
+		close(stop)
+		<-stopped
+		s.handlers.Wait()
+	}()
 
 	for {
 		conn, err := s.listener.Accept()
@@ -102,16 +129,30 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}
 
-		// Handle connection in goroutine
-		go s.handleConnection(conn)
+		s.mu.Lock()
+		if s.stopping {
+			s.mu.Unlock()
+			s.recordCloseError(conn.Close())
+			continue
+		}
+		s.connections[conn] = struct{}{}
+		s.handlers.Add(1)
+		s.mu.Unlock()
+		go func() {
+			defer s.handlers.Done()
+			defer func() {
+				s.mu.Lock()
+				delete(s.connections, conn)
+				s.mu.Unlock()
+			}()
+			s.handleConnection(conn)
+		}()
 	}
 }
 
 // handleConnection handles a single client connection
 func (s *Server) handleConnection(conn net.Conn) {
-	defer func() {
-		_ = conn.Close()
-	}()
+	defer func() { s.recordCloseError(conn.Close()) }()
 
 	// Get current state
 	forwards := s.state.GetActual()
@@ -129,11 +170,44 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-// Close stops the server and removes the socket file
+func (s *Server) recordCloseError(err error) {
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		s.mu.Lock()
+		s.stopErr = errors.Join(s.stopErr, err)
+		s.mu.Unlock()
+	}
+}
+
+// stop fences registration before any Wait and interrupts accepted socket I/O.
+func (s *Server) stop() {
+	s.stopOnce.Do(func() {
+		s.mu.Lock()
+		s.stopping = true
+		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			s.stopErr = errors.Join(s.stopErr, err)
+		}
+		for conn := range s.connections {
+			if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				s.stopErr = errors.Join(s.stopErr, err)
+			}
+		}
+		s.mu.Unlock()
+	})
+}
+
+// Close joins accepted handlers before removing the socket file.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
-		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			s.closeErr = err
+		s.stop()
+		s.mu.Lock()
+		started := s.started
+		s.mu.Unlock()
+		if started {
+			<-s.startDone
+		}
+		s.handlers.Wait()
+		if s.stopErr != nil {
+			s.closeErr = s.stopErr
 			return
 		}
 		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {

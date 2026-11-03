@@ -44,7 +44,7 @@ func TestRunDuplicateDoesNotTouchIncumbent(t *testing.T) {
 				before[socketPath], err = os.Lstat(socketPath)
 				require.NoError(t, err)
 			}
-			err = run(context.Background(), &config.Config{Host: target}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			_, err = run(context.Background(), &config.Config{Host: target}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			require.ErrorContains(t, err, "another rdhpf publisher")
 			executable, err := os.Executable()
 			require.NoError(t, err)

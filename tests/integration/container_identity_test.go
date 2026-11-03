@@ -27,7 +27,8 @@ import (
 )
 
 // No target lifecycle stimulus is retried. A separate no-port marker establishes
-// actual event consumption before the single measured stop and same-ID restart.
+// a successful production event enqueue before the single measured stop and
+// same-ID restart. This setup receipt is not completed-application proof.
 func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	f := sshfixture.New(t)
 	require.False(t, testing.Short(), "selected owned identity proof must execute fully")
@@ -76,6 +77,12 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	require.NoError(t, master.Open(ctx))
 	st, history := state.NewState(), state.NewHistory()
 	mgr := manager.NewManager(&config.Config{Host: f.Host}, docker.NewEventReader(f.Host, master.ControlPath(), logger), reconcile.NewReconciler(st, history, logger), master, st, history, logger)
+	var markerAccepted atomic.Bool
+	mgr.TestObserveAcceptedEvents(func(event docker.Event) {
+		if event.ContainerID == marker {
+			markerAccepted.Store(true)
+		}
+	})
 	managerCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	var runErr error
@@ -138,21 +145,12 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	assertOwner()
 	require.Empty(t, history.GetAll())
 	t.Logf("IDENTITY_STARTUP full-owner=%s port=%d unique-HTTP200=%q", id, port, body)
-	markerObserved := func() bool {
-		for _, entry := range st.GetDesired() {
-			if entry.ContainerID == marker {
-				require.Empty(t, entry.Ports)
-				return true
-			}
-		}
-		return false
-	}
-	require.False(t, markerObserved(), "stopped marker must be absent from startup inventory")
-	// Only setup-marker transitions may repeat. Polling observes state; neither
-	// target transition below is retried or followed by manual reconciliation.
+	require.False(t, markerAccepted.Load(), "stopped marker must not have emitted setup events yet")
+	// Only setup-marker transitions may repeat. This observes successful enqueue,
+	// not application or State tombstones. Neither target transition is retried.
 	handshakeEnd := time.Now().Add(10 * time.Second)
-	for !markerObserved() {
-		require.True(t, time.Now().Before(handshakeEnd), "no marker event consumed before handshake deadline")
+	for !markerAccepted.Load() {
+		require.True(t, time.Now().Before(handshakeEnd), "no full-ID marker event accepted before handshake deadline")
 		checkStream()
 		verifyOwned(marker)
 		f.Docker("start", marker)
@@ -161,7 +159,7 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 	require.Empty(t, st.GetByContainer(marker))
 	require.Equal(t, int64(1), observer.starts.Load())
 	checkStream()
-	t.Logf("IDENTITY_SUBSCRIBED marker=%s consumed by actual Manager", marker)
+	t.Logf("IDENTITY_SUBSCRIBED marker=%s accepted/enqueued by actual Manager (setup only)", marker)
 	since := time.Now().UTC().Format(time.RFC3339Nano)
 	verifyOwned(id)
 	f.Docker("stop", "--time", "5", id) // exactly one target stop
@@ -181,8 +179,10 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 		}
 		return nil
 	})
-	require.Contains(t, st.GetDesired(), state.ContainerPorts{ContainerID: id, Ports: []int{}})
+	require.Empty(t, st.GetByContainer(id))
+	require.Empty(t, st.GetResources(), "retired target must have no transport obligations")
 	for _, entry := range st.GetDesired() {
+		require.NotEqual(t, id, entry.ContainerID, "empty retired target owner must be pruned")
 		require.Empty(t, entry.Ports)
 		require.NotEqual(t, shortID, entry.ContainerID)
 	}
@@ -234,7 +234,7 @@ func TestManagerPreexistingContainerIdentity(t *testing.T) {
 }
 
 // Logs are used only to reject interruption and observe Wait completion, never
-// as a subscription-ready signal. Readiness comes from the marker's State entry.
+// as a subscription-ready signal. Setup readiness is a successful full-ID enqueue.
 type identityStreamObserver struct {
 	slog.Handler
 	starts, ends *atomic.Int64

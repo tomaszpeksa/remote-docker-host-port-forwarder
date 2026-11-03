@@ -64,6 +64,15 @@ func (s *State) SetDesired(containerID string, ports []int) {
 	portsCopy := make([]int, len(ports))
 	copy(portsCopy, ports)
 	s.desired[containerID] = portsCopy
+	s.pruneEmptyDesired(containerID)
+}
+
+// pruneEmptyDesired requires mu: empty intent is disposable only after all
+// actual records and transport obligations have been consumed.
+func (s *State) pruneEmptyDesired(id string) {
+	if len(s.desired[id]) == 0 && len(s.actual[id]) == 0 && len(s.resources[id]) == 0 {
+		delete(s.desired, id)
+	}
 }
 
 // GetDesired returns the desired port forwards for all containers.
@@ -293,6 +302,9 @@ func (s *State) InvalidateConnection(at time.Time) []ForwardState {
 			delete(s.actual, containerID)
 		}
 	}
+	for id := range s.desired {
+		s.pruneEmptyDesired(id)
+	}
 	return retired
 }
 
@@ -324,6 +336,9 @@ func (s *State) MergeInventory(listed []string, observed []ContainerPorts) bool 
 		}
 		s.desired[cp.ContainerID] = append([]int{}, cp.Ports...)
 		changed = true
+	}
+	for id := range s.desired {
+		s.pruneEmptyDesired(id)
 	}
 	return changed
 }

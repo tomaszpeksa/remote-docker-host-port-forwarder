@@ -43,28 +43,21 @@ kill -9 <rdhpf_pid>  # Bypasses cleanup, may orphan SSH processes
 
 When you press Ctrl+C or send SIGTERM:
 
-1. **Signal Received** (< 1ms)
-   - Tool logs: `received signal, shutting down`
-   - Context cancellation triggered
-
-2. **Event Stream Stops** (< 100ms)
-   - Docker events stream gracefully closed
-   - SSH process for event monitoring terminated
-
-3. **Forwards Removed** (< 1s)
-   - Tool logs: `shutdown initiated, cleaning up forwards`
-   - All active port forwards are removed via SSH
-   - Local ports are released
-
-4. **SSH Master Closed** (< 500ms)
-   - Tool logs: `closing SSH ControlMaster connection`
-   - ControlMaster receives `ssh -O exit` command
-   - Control socket file removed
-
-5. **Clean Exit** (< 2s total)
-   - Tool logs: `shutdown complete, all forwards removed`
-   - Tool logs: `rdhpf stopped`
-   - Process exits with code 0 (success)
+1. Cancel/fence new work before logging `received signal, shutting down`.
+2. Retire the whole private SSH Master while event/discovery/reconciliation,
+   watchdog, metrics and other owned workers drain. Signal only the retained
+   child; escalate to Kill if needed, then join its original Wait. Terminal
+   teardown does not issue a second per-forward CLOSE pass.
+3. After original retirement and producer quiescence, consume actual forward
+   records into history once, preserving their original start time and reason.
+   Desired-only entries do not create history.
+4. Interrupt and join accepted socket handlers, finish final publication and
+   remove owned publication paths before releasing publisher admission. Join the
+   CLI signal worker too.
+5. Exit 0 only for ordinary cancellation with all cleanup successful within the
+   shared budget. Primary failure, cleanup/refusal error or expiry exits 1.
+   Debug logging includes an `owned SSH child retired` event after the retained
+   child's original Wait; pathname/PID absence alone is not retirement proof.
 
 ### Verification
 
@@ -91,26 +84,36 @@ echo $?
 
 ### Timing Guarantees
 
-- **Signal → Context canceled**: Immediate (< 1ms)
-- **Event loop exit**: < 100ms after context cancellation
-- **All forwards removed**: < 1s total
-- **SSH ControlMaster closed**: < 500ms
-- **Complete shutdown**: < 2s total
+- One ten-second budget starts at the first observed terminal request, including
+  cancellation during startup or recovery. It includes child/worker joins,
+  history/publication cleanup, admission close and signal-worker completion.
+- Repeated Ctrl+C/SIGTERM or cleanup calls never renew that deadline and do not
+  force an immediate exit.
+- Cancelable ordinary-process teardown must finish within the budget. Cleanup
+  errors and overruns remain failure even if cleanup later succeeds.
+- A genuinely noncooperative callback, uninterruptible kernel/filesystem operation
+  or scheduling stall cannot safely be abandoned. In that exceptional case the
+  process retains original Wait/handles, admission and unconsumed records until
+  completion is proved, then returns failure. Ten seconds is not an unconditional
+  process-exit theorem.
 
 ### Troubleshooting
 
 **If shutdown seems to hang:**
 
 1. Check logs for errors (run with `--log-level debug`)
-2. Give it 10 seconds (cleanup has a 10-second timeout)
-3. If still hanging after 10s, there may be a bug - please report it
+2. Allow the shared ten-second shutdown budget; repeated signals do not reset it.
+3. If still waiting, retain logs and report the outstanding operation. An overrun
+   is a failed/incomplete outcome, not permission to delete the admission lock or
+   start a successor while child/worker completion remains unproved.
 
 **If orphaned processes remain:**
 
-This should NOT happen with graceful shutdown (Ctrl+C or `kill`). If it does:
+Ordinary completed shutdown must join its owned children. If a process remains:
 
-1. Clean up manually (see [Orphaned SSH Processes](#orphaned-ssh-processes))
-2. Report the issue with logs and reproduction steps
+1. Distinguish an incomplete owning process still retaining cleanup from a child
+   left by forced parent death. Do not remove active paths or bypass admission.
+2. Report logs and reproduction steps; see [Orphaned SSH Processes](#orphaned-ssh-processes).
 
 **Expected vs Actual:**
 
@@ -372,16 +375,16 @@ or `~/.rdhpf/owner.lock`; never use wildcard `rm` or `pkill` recipes.
 
 A live foreign endpoint or an unknown directory entry causes cleanup refusal and
 may leave the private directory behind. This is distinct from uncertain child
-retirement: the CLI logs unrelated cleanup errors rather than retrying them as
-retirement uncertainty. Neither refusal authorizes deleting the occupant.
+retirement: the cleanup result remains failure even when child retirement is
+proved. Neither refusal authorizes deleting the occupant.
 
 ### Shutdown awaiting owned-child retirement
 
-If shutdown reports `waiting for owned SSH retirement; retaining publisher ownership`,
-the CLI has not yet established completion of its retained SSH child. It keeps the
-publisher admission lock and retries cleanup rather than admitting a successor or
-abandoning the child. Individual termination attempts are bounded, but there is
-**no total shutdown deadline**. Repeated Ctrl+C is not a forced-exit mechanism;
+If shutdown is still waiting for its retained SSH child or a noncooperative
+worker, it keeps publisher admission and original completion responsibility.
+The first-terminal ten-second budget never renews: expiry fixes a failure outcome,
+not permission to abandon the child or admit a successor. Safe cleanup continues
+until completion is proved. Repeated Ctrl+C is not a forced-exit mechanism;
 forced parent termination still has the orphan-child limitation described above.
 Do not delete the lock to bypass admission.
 

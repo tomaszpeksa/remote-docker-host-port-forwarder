@@ -259,18 +259,35 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
 
 ### Shutdown and cleanup
 
-1. SIGINT/SIGTERM cancels the run context. Manager fences and joins its recovery
-   worker/health monitor; forwarding cleanup uses the lifecycle gate and sends
-   correlated mux CLOSE only when the transport is ready; failed/unknown effects
-   remain obligations rather than being announced as removed.
-2. Final status publication and socket pathname cleanup are joined before
-   publisher admission is released. This is not a join of every socket handler.
-3. CLI cleanup calls Master `Close`, which signals the retained child with SIGTERM,
-   escalates to Kill if needed and observes its single Wait completion before
-   reclaiming owned socket artifacts and removing the empty private directory.
-4. If retirement is uncertain, CLI cleanup retains admission and retries without
-   a total deadline. Other cleanup errors are logged, not retried as uncertainty.
-   Forced parent death may leave a child and directory; no orphan sweep is provided.
+1. The existing Manager owns one idempotent finalizer, registered before CLI
+   startup through `Manager.Open`. Every startup/Run exit and SIGINT/SIGTERM uses
+   that owner. The first terminal request fences work and cancels before logging
+   or waiting, fixing one immutable ten-second deadline. Repeated calls/signals
+   do not renew it or force exit.
+2. Whole-private-Master retirement begins concurrently with canceled Run draining.
+   Master signals only its retained child, escalates to Kill if necessary and
+   joins the original Wait before advancing retirement. Terminal teardown does
+   not send a second per-forward CLOSE pass. Ordinary live forwarding/retry and
+   unknown-effect ownership are unchanged.
+3. Startup and Run worker barriers prevent publication/history cleanup from
+   racing producers. Run joins stream, discovery, reconciliation, health monitor,
+   watchdog/probe and metrics before awaiting the finalizer; the finalizer never
+   waits for a Run return that itself awaits shutdown. After original retirement
+   and producer quiescence, actual records are consumed once into history with
+   original creation times/reasons. Desired-only intent fabricates no history.
+4. Final publication, accepted socket handlers and cancellation callbacks are
+   joined before pathname removal and admission release. CLI joins its signal
+   worker too. Admission close and signal completion share the same deadline.
+   Direct/preopened Run retains inventory-before-gate and constructor-time uptime;
+   CLI timestamps begin after successful Open, never reset during recovery.
+5. Ordinary cancellation succeeds only if every owned completion and cleanup
+   succeeds within the budget. Any primary/cleanup error or expiry remains
+   failure/exit1, including eventual successful cleanup after expiry. Genuinely
+   noncooperative work retains handles, original Wait, admission and records until
+   proof; nothing is detached to manufacture a hard exit. This is not an
+   unconditional kernel/filesystem/logger/scheduler wall-clock guarantee.
+   Foreign/unknown namespace entries are refused and preserved. Forced parent
+   death may leave a child and directory; no orphan sweep is provided.
 
 ## Testing Strategy
 
@@ -309,7 +326,8 @@ rdhpf uses a layered test strategy to validate correctness, performance, and res
 Scenario assertions cover published ports, idempotent operations, recovery and
 normal shutdown. Compilation or a skipped scenario does not prove runtime
 behavior. The 15-second health interval, check/startup deadlines and breaker
-cooldown do not constitute a ten-second recovery SLA or a total shutdown bound.
+cooldown do not constitute a ten-second recovery SLA. Shutdown uses the separate
+first-terminal budget and retained-ownership qualification described above.
 
 ## Future Enhancements
 
@@ -420,13 +438,12 @@ contender. A watchdog cause is committed before cancellation, logging or joining
 so induced context cancellation and late events cannot erase it. Cancellation
 reaches the active handler's existing five-second inspection context, stream,
 discovery and reconciliation. Run retires accepted reservations exactly once,
-joins its active stream and new watchdog/probe owner, and invokes existing terminal
-forward cleanup once for watchdog termination, including preflight/backoff exits.
-Publisher admission remains held through those obligations.
+joins its active stream and watchdog/probe owner, and converges on the same Manager
+finalizer for watchdog termination, including preflight/backoff exits. Publisher
+admission remains held through those obligations.
 
-The guarantee is bounded **initiation**, not a global shutdown deadline. Existing
-SSH lifecycle-gate waits, background cleanup and uncertain child retirement can
-delay completion; no worker is detached to manufacture an exit deadline. Successful
-processing is the health signal, not proof that delivery stopped or that every
-forward has working application traffic. Stream restart pacing and global shutdown
-policy are separate concerns.
+The watchdog guarantees bounded **initiation**; the finalizer separately owns the
+first-terminal ten-second shutdown budget and sticky failure outcome. Unproved
+child or noncooperative worker completion is retained, not detached to manufacture
+an exit deadline. Successful processing is the health signal, not proof that every
+forward has working application traffic. Stream restart pacing is unchanged.

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -204,7 +205,7 @@ type Manager struct {
 
 	retiredGeneration uint64 // guarded by the SSH lifecycle gate
 	stopping          atomic.Bool
-	stopRecovery      func() // Run-owned cancellation/join, never called under the gate
+	shutdown          managerShutdown
 }
 
 // performanceMetrics tracks performance data
@@ -358,12 +359,31 @@ func NewManager(
 //	}
 func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr error) {
 	parent := ctx
+	ctx, runDone, err := m.beginRun(parent)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// beginRun has released the lifecycle mutex; finalization needs it.
+			_, cleanupErr := m.Shutdown()
+			return errors.Join(err, cleanupErr)
+		}
+		return err
+	}
+	defer func() {
+		m.requestShutdown()
+		close(runDone)
+		_, cleanupErr := m.Shutdown()
+		if cleanupErr != nil {
+			runErr = errors.Join(runErr, cleanupErr)
+		}
+	}()
+	if parent.Err() != nil {
+		m.requestShutdown()
+		return parent.Err()
+	}
 	socketPath, statePath, err := owner.Paths(m.cfg.Host)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	m.logger.Info("manager starting")
 
 	// Admission covers initialization, joined publication and cleanup. Pass
@@ -371,42 +391,19 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	m.stateWriter = statefile.NewWriterAtPath(m.cfg.Host, statePath, m.startedAt)
 	m.socketServer, err = socket.NewServerAtPath(m.cfg.Host, socketPath, m.state, m.history, m.startedAt, m.logger)
 	if err != nil {
+		m.shutdown.publicationErr = err
 		m.logger.Warn("failed to create socket server, status will use file only", "error", err)
 	} else {
 		m.logger.Info("socket server started")
 	}
-	defer m.startPublishers(ctx)()
+	m.shutdown.publishers = m.startPublishers(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// This finalizer is installed before any monitored work. Publisher retirement
-	// remains outside it, so admission stays owned through all local completion.
-	m.watchdog.arm(parent, cancel, &m.stopping)
+	m.watchdog.arm(parent, m.requestShutdown, &m.stopping)
 	watchdogDone := make(chan struct{})
 	var activeStream <-chan docker.StreamResult
-	cleaned := false
-	cleanup := func() {
-		_ = m.watchdog.finish(nil)
-		if !cleaned {
-			cleaned = true
-			m.cleanupAllForwards(context.Background())
-		}
-	}
-	defer func() {
-		runErr = m.watchdog.finish(runErr)
-		if activeStream != nil {
-			<-activeStream
-			for len(m.discovery.events) > 0 {
-				m.retireEvent((<-m.discovery.events).token)
-			}
-		}
-		m.stopRecovery()
-		if _, watchdogFailure := m.watchdog.terminalResult(); watchdogFailure {
-			cleanup()
-		}
-		<-watchdogDone
-	}()
 	ticks, stopTicker := m.watchdog.ticks()
 	go func() { defer close(watchdogDone); defer stopTicker(); m.startEventWatchdogLoop(ctx, ticks) }()
 
@@ -416,13 +413,22 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	go func() { defer close(recoveryDone); m.runReconciliation(ctx) }()
 	discoveryDone := make(chan struct{})
 	go func() { defer close(discoveryDone); m.runDiscovery(ctx) }()
-	m.stopRecovery = func() {
-		m.stopping.Store(true)
-		cancel()
+	metricsDone := make(chan struct{})
+	defer func() {
+		runErr = m.watchdog.finish(runErr)
+		m.requestShutdown()
+		if activeStream != nil {
+			<-activeStream
+			for len(m.discovery.events) > 0 {
+				m.retireEvent((<-m.discovery.events).token)
+			}
+		}
 		m.sshMaster.StopHealthMonitor()
 		<-recoveryDone
 		<-discoveryDone
-	}
+		<-metricsDone
+		<-watchdogDone
+	}()
 
 	// Start SSH health monitor (check every 15 seconds for faster failure detection)
 	m.sshMaster.StartHealthMonitor(ctx, 15*time.Second)
@@ -431,7 +437,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		"control_path", m.sshMaster.ControlPath())
 
 	// Start performance metrics logger (log every 5 minutes)
-	go m.logPerformanceMetrics(ctx, 5*time.Minute)
+	go func() { defer close(metricsDone); m.logPerformanceMetrics(ctx, 5*time.Minute) }()
 
 	// Start event stream watchdog (checks every 10s, pings after 30s idle, fatal after 60s)
 	m.logger.Info("event stream watchdog started",
@@ -449,7 +455,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		// Check if context is canceled before starting/restarting
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
-			cleanup()
 			return nil
 		}
 
@@ -459,15 +464,13 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 			"attempt", consecutiveFailures+1)
 
 		if err := m.sshMaster.EnsureAlive(ctx); err != nil {
-			m.logger.Error("Failed to ensure SSH ControlMaster is alive",
-				"error", err.Error(),
-				"consecutive_failures", consecutiveFailures)
 			consecutiveFailures++
-
-			// Check if we've exceeded max failures
 			if consecutiveFailures >= maxConsecutiveFailures {
 				return fmt.Errorf("SSH ControlMaster failed after %d consecutive failures", maxConsecutiveFailures)
 			}
+			m.logger.Error("Failed to ensure SSH ControlMaster is alive",
+				"error", err.Error(),
+				"consecutive_failures", consecutiveFailures)
 
 			// Calculate backoff delay
 			backoffFactor := consecutiveFailures - 1
@@ -512,7 +515,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		}
 
 		if ctx.Err() != nil {
-			cleanup()
 			return nil
 		}
 
@@ -545,6 +547,9 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 			return err
 		}
 		streamDuration := time.Since(streamStartTime)
+		if !streamClosed && ctx.Err() == nil && consecutiveFailures+1 >= maxConsecutiveFailures {
+			return fmt.Errorf("event stream failed after %d consecutive failures", maxConsecutiveFailures)
+		}
 
 		// DIAGNOSTIC: Log stream end with timing
 		m.logger.Info("DIAGNOSTIC: Docker events stream ended",
@@ -556,18 +561,12 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		// If stream closed cleanly due to context cancellation, cleanup and exit
 		if ctx.Err() != nil {
 			m.logger.Info("manager stopping due to context cancellation")
-			cleanup()
 			return nil
 		}
 
 		// Stream closed unexpectedly
 		if !streamClosed {
 			consecutiveFailures++
-
-			// Check if we've exceeded max failures
-			if consecutiveFailures >= maxConsecutiveFailures {
-				return fmt.Errorf("event stream failed after %d consecutive failures", maxConsecutiveFailures)
-			}
 
 			// Calculate backoff delay: 1s, 2s, 4s, 8s, ..., max 30s
 			// Safely convert to uint to prevent overflow
@@ -615,7 +614,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 				timer.Stop()
 			case <-ctx.Done():
 				timer.Stop()
-				cleanup()
 				return nil
 			}
 		}
@@ -1135,6 +1133,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 
 	// #nosec G204 - SSH command with validated host format
 	cmd := exec.CommandContext(testCtx, "ssh", args...)
+	cmd.WaitDelay = 2 * time.Second
 
 	testStart := time.Now()
 	output, err := cmd.Output()
@@ -1155,7 +1154,7 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 }
 
 // startStateWriter runs background state file updates
-func (m *Manager) startStateWriter(ctx context.Context) {
+func (m *Manager) startStateWriter(ctx context.Context) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -1165,10 +1164,7 @@ func (m *Manager) startStateWriter(ctx context.Context) {
 			// Write final state before exit
 			forwards := m.state.GetActual()
 			history := m.history.GetAll()
-			if err := m.stateWriter.Write(forwards, history); err != nil {
-				m.logger.Warn("failed to write final state", "error", err)
-			}
-			return
+			return m.stateWriter.Write(forwards, history)
 
 		case <-ticker.C:
 			forwards := m.state.GetActual()
@@ -1178,41 +1174,4 @@ func (m *Manager) startStateWriter(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// cleanupAllForwards removes all active port forwards on shutdown.
-// Uses a background context to ensure cleanup completes even if original context is canceled.
-func (m *Manager) cleanupAllForwards(ctx context.Context) {
-	if m.stopRecovery != nil {
-		m.stopRecovery()
-	}
-	err := m.sshMaster.WithForwarding(ctx, func(connection *ssh.Forwarding) error {
-		m.invalidateRetired(connection.Generation())
-		return m.cleanupForwardsLocked(ctx, connection)
-	})
-	if err != nil {
-		m.logger.Warn("cleanup reconciliation encountered errors", "error", err)
-	}
-}
-
-func (m *Manager) cleanupForwardsLocked(ctx context.Context, connection *ssh.Forwarding) error {
-	m.logger.Info("cleaning up all port forwards on shutdown")
-
-	// Get all containers with active forwards
-	containers := m.state.GetAllContainers()
-
-	// Clear desired state for all containers (signal all forwards should be removed)
-	for _, containerID := range containers {
-		m.state.SetDesired(containerID, []int{})
-	}
-
-	// The existing cleanup policy remains; this path cannot start a connection.
-	if !connection.Ready() {
-		return fmt.Errorf("SSH connection unavailable during cleanup")
-	}
-	_, remove := m.reconciler.Diff()
-	for i := range remove {
-		remove[i].EndReason = "rdhpf shutdown"
-	}
-	return m.applyActions(ctx, connection, remove)
 }

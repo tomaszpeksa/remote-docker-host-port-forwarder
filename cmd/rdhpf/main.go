@@ -134,7 +134,7 @@ func runMain(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create logger
-	logger := logging.NewLogger(cfg.LogLevel)
+	logger := withShutdownProofLogger(logging.NewLogger(cfg.LogLevel))
 	logger.Info("rdhpf starting",
 		"version", version,
 		"host", cfg.Host)
@@ -146,20 +146,14 @@ func runMain(cmd *cobra.Command, args []string) error {
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		logger.Info("received signal, shutting down", "signal", sig.String())
-		cancel()
-	}()
-
-	// Initialize components
-	if err := run(ctx, cfg, logger); err != nil {
-		// context.Canceled is expected during graceful shutdown
-		if err == context.Canceled {
-			logger.Info("rdhpf stopped")
-			return nil
-		}
-		logger.Error("fatal error", "error", err.Error())
+	joinSignals := startSignalWorker(ctx, cancel, sigChan, logger)
+	deadline, err := run(ctx, cfg, logger)
+	signal.Stop(sigChan)
+	cancel()
+	joinSignals()
+	err = checkShutdownDeadline(deadline, err)
+	if err != nil && !cancellationOnly(err) {
+		logger.Error("fatal error", "error", "application stopped with an error")
 		return err
 	}
 
@@ -167,55 +161,80 @@ func runMain(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// Keep the owning run frame (and its admission defer) alive until the retained
-// child's completion is proved. This is not a background supervisor or deadline.
-func closeSSHMaster(closeMaster func() error, logger *slog.Logger) {
-	warned := false
-	for {
-		err := closeMaster()
-		if !errors.Is(err, ssh.ErrRetirementUncertain) {
-			if err != nil {
-				logger.Warn("failed to close SSH master", "error", err)
-			}
-			return
-		}
-		if !warned {
-			logger.Warn("waiting for owned SSH retirement; retaining publisher ownership", "error", err)
-			warned = true
-		}
-		// Close already uses bounded retirement waits. Avoid spinning if Wait
-		// returned without proof; cancellation must not abandon this obligation.
-		time.Sleep(100 * time.Millisecond)
+type cleanupFailure struct{ cause error }
+
+func (e *cleanupFailure) Error() string { return "shutdown cleanup failed" }
+func (e *cleanupFailure) Unwrap() error { return e.cause }
+
+func checkShutdownDeadline(deadline time.Time, err error) error {
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return errors.Join(err, &cleanupFailure{cause: context.DeadlineExceeded})
 	}
+	return err
 }
 
-func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+// Cancellation is graceful only when every wrapped/joined cause is cancellation
+// and none is a cleanup failure. errors.Is alone would hide mixed failures.
+func cancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.(type) {
+	case *cleanupFailure, *manager.ShutdownError:
+		return false
+	}
+	if err == context.Canceled {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !cancellationOnly(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return cancellationOnly(wrapped.Unwrap())
+	}
+	return false
+}
+
+func startSignalWorker(ctx context.Context, cancel context.CancelFunc, signals <-chan os.Signal, logger *slog.Logger) func() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+		case sig := <-signals:
+			cancel()
+			logger.Info("received signal, shutting down", "signal", sig.String())
+		}
+	}()
+	return func() { <-done }
+}
+
+func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) (deadline time.Time, runErr error) {
 	owner, err := instancepath.Acquire(cfg.Host)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	defer func() {
 		if err := owner.Close(); err != nil {
-			logger.Warn("publisher ownership close failed", "error", err)
+			runErr = errors.Join(runErr, &cleanupFailure{cause: err})
 		}
+		runErr = checkShutdownDeadline(deadline, runErr)
 	}()
 	// 1. Create SSH Master
 	logger.Info("establishing SSH ControlMaster connection")
 	sshMaster, err := ssh.NewMaster(cfg.Host, logger)
 	if err != nil {
-		return fmt.Errorf("failed to create SSH master: %w", err)
+		return time.Time{}, fmt.Errorf("failed to create SSH master: %w", err)
 	}
-
-	// Own cleanup before startup can create a child, including failed Open.
-	defer func() {
-		logger.Info("closing SSH ControlMaster connection")
-		closeSSHMaster(sshMaster.Close, logger)
-	}()
-	if err := sshMaster.Open(ctx); err != nil {
-		return fmt.Errorf("failed to open SSH master: %w", err)
-	}
-
-	logger.Info("SSH ControlMaster established")
 
 	// 2. Every operation uses this Master's stable private endpoint.
 	controlPath := sshMaster.ControlPath()
@@ -241,24 +260,21 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		logger,
 	)
 
-	// 7. Run manager (blocks until context canceled)
-	logger.Info("starting manager")
-	if err := mgr.Run(ctx, owner); err != nil {
-		// context.Canceled is expected during graceful shutdown
-		if err != context.Canceled {
-			return fmt.Errorf("manager error: %w", err)
+	// Register the single final owner before Open can launch a child.
+	defer func() {
+		var cleanupErr error
+		deadline, cleanupErr = mgr.Shutdown()
+		if cleanupErr != nil && !errors.Is(runErr, cleanupErr) {
+			runErr = errors.Join(runErr, cleanupErr)
 		}
+	}()
+	bindShutdownProof(logger, mgr)
+	if err := mgr.Open(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("failed to open SSH master: %w", err)
 	}
-
-	// 8. Perform cleanup after manager stops
-	logger.Info("shutdown initiated, cleaning up forwards")
-	if err := cleanup(stateManager, reconciler, sshMaster, cfg.Host, logger); err != nil {
-		logger.Warn("cleanup encountered errors", "error", err.Error())
-		// Continue with shutdown even if cleanup had errors
-	}
-
-	logger.Info("forward cleanup attempt complete; closing owned SSH connection")
-	return nil
+	logger.Info("SSH ControlMaster established")
+	logger.Info("starting manager")
+	return time.Time{}, mgr.Run(ctx, owner)
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -395,57 +411,4 @@ func convertSnapshotToForwards(snapshot *statefile.StateFile) []status.Forward {
 	}
 
 	return allForwards
-}
-
-// cleanup removes all active forwards before shutdown.
-// It has a 10-second timeout to prevent hanging on cleanup.
-func cleanup(stateManager *state.State, reconciler *reconcile.Reconciler, sshMaster *ssh.Master, host string, logger *slog.Logger) error {
-	// Create a timeout context for cleanup (10 seconds max)
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	return sshMaster.WithForwarding(cleanupCtx, func(connection *ssh.Forwarding) error {
-		reconciler.RetireBefore(connection.Generation())
-		if !connection.Ready() {
-			return fmt.Errorf("SSH connection unavailable during cleanup")
-		}
-		return cleanupForwardsLocked(cleanupCtx, stateManager, reconciler, connection, logger)
-	})
-}
-
-func cleanupForwardsLocked(cleanupCtx context.Context, stateManager *state.State, reconciler *reconcile.Reconciler, connection *ssh.Forwarding, logger *slog.Logger) error {
-	logger.Info("removing all active forwards")
-
-	// Clear all desired state (this will make reconciler want to remove everything)
-	allContainers := stateManager.GetAllContainers()
-	for _, containerID := range allContainers {
-		stateManager.SetDesired(containerID, []int{})
-	}
-
-	// Perform reconciliation to remove forwards
-	_, toRemove := reconciler.Diff()
-
-	if len(toRemove) == 0 {
-		logger.Info("no forwards to remove")
-		return nil
-	}
-
-	logger.Info("removing forwards during shutdown",
-		"count", len(toRemove))
-
-	// Apply removal actions; an ineligible/uncertain obligation is not removal.
-	for i := range toRemove {
-		toRemove[i].EndReason = "rdhpf shutdown"
-	}
-	if err := reconciler.Apply(cleanupCtx, connection, toRemove); err != nil {
-		return fmt.Errorf("failed to remove forwards: %w", err)
-	}
-	if len(stateManager.GetResources()) != 0 {
-		return fmt.Errorf("forward cleanup obligations remain")
-	}
-
-	logger.Info("all forwards removed successfully",
-		"count", len(toRemove))
-
-	return nil
 }

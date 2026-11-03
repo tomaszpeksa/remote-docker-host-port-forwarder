@@ -14,6 +14,6 @@ func TestCommandHelpTextPreservesWhitespace(t *testing.T) {
 		"When a container starts with published ports, rdhpf detects it and establishes \n"+
 		"SSH port forwards so you can access the services on localhost.", rootCmd.Long)
 	require.Equal(t, "Display the current status of all active port forwards.\n\t\n"+
-		"This command queries the SSH ControlMaster to determine which forwards\n"+
-		"are currently active and displays them in the requested format.", statusCmd.Long)
+		"This command reads the local status socket or a stored snapshot.\n"+
+		"Stored active state does not verify that rdhpf or application traffic is running.", statusCmd.Long)
 }

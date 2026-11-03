@@ -70,10 +70,34 @@ rdhpf run --host ssh://user@remote-host
 - Keep this terminal running; press Ctrl+C to stop gracefully
 - In another terminal you can connect to forwarded services on 127.0.0.1:PORT
 
-Verify:
+Observe local status:
 ```bash
 rdhpf status --host ssh://user@remote-host
 ```
+
+### Status observations and history
+
+`rdhpf status` reads the local status socket first, then falls back to its state
+file. It does not contact SSH or Docker and does not probe application traffic.
+The command shares one five-second observation budget; the socket attempt uses
+at most one second, leaving the remaining time for the file and its reader lock.
+Cancellation, an unavailable lock, unreadable/corrupt data, unsupported snapshot
+version or a snapshot for a different host returns exit 1 with a safe diagnostic.
+Only an absent/refused socket together with an absent file returns empty status
+and exit 0 (`forwards: []` in structured output).
+
+Valid stored snapshots remain visible, including those older than ten seconds.
+Stale files produce a stderr warning that rdhpf is not verified running, while
+still returning exit 0. Stored `active` describes the last observation, not a
+liveness guarantee. Use a fresh request to the forwarded application to verify
+traffic. JSON/YAML output retains the existing structure without warning fields.
+
+History retains the most recent 100 inserted entries for less than one hour;
+entries expire at exactly one hour even when there are no new insertions. Table
+STARTED is time since the original start and ENDED is time since termination.
+Structured history duration is the completed lifetime (end minus start); current
+forward duration is time since creation. Shutdown consumes actual history once
+after retirement and joins publishers; snapshots are not persistent recovery state.
 
 ### Event health probe target
 
@@ -332,7 +356,7 @@ sudo systemctl start rdhpf
 
 ### Monitoring
 
-- Use `rdhpf status` to verify active forwards
+- Use `rdhpf status` to observe forwards; use a fresh application request to verify traffic
 - On failures, run with `--log-level debug` or `--trace`
 
 ## See Also

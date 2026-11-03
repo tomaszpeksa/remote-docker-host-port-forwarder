@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Bound status socket decoding and file-lock acquisition within one shared
+  five-second command budget, with at most one second for the socket attempt.
+  Reject invalid/incompatible snapshots safely; failed observations no longer
+  look like empty success. Stale files remain visible with an explicit warning
+  that rdhpf is not verified running, without changing table/JSON/YAML schema.
+- Expire idle history at the one-hour boundary and display history STARTED from
+  the original start time, preserving structured lifetime and the 100-entry cap.
+
 - Use one Manager-owned shutdown finalizer across startup, monitoring, signals and
   failures. Share one first-terminal ten-second budget through original child and
   worker joins, history/publication cleanup, admission and signal completion;

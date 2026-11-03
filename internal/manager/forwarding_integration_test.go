@@ -90,7 +90,7 @@ func TestManagerForwardingOwnedCancellation(t *testing.T) {
 			pending := scenario.pending
 			h := newDiscoveryOwned(t)
 			forwardingRetirement(t, h)
-			t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
+			h.m.cfg.EnableLabelPorts = true
 			port := forwardingPort(t)
 			backend := h.transferBackend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
 			body := "forwarding-" + h.f.Alias + "-target"
@@ -320,9 +320,9 @@ func TestManagerForwardingOwnedConfiguredCollateral(t *testing.T) {
 	}
 	absent(target.port)
 	assertSuppressed()
-	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
+	h.m.cfg.EnableLabelPorts = true
 	marker := h.transferBackend(sshfixture.Alpine, 0, "rdhpf.test-infrastructure=true", fmt.Sprintf("rdhpf.forward.%d=ignored", local))
-	ports, err := docker.InspectPorts(h.ctx, h.f.Host, h.m.sshMaster.ControlPath(), marker)
+	ports, err := docker.InspectPorts(h.ctx, h.f.Host, h.m.sshMaster.ControlPath(), marker, true)
 	require.NoError(t, err)
 	require.Equal(t, []int{local}, ports)
 	_, err = h.m.listRunning(h.ctx)
@@ -334,7 +334,7 @@ func TestManagerForwardingOwnedConfiguredCollateral(t *testing.T) {
 	// Ordinary native fallback is permitted for these read-only commands, but
 	// still must not establish configured forwarding or Tunnel devices.
 	missing := filepath.Join(h.f.Dir, "missing-mux")
-	ports, err = docker.InspectPorts(h.ctx, h.f.Host, missing, marker)
+	ports, err = docker.InspectPorts(h.ctx, h.f.Host, missing, marker, true)
 	require.NoError(t, err)
 	require.Equal(t, []int{local}, ports)
 	_, err = h.m.hasTestInfrastructureLabel(h.ctx, missing, marker)

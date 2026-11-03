@@ -180,16 +180,78 @@ func assertIsolationOwner(t *testing.T, snapshot statefile.StateFile, pid int, h
 	}
 }
 
-var isolationMuxPattern = regexp.MustCompile(`controlPath=(/tmp/rdhpf-[^ ]+/mux) pid=([0-9]+)`)
+var isolationMuxPattern = regexp.MustCompile(`msg="SSH ControlMaster established" pid=([0-9]+)`)
+
+// Read only the exact logged child's proc entry, after checking its parent.
+// This is private test observation, never signal, adoption or cleanup authority.
+func isolationMasterPath(procDir string, parentPID int) (string, error) {
+	checkParent := func() error {
+		data, err := os.ReadFile(filepath.Join(procDir, "status"))
+		if err != nil {
+			return fmt.Errorf("owned SSH process status unavailable")
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "PPid:" && fields[1] == strconv.Itoa(parentPID) {
+				return nil
+			}
+		}
+		return fmt.Errorf("SSH process is not a child of the retained CLI")
+	}
+	if err := checkParent(); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(procDir, "cmdline"))
+	if err != nil {
+		return "", fmt.Errorf("owned SSH command observation unavailable")
+	}
+	args := strings.Split(string(data), "\x00")
+	if len(args) < 6 || filepath.Base(args[0]) != "ssh" || args[1] != "-MN" || args[len(args)-3] != "--" || args[len(args)-2] == "" || args[len(args)-1] != "" {
+		return "", fmt.Errorf("unexpected owned SSH foreground command shape")
+	}
+	var path string
+	count := 0
+	for i := 2; i < len(args)-1 && args[i] != "--"; i++ {
+		if args[i] == "-o" && i+1 < len(args)-1 && strings.HasPrefix(args[i+1], "ControlPath=") {
+			count++
+			if count != 1 {
+				return "", fmt.Errorf("ambiguous owned SSH control path")
+			}
+			path = strings.TrimPrefix(args[i+1], "ControlPath=")
+		}
+	}
+	if !strings.HasPrefix(path, "/tmp/rdhpf-") || filepath.Base(path) != "mux" || filepath.Clean(path) != path {
+		return "", fmt.Errorf("missing or unexpected owned SSH control path")
+	}
+	if err := checkParent(); err != nil {
+		return "", err
+	}
+	return path, nil
+}
 
 func isolationMux(t *testing.T, p *isolationProcess) string {
 	t.Helper()
+	select {
+	case <-p.done:
+		t.Fatal("retained CLI exited before private mux observation")
+	default:
+	}
 	data, err := os.ReadFile(p.log)
 	require.NoError(t, err)
-	match := isolationMuxPattern.FindSubmatch(data)
-	require.Len(t, match, 3, "owned application's successful kernel association must be logged: %s", data)
-	t.Logf("observed application-owned mux=%s ssh-pid=%s (diagnostic only; never signaled)", match[1], match[2])
-	return string(match[1])
+	matches := isolationMuxPattern.FindAllSubmatch(data, -1)
+	require.Len(t, matches, 1, "exactly one successful owned SSH association receipt required")
+	pid, err := strconv.Atoi(string(matches[0][1]))
+	require.NoError(t, err)
+	require.Positive(t, pid)
+	path, err := isolationMasterPath(filepath.Join("/proc", strconv.Itoa(pid)), p.cmd.Process.Pid)
+	require.NoError(t, err)
+	select {
+	case <-p.done:
+		t.Fatal("retained CLI exited during private mux observation")
+	default:
+	}
+	t.Logf("observed application-owned mux=%s ssh-pid=%d (private observation only; never signaled)", path, pid)
+	return path
 }
 
 func TestOwnedCLIIsolation(t *testing.T) {
@@ -270,7 +332,7 @@ func TestOwnedCLIIsolation(t *testing.T) {
 			require.Error(t, runErr, "ISOLATION_DUPLICATE_EXIT")
 			require.NotNil(t, cmd.ProcessState)
 			require.NotZero(t, cmd.ProcessState.ExitCode(), "ISOLATION_DUPLICATE_EXIT")
-			require.Contains(t, string(output), "another rdhpf publisher already owns this status directory", "ISOLATION_DUPLICATE_DIAGNOSTIC")
+			require.Contains(t, string(output), "operation failed; check configuration and local ownership (rdhpf --help)", "ISOLATION_DUPLICATE_DIAGNOSTIC")
 			t.Logf("contender=%s actual_exit=%d", tc.name, cmd.ProcessState.ExitCode())
 			select {
 			case <-incumbent.done:

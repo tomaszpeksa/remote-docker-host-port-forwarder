@@ -43,7 +43,7 @@ func TestManagerForwardingOwnedClaimantTransfer(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newDiscoveryOwned(t)
 			forwardingRetirement(t, h)
-			t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
+			h.m.cfg.EnableLabelPorts = true
 			port := forwardingPort(t)
 			backend := h.transferBackend(sshfixture.Nginx, port, "rdhpf.test-infrastructure=true")
 			body := "transfer-" + h.f.Alias
@@ -58,7 +58,7 @@ func TestManagerForwardingOwnedClaimantTransfer(t *testing.T) {
 			observe := func(b discoveryBackend) []int {
 				h.verify(b.id)
 				require.Equal(t, "true", h.f.Docker("inspect", "--format", "{{.State.Running}}", b.id))
-				ports, err := docker.InspectPorts(h.ctx, h.f.Host, h.m.sshMaster.ControlPath(), b.id)
+				ports, err := docker.InspectPorts(h.ctx, h.f.Host, h.m.sshMaster.ControlPath(), b.id, true)
 				require.NoError(t, err)
 				require.Equal(t, []int{b.port}, ports)
 				return ports

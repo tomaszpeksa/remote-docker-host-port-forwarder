@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func applyOwnedActions(ctx context.Context, master *ssh.Master, reconciler *reco
 func TestConflict_OccupiedPort(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
@@ -83,9 +84,9 @@ func TestConflict_OccupiedPort(t *testing.T) {
 	require.NotNil(t, port16379State, "Port 16379 should exist in state")
 	assert.Equal(t, "conflict", port16379State.Status,
 		"Port 16379 should be marked as conflict")
-	// SSH returns "Port forwarding failed" when port is occupied (remote error)
-	assert.Contains(t, port16379State.Reason, "Port forwarding failed",
-		"Conflict reason should mention port forwarding failure")
+	// Generic SSH rejection stays private; new published reasons are controlled.
+	assert.Equal(t, "forward creation failed", port16379State.Reason)
+	assert.ErrorContains(t, err, "Port forwarding failed", "original SSH rejection remains privately returned")
 
 	// Port 8080 should be active (not affected by 16379 conflict)
 	require.NotNil(t, port8080State, "Port 8080 should exist in state")
@@ -111,7 +112,7 @@ func TestConflict_OccupiedPort(t *testing.T) {
 func TestConflict_PortReleased(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 
@@ -193,7 +194,7 @@ func TestConflict_PortReleased(t *testing.T) {
 func TestConflict_MultipleContainersOneConflict(t *testing.T) {
 	sshHost := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	st := state.NewState()
 	reconciler := reconcile.NewReconciler(st, state.NewHistory(), logger)
 

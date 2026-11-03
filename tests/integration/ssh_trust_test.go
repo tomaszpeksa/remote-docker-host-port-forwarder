@@ -175,7 +175,7 @@ func TestDockerMissingMuxTrust(t *testing.T) {
 				case "ports":
 					// Real nonempty published-port data, not an empty parser success.
 					published := f.Backend(sshfixture.Nginx, 18082)
-					ports, err := docker.InspectPorts(ctx, f.Host, missing, published)
+					ports, err := docker.InspectPorts(ctx, f.Host, missing, published, true)
 					if success {
 						require.NoError(t, err)
 						require.Equal(t, []int{18082}, ports)
@@ -183,8 +183,7 @@ func TestDockerMissingMuxTrust(t *testing.T) {
 						require.Error(t, err)
 					}
 				case "labels":
-					t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
-					ports, err := docker.InspectPorts(ctx, f.Host, missing, id)
+					ports, err := docker.InspectPorts(ctx, f.Host, missing, id, true)
 					if success {
 						require.NoError(t, err)
 						require.Equal(t, []int{18081}, ports)
@@ -247,14 +246,13 @@ func TestInspectNamedLabelFallback(t *testing.T) {
 	f := sshfixture.New(t)
 	f.Configure("yes", f.PublicKey, "", f.Key, "no")
 	id := f.Backend(sshfixture.Alpine, 0, "rdhpf.forward.18090=80")
-	t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
 	name := strings.TrimPrefix(f.Docker("inspect", "--format", "{{.Name}}", id), "/")
 	require.Equal(t, id, f.Docker("inspect", "--format", "{{.Id}}", name))
 	for _, tc := range []struct{ name, operand string }{{"full", id}, {"short", id[:12]}, {"name", name}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
-			ports, err := docker.InspectPorts(ctx, f.Host, filepath.Join(f.Dir, "missing-mux"), tc.operand)
+			ports, err := docker.InspectPorts(ctx, f.Host, filepath.Join(f.Dir, "missing-mux"), tc.operand, true)
 			require.NoError(t, err)
 			require.NoError(t, ctx.Err())
 			require.Equal(t, []int{18090}, ports)

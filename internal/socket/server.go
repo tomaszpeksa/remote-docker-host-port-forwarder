@@ -95,7 +95,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.started = true
 	s.mu.Unlock()
 	defer close(s.startDone)
-	s.logger.Debug("socket server listening", "path", s.socketPath)
+	s.logger.Debug("socket server listening")
 
 	stop, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -124,7 +124,7 @@ func (s *Server) Start(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil
 			default:
-				s.logger.Warn("failed to accept connection", "error", err)
+				s.logger.Warn("failed to accept connection")
 				continue
 			}
 		}
@@ -166,7 +166,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	encoder := json.NewEncoder(conn)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(snapshot); err != nil {
-		s.logger.Warn("failed to write snapshot to socket", "error", err)
+		s.logger.Warn("failed to write snapshot to socket")
 	}
 }
 

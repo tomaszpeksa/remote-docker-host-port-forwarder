@@ -13,7 +13,7 @@ rdhpf is designed for developers and CI environments using a remote DOCKER_HOST 
 - Automatic reconnection and self-healing (ControlMaster health checks, circuit breaker)
 - Clear conflict handling when local ports are in use (actionable messages and backoff)
 - Status reporting via `rdhpf status` (table/json/yaml)
-- Structured logging with debug and trace modes with redaction
+- Structured safe diagnostic summaries with debug and trace modes
 
 
 ## Quick Start
@@ -135,7 +135,7 @@ rdhpf is primarily configured via CLI flags with a small set of optional environ
 - CLI flags (`rdhpf run`):
   - `--host` string: SSH host in format `ssh://user@host` (required)
   - `--log-level` string: Log level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`)
-  - `--trace`: Shortcut to maximum verbosity (equivalent to `--log-level trace`)
+  - `--trace`: Select trace above the environment setting; `--trace=false` forces nothing
 
 - CLI flags (`rdhpf status`):
   - `--host` string: SSH host in format `ssh://user@host` (required)
@@ -143,6 +143,20 @@ rdhpf is primarily configured via CLI flags with a small set of optional environ
 
 - Environment variables:
   - `RDHPF_LOG_LEVEL`: One of `trace`, `debug`, `info`, `warn`, `error`
+  - `RDHPF_ENABLE_LABEL_PORTS`: Empty/unset or `0` disables label hints; `1` enables them; other values fail
+
+Logging precedence is true `--trace` > nonempty `RDHPF_LOG_LEVEL` > supplied
+`--log-level` > INFO. Every supplied level is validated, even when shadowed.
+Names are case-insensitive, without whitespace trimming; an explicitly empty
+flag is invalid, while an empty environment value is absent. Configuration is
+resolved once before startup. Trace retains its threshold but currently has the
+same production content as debug.
+
+Diagnostics omit host/user/IP/control paths, raw payloads and child output at
+all levels. Operation outcomes, numeric ports/PIDs/counts/timing and proven
+Docker ID prefixes remain useful but are not anonymous. Functional status
+identities remain unchanged; existing logs/history are not scrubbed. See
+[label hint limitations](docs/user-guide.md#label-port-hints) before opting in.
 
 - Config file:
   - Not implemented in v1.0.0

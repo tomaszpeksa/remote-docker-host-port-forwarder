@@ -127,13 +127,12 @@ func TestWatchdogRunConnectivityNativeWork(t *testing.T) {
 	}
 	args := []string{"-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "Tunnel=no", "-S", r.m.sshMaster.ControlPath(), "--", "owned-fixture.invalid", `sh -c "docker version --format '{{.Server.Version}}'"`}
 	originalLogger := r.m.logger
-	var versions []string
+	var successes int
 	watchRunLogs(r.m, func(record slog.Record) {
 		if record.Message == "DIAGNOSTIC: Docker connectivity test succeeded" {
+			successes++
 			record.Attrs(func(attr slog.Attr) bool {
-				if attr.Key == "docker_version" {
-					versions = append(versions, attr.Value.String())
-				}
+				require.NotEqual(t, "docker_version", attr.Key, "captured command output stays private")
 				return true
 			})
 		}
@@ -142,7 +141,7 @@ func TestWatchdogRunConnectivityNativeWork(t *testing.T) {
 		require.NoError(t, r.m.validateDockerConnectivity(context.Background(), r.m.sshMaster.ControlPath()))
 	}
 	r.m.logger = originalLogger
-	require.Equal(t, []string{"{}", "{}", "{}"}, versions)
+	require.Equal(t, 3, successes)
 	entries := readEntries()
 	for _, entry := range entries {
 		t.Logf("CONNECTIVITY_NATIVE_ENTRY argv=%q", entry)

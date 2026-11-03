@@ -17,7 +17,7 @@ Design principles:
 - Single responsibility per module; clear orchestration in the Manager
 - Deterministic/idempotent operations (reconciliation model)
 - Favor OS/battle-tested tools over custom protocols
-- Non-interactive operation; structured logging; safe redaction
+- Non-interactive operation; structured logging; omission-first diagnostics
 - Self-healing on failures; bounded backoff; circuit breaker
 
 ### High-level architecture (ASCII)
@@ -92,16 +92,32 @@ This section maps responsibilities to packages and files in the repository. Link
     - cmd/rdhpf/main.go — `status` command wiring
 
 - Logging
-  - Structured logs with optional TRACE level; redact sensitive info
-  - Correlation ID helpers for consistent tracing
+  - Strict shared level parser; parsed slog levels, including TRACE (-8)
+  - Producers omit unsafe attributes before any handler, not via a sanitizer
+  - Trace currently has debug-equivalent production content
   - Files:
-    - internal/logging/logger.go — logger setup, redaction, correlation ID utilities
+    - internal/logging/logger.go — strict level parsing and stdout logger setup
 
 - Configuration and CLI
-  - CLI flags via Cobra; validation and env fallback
+  - CLI flags via Cobra; one-time environment resolution before resource acquisition
   - Files:
     - cmd/rdhpf/main.go — commands, flags, run/status; signal handling and shutdown
-    - internal/config/config.go — config struct, fixed ports parsing, validation
+    - internal/config/config.go — config struct and pure validation
+
+Configuration precedence is true trace > nonempty environment > supplied level
+flag/default INFO. Every supplied level is validated, even when shadowed; names
+are case-insensitive without trimming. Explicit empty flags fail; empty environment
+is absent. Programmatic empty LogLevel means omitted/INFO, and validation neither
+reads environment nor mutates Config. Manager passes EnableLabelPorts explicitly
+to both InspectPorts consumers; endpoint/fallback selection is unchanged.
+
+Diagnostics keep fixed outcomes, numeric exit/port/PID/count/timing and proven
+Docker-ID prefixes only at fixed target command-result decoding, additionally
+checking canonical full-ID shape. Generic event/state inputs carry no provenance.
+Raw errors/argv/host/user/IP/path/payload/child output are private; Cobra's automatic
+error echo is disabled in favor of controlled CLI guidance. New conflict/transfer
+reasons are fixed summaries; historical reasons and functional status identities
+are not rewritten. Foreground SSH Stderr is nil (null device), not a copy worker.
 
 ## Key Algorithms
 
@@ -232,7 +248,7 @@ Related code: internal/ssh/forward.go (AddForwardWithRetry)
    - Starts Docker event stream over SSH (start/die/stop)
    - Starts independent bounded startup inventory/audits (partial desired merge)
 4. Reconciler computes add actions and applies via the owned mux forwarding capability
-5. State reflects active forwards; logs emitted with correlation IDs
+5. State reflects active forwards; safe operation/count/port diagnostics emitted
 
 ### Event processing
 

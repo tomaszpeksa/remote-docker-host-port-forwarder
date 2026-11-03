@@ -65,8 +65,9 @@ func TestInspectShellOperands(t *testing.T) {
 		for _, tc := range inspectShellOperands() {
 			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
 				marker, argv, launch := inspectShellFixture(t, method.reply, bin)
-				t.Setenv("RDHPF_ENABLE_LABEL_PORTS", "1")
-				call := InspectPorts
+				call := func(ctx context.Context, host, path, id string) ([]int, error) {
+					return InspectPorts(ctx, host, path, id, true)
+				}
 				if method.name == "inspectPortsFromLabels" {
 					call = inspectPortsFromLabels
 				}

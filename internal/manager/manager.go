@@ -58,15 +58,16 @@ func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
 	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = stdout, stderr, 2*time.Second
 	err = cmd.Run()
 	if err != nil {
+		exitCode := -1 // No process exit status (for example, launch failure).
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+		}
 		r.logger.Warn("event health ping docker run failed",
-			"error", err.Error(),
-			"output", stdout.String(), "stderr", stderr.String(),
-			"truncated", stdout.Truncated() || stderr.Truncated())
+			"exitCode", exitCode, "truncated", stdout.Truncated() || stderr.Truncated())
 		return fmt.Errorf("event health ping docker run failed: %w", err)
 	}
 
 	r.logger.Debug("event health ping docker run succeeded",
-		"output", strings.TrimSpace(stdout.String()), "stderr", stderr.String(),
 		"truncated", stdout.Truncated() || stderr.Truncated())
 	return nil
 }
@@ -392,7 +393,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	m.socketServer, err = socket.NewServerAtPath(m.cfg.Host, socketPath, m.state, m.history, m.startedAt, m.logger)
 	if err != nil {
 		m.shutdown.publicationErr = err
-		m.logger.Warn("failed to create socket server, status will use file only", "error", err)
+		m.logger.Warn("failed to create socket server, status will use file only")
 	} else {
 		m.logger.Info("socket server started")
 	}
@@ -433,8 +434,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	// Start SSH health monitor (check every 15 seconds for faster failure detection)
 	m.sshMaster.StartHealthMonitor(ctx, 15*time.Second)
 	m.logger.Info("SSH health monitoring started",
-		"check_interval", "15s",
-		"control_path", m.sshMaster.ControlPath())
+		"check_interval", "15s")
 
 	// Start performance metrics logger (log every 5 minutes)
 	go func() { defer close(metricsDone); m.logPerformanceMetrics(ctx, 5*time.Minute) }()
@@ -469,7 +469,6 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 				return fmt.Errorf("SSH ControlMaster failed after %d consecutive failures", maxConsecutiveFailures)
 			}
 			m.logger.Error("Failed to ensure SSH ControlMaster is alive",
-				"error", err.Error(),
 				"consecutive_failures", consecutiveFailures)
 
 			// Calculate backoff delay
@@ -503,13 +502,11 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		// DIAGNOSTIC: Pre-flight checks before starting stream
 		controlPath := m.sshMaster.ControlPath()
 		m.logger.Info("DIAGNOSTIC: SSH ControlMaster verified healthy before stream start",
-			"control_path", controlPath,
 			"consecutive_failures", consecutiveFailures)
 
 		// Test Docker daemon connectivity with a simple command
 		if err := m.validateDockerConnectivity(ctx, controlPath); err != nil {
-			m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed",
-				"error", err.Error())
+			m.logger.Warn("DIAGNOSTIC: Docker daemon connectivity test failed")
 		} else {
 			m.logger.Info("DIAGNOSTIC: Docker daemon connectivity validated")
 		}
@@ -651,7 +648,7 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, ticks <-chan time.
 				selectedAt, lastEvent := m.watchdog.selectedAt, m.watchdog.lastEvent
 				m.watchdog.mu.RUnlock()
 				m.logger.Error("event stream watchdog detected failure, shutting down",
-					"error", err, "selected_at", selectedAt, "last_successful_event", lastEvent)
+					"reason", "no successfully handled Docker events", "selected_at", selectedAt, "last_successful_event", lastEvent)
 				return
 			}
 			if !deadline.IsZero() && probeDone == nil && ctx.Err() == nil {
@@ -712,7 +709,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 			result = &completed
 			terminal = nil
 			if completed.Err != nil && !completed.Canceled {
-				m.logger.Error("event stream error", "error", completed.Err)
+				m.logger.Error("event stream error")
 			}
 
 		case accepted, ok := <-events:
@@ -730,9 +727,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 			switch event.Type {
 			case "start":
 				if err := m.handleStartEvent(ctx, event, generation); err != nil {
-					m.logger.Error("failed to handle start event",
-						"containerID", event.ContainerID[:12],
-						"error", err.Error())
+					m.logger.Error("failed to handle start event")
 				} else {
 					eventCount++
 					resetDebounceTimer()
@@ -742,9 +737,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 
 			case "die", "stop":
 				if err := m.handleStopEvent(ctx, event, generation); err != nil {
-					m.logger.Error("failed to handle stop event",
-						"containerID", event.ContainerID[:12],
-						"error", err.Error())
+					m.logger.Error("failed to handle stop event")
 				} else {
 					eventCount++
 					resetDebounceTimer()
@@ -753,9 +746,7 @@ func (m *Manager) runEventLoop(ctx context.Context, terminal <-chan docker.Strea
 				}
 
 			default:
-				m.logger.Warn("unexpected event type",
-					"type", event.Type,
-					"containerID", event.ContainerID[:12])
+				m.logger.Warn("unexpected event type")
 			}
 
 			m.retireEvent(accepted.token)
@@ -794,19 +785,17 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event, gene
 		m.metrics.recordEventProcessing(duration)
 		m.logger.Debug("event processing time",
 			"event", "start",
-			"containerID", event.ContainerID[:12],
 			"duration_ms", duration.Milliseconds())
 	}()
 
-	m.logger.Info("handling container start",
-		"containerID", event.ContainerID[:12])
+	m.logger.Info("handling container start")
 
 	// Get control path for docker inspect
 	controlPath := m.sshMaster.ControlPath()
 
 	// Inspect container to get published ports
 	cmdStart := time.Now()
-	ports, err := docker.InspectPorts(ctx, m.cfg.Host, controlPath, event.ContainerID)
+	ports, err := docker.InspectPorts(ctx, m.cfg.Host, controlPath, event.ContainerID, m.cfg.EnableLabelPorts)
 	m.metrics.recordSSHCommand(time.Since(cmdStart))
 
 	if err != nil {
@@ -815,7 +804,6 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event, gene
 	}
 
 	m.logger.Info("container ports discovered",
-		"containerID", event.ContainerID[:12],
 		"ports", ports)
 
 	// Update desired state
@@ -835,8 +823,7 @@ func (m *Manager) handleStartEvent(ctx context.Context, event docker.Event, gene
 //  1. Clear desired state for the container (set to empty ports)
 //  2. Trigger debounced reconciliation
 func (m *Manager) handleStopEvent(ctx context.Context, event docker.Event, generation uint64) error {
-	m.logger.Info("handling container stop",
-		"containerID", event.ContainerID[:12])
+	m.logger.Info("handling container stop")
 
 	// Clear desired state (empty ports = no forwards wanted)
 	if err := m.setEventDesired(ctx, generation, event.ContainerID, []int{}); err != nil {
@@ -1067,13 +1054,13 @@ func (m *Manager) hasTestInfrastructureLabel(ctx context.Context, controlPath, c
 	defer cancel()
 	sshHost, port, err := ssh.ParseHost(m.cfg.Host)
 	if err != nil {
-		m.logger.Warn("failed to parse SSH host", "error", err.Error())
+		m.logger.Warn("failed to parse SSH host")
 		return false, err
 	}
 
 	operand, err := ssh.QuoteShellArg(containerID)
 	if err != nil {
-		m.logger.Warn("invalid container operand", "error", err.Error())
+		m.logger.Warn("invalid container operand")
 		return false, err
 	}
 	dockerCmd := fmt.Sprintf("docker inspect --format '{{index .Config.Labels \"%s\"}}' -- %s", docker.LabelTestInfrastructure, operand)
@@ -1136,19 +1123,21 @@ func (m *Manager) validateDockerConnectivity(ctx context.Context, controlPath st
 	cmd.WaitDelay = 2 * time.Second
 
 	testStart := time.Now()
-	output, err := cmd.Output()
+	_, err = cmd.Output()
 	testDuration := time.Since(testStart)
 
 	if err != nil {
+		exitCode := -1 // No process exit status (for example, launch failure).
+		if cmd.ProcessState != nil {
+			exitCode = cmd.ProcessState.ExitCode()
+		}
 		m.logger.Warn("DIAGNOSTIC: Docker connectivity test failed",
-			"duration_ms", testDuration.Milliseconds(),
-			"error", err.Error())
+			"exitCode", exitCode, "duration_ms", testDuration.Milliseconds())
 		return fmt.Errorf("docker connectivity test failed: %w", err)
 	}
 
 	m.logger.Info("DIAGNOSTIC: Docker connectivity test succeeded",
-		"duration_ms", testDuration.Milliseconds(),
-		"docker_version", strings.TrimSpace(string(output)))
+		"duration_ms", testDuration.Milliseconds())
 
 	return nil
 }
@@ -1170,7 +1159,7 @@ func (m *Manager) startStateWriter(ctx context.Context) error {
 			forwards := m.state.GetActual()
 			history := m.history.GetAll()
 			if err := m.stateWriter.Write(forwards, history); err != nil {
-				m.logger.Warn("failed to write state", "error", err)
+				m.logger.Warn("failed to write state")
 			}
 		}
 	}

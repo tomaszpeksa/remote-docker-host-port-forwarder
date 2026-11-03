@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func getTestSSHHost(t *testing.T) string {
 func TestSSHMaster_OpenAndClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err, "Should create master successfully")
 
@@ -56,7 +57,7 @@ func TestSSHMaster_OpenAndClose(t *testing.T) {
 func TestSSHMaster_Check(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
@@ -77,7 +78,7 @@ func TestSSHMaster_Check(t *testing.T) {
 func TestSSHMaster_CheckAfterClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
@@ -100,7 +101,7 @@ func TestSSHMaster_CheckAfterClose(t *testing.T) {
 func TestSSHMaster_MultipleOpenClose(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
@@ -130,7 +131,7 @@ func TestSSHMaster_MultipleOpenClose(t *testing.T) {
 func TestSSHMaster_ControlPathReleased(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 
 	// First master
 	master1, err := newOwnedMaster(t, host, logger)
@@ -178,7 +179,7 @@ func TestSSHMaster_ControlPathReleased(t *testing.T) {
 func TestSSHMaster_ConcurrentCheck(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
@@ -200,7 +201,7 @@ func TestSSHMaster_ConcurrentCheck(t *testing.T) {
 func TestSSHMaster_ContextCancellation(t *testing.T) {
 	host := getTestSSHHost(t)
 
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, host, logger)
 	require.NoError(t, err)
 
@@ -215,7 +216,7 @@ func TestSSHMaster_ContextCancellation(t *testing.T) {
 
 // TestSSHMaster_InvalidHost tests error handling for invalid host
 func TestSSHMaster_InvalidHost(t *testing.T) {
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 
 	invalidHosts := []string{
 		"user@example.com",     // Missing ssh:// prefix

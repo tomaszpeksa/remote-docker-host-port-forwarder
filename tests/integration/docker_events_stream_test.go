@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestDockerEventsStreamPersistence(t *testing.T) {
 	defer cancel()
 
 	// Setup SSH ControlMaster
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, sshHost, logger)
 	if err != nil {
 		t.Fatalf("Failed to create SSH master: %v", err)
@@ -98,7 +99,7 @@ func TestDockerEventsStreamReceivesEvents(t *testing.T) {
 	defer cancel()
 
 	// Setup SSH ControlMaster
-	logger := logging.NewLogger("debug")
+	logger := logging.NewLogger(slog.LevelDebug)
 	master, err := newOwnedMaster(t, sshHost, logger)
 	if err != nil {
 		t.Fatalf("Failed to create SSH master: %v", err)

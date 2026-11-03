@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Resolve logging and label enablement once before startup. Validate all supplied
+  log levels, including shadowed inputs, with true trace > nonempty environment >
+  flag/default INFO precedence; keep programmatic configuration authoritative.
+- Replace raw diagnostic inputs and new saved conflict/transfer reasons with safe
+  summaries at every level. Suppress direct foreground SSH stderr without a copy
+  worker; retain private causes, functional status identities and owned joins.
+  Trace retains its threshold with debug-equivalent production content. Label
+  enablement is explicit at both inspection consumers; endpoint selection is
+  unchanged and label values remain ignored same-number localhost hints.
+
 - Bound status socket decoding and file-lock acquisition within one shared
   five-second command budget, with at most one second for the socket attempt.
   Reject invalid/incompatible snapshots safely; failed observations no longer

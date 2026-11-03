@@ -196,7 +196,7 @@ func TestStatusCanceledCommandProcess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rootCmd.SetArgs([]string{"status", "--host", "ssh://status.invalid", "--format", os.Getenv("RDHPF_STATUS_CANCEL_HELPER")})
-	if rootCmd.ExecuteContext(ctx) != nil {
+	if executeCommand(ctx) != nil {
 		os.Exit(1)
 	}
 	os.Exit(0)

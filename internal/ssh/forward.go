@@ -84,7 +84,7 @@ func addForwardWithRetry(ctx context.Context, connection *Forwarding, localPort,
 			return effect, err
 		}
 	}
-	logger.Warn("port forward failed after max retries", "port", localPort, "maxAttempts", 5, "error", err)
+	logger.Warn("port forward failed after max retries", "port", localPort, "maxAttempts", 5)
 	return effect, err
 }
 

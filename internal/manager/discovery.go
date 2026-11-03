@@ -179,7 +179,7 @@ func (m *Manager) observeContainer(ctx context.Context, id string) ([]int, error
 	if infrastructure {
 		return []int{}, nil
 	}
-	return docker.InspectPorts(ctx, m.cfg.Host, m.sshMaster.ControlPath(), id)
+	return docker.InspectPorts(ctx, m.cfg.Host, m.sshMaster.ControlPath(), id, m.cfg.EnableLabelPorts)
 }
 
 func (m *Manager) runDiscovery(ctx context.Context) {
@@ -204,7 +204,7 @@ func (m *Manager) runDiscovery(ctx context.Context) {
 			}
 			committed, changed, err := m.commitInventory(candidate)
 			if err != nil || candidate.problem != nil {
-				m.logger.Warn("inventory observation incomplete", "commit_error", err, "observation_error", candidate.problem)
+				m.logger.Warn("inventory observation incomplete")
 			}
 			d.mu.Lock()
 			d.cursor = candidate.cursor
@@ -372,7 +372,7 @@ func (m *Manager) runReconciliation(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			m.logger.Warn("reconciliation unavailable or failed", "error", err)
+			m.logger.Warn("reconciliation unavailable or failed")
 		}
 		now := m.discovery.now()
 		next, pending := m.reconciler.NextRetry()

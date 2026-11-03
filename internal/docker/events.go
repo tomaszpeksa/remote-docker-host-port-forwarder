@@ -84,7 +84,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 		args = append(args, "-p", port)
 	}
 	args = append(args, "--", host, remoteCmd)
-	r.logger.Info("executing docker events command via shell", "args", fmt.Sprint(args), "dockerCmd", dockerCmd, "host", host, "port", port)
+	r.logger.Info("executing docker events command via shell")
 	// #nosec G204 - Fixed SSH executable and separated, validated destination.
 	cmd := exec.CommandContext(streamCtx, "ssh", args...)
 	// exec owns its OS-pipe copiers; Wait joins them. The extra pipe lets scanner
@@ -106,7 +106,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 		}
 		return
 	}
-	r.logger.Info("docker events stream started", "host", host, "startup_duration_ms", time.Since(started).Milliseconds(), "pid", cmd.Process.Pid)
+	r.logger.Info("docker events stream started", "startup_duration_ms", time.Since(started).Milliseconds(), "pid", cmd.Process.Pid)
 	finished := make(chan struct{})
 	cleanupDone := watchStreamCleanup(streamCtx, finished, r.logger)
 	defer func() { close(finished); <-cleanupDone }()
@@ -128,7 +128,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 		var raw dockerEventJSON
 		if err := json.Unmarshal(line, &raw); err != nil {
 			result.Rejected++
-			r.logger.Warn("failed to parse docker event JSON", "error", err.Error(), "line", string(line))
+			r.logger.Warn("failed to parse docker event JSON", "rejected", result.Rejected)
 			continue
 		}
 		kind := raw.Action
@@ -140,7 +140,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 		}
 		if len(raw.Actor.ID) < 12 {
 			result.Rejected++
-			r.logger.Warn("rejected malformed docker event ID", "type", kind, "containerID", raw.Actor.ID)
+			r.logger.Warn("rejected malformed docker event ID", "type", kind, "rejected", result.Rejected)
 			continue
 		}
 		event := Event{Type: kind, ContainerID: raw.Actor.ID, Timestamp: time.Unix(raw.Time, 0)}
@@ -148,7 +148,13 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 			deliveryErr = err
 			break
 		}
-		r.logger.Debug("docker event received", "type", kind, "containerID", event.ContainerID[:12])
+		// This ID comes from the Actor.ID field of the fixed target Docker
+		// command, not a generic Manager/Event input. Shape alone is insufficient.
+		if canonicalDockerID(raw.Actor.ID) {
+			r.logger.Debug("docker event received", "type", kind, "containerID", raw.Actor.ID[:12])
+		} else {
+			r.logger.Debug("docker event received", "type", kind)
+		}
 	}
 	scanErr := scanner.Err()
 	if scanErr != nil || deliveryErr != nil {
@@ -158,7 +164,7 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 	waitErr := <-waited
 	result.DiagnosticsTruncated = diagnostics.Truncated() || outputTail.Truncated()
 	if diagnostics.String() != "" {
-		r.logger.Debug("docker events stderr output", "stderr", diagnostics.String(), "truncated", diagnostics.Truncated())
+		r.logger.Debug("docker events stderr received", "truncated", diagnostics.Truncated())
 	}
 	switch {
 	case ctx.Err() != nil:
@@ -172,9 +178,9 @@ func (r *EventReader) stream(ctx context.Context, deliver func(context.Context, 
 		result.Err = fmt.Errorf("docker events command failed: %w", waitErr)
 	}
 	if result.Err != nil && !result.Canceled {
-		r.logger.Error("docker events command failed", "error", result.Err, "exitCode", cmd.ProcessState.ExitCode(), "stderr", diagnostics.String(), "stdout", outputTail.String(), "args", fmt.Sprint(args))
+		r.logger.Error("docker events command failed", "exitCode", cmd.ProcessState.ExitCode())
 	}
-	r.logger.Info("docker events stream ended", "host", host, "total_duration_ms", time.Since(started).Milliseconds(), "events_received", count, "rejected", result.Rejected, "diagnostics_truncated", result.DiagnosticsTruncated)
+	r.logger.Info("docker events stream ended", "total_duration_ms", time.Since(started).Milliseconds(), "events_received", count, "rejected", result.Rejected, "diagnostics_truncated", result.DiagnosticsTruncated)
 	return
 }
 
@@ -198,4 +204,17 @@ func watchStreamCleanup(ctx context.Context, finished <-chan struct{}, logger *s
 		<-finished
 	}()
 	return done
+}
+
+// Only the fixed Docker result decoder may use this shape check for display.
+func canonicalDockerID(id string) bool {
+	if len(id) != 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }

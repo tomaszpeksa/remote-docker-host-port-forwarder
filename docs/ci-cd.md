@@ -22,7 +22,7 @@ The primary continuous integration workflow that runs on every code change.
   - `golangci-lint` - Comprehensive linting
 
 - **test**: Infrastructure-independent tests
-  - Runs on pinned Go 1.27.3 with race detection and uncached execution
+  - Runs on pinned Go 1.27.4 with race detection and uncached execution
   - Clears integration host/key variables; remote scenarios self-skip
   - Instruments production packages (`cmd/...`, `internal/...`) for coverage
   - Retains JSON results, stderr, exits, inventory and coverage even after failure
@@ -549,9 +549,9 @@ cases and cleanup remain mandatory. Discovery adds evidence rather than replacin
 those requirements. Native compilation is not owned runtime proof, nor does this
 workflow imply release, cask/Gatekeeper or every-platform runtime clearance.
 
-The owned fixture pins Alpine's indexed `docker-cli=29.9.2-r0` from the normal
+The owned fixture pins Alpine's indexed `docker-cli=29.9.3-r1` from the normal
 stable 3.24 repository. Its
-[official Alpine recipe](https://gitlab.alpinelinux.org/alpine/aports/-/blob/0b8392c4e3a24608418ffde2d77923591f359ee3/community/docker/APKBUILD)
+[official Alpine recipe](https://gitlab.alpinelinux.org/alpine/aports/-/blob/3.24-stable/community/docker/APKBUILD)
 identifies the Docker CLI source revision. The installed client's compiler and
 API versions come from the owned fixture's actual `docker version` provenance,
 not inference from its package name or the application's Go toolchain. Exact

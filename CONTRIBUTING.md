@@ -20,7 +20,7 @@ This project follows the standard open source code of conduct. Be respectful, in
 
 ### Prerequisites
 
-- **Go 1.27.3 or newer** for source consumers; repository builds pin **1.27.3**.
+- **Go 1.27.4 or newer** for source consumers; repository builds pin **1.27.4**.
 - **Linux or macOS 13+**, amd64 or arm64, for the managed development tools.
   Newly built macOS binaries also require macOS 13; the module directive is not
   an independent promise of older binary OS compatibility.

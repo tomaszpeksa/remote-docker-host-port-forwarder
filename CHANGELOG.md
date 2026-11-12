@@ -1,156 +1,117 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-- Resolve logging and label enablement once before startup. Validate all supplied
-  log levels, including shadowed inputs, with true trace > nonempty environment >
-  flag/default INFO precedence; keep programmatic configuration authoritative.
-- Replace raw diagnostic inputs and new saved conflict/transfer reasons with safe
-  summaries at every level. Suppress direct foreground SSH stderr without a copy
-  worker; retain private causes, functional status identities and owned joins.
-  Trace retains its threshold with debug-equivalent production content. Label
-  enablement is explicit at both inspection consumers; endpoint selection is
-  unchanged and label values remain ignored same-number localhost hints.
+## [0.2.0] - 2026-11-12
 
-- Bound status socket decoding and file-lock acquisition within one shared
-  five-second command budget, with at most one second for the socket attempt.
-  Reject invalid/incompatible snapshots safely; failed observations no longer
-  look like empty success. Stale files remain visible with an explicit warning
-  that rdhpf is not verified running, without changing table/JSON/YAML schema.
-- Expire idle history at the one-hour boundary and display history STARTED from
-  the original start time, preserving structured lifetime and the 100-entry cap.
+### Upgrade notes
 
-- Use one Manager-owned shutdown finalizer across startup, monitoring, signals and
-  failures. Share one first-terminal ten-second budget through original child and
-  worker joins, history/publication cleanup, admission and signal completion;
-  repeated requests never renew it. Cleanup errors or overruns remain exit 1.
-- Retire the whole private Master once during terminal teardown, then consume
-  actual history once after retirement and producer quiescence. Preserve original
-  creation times/reasons, interrupt and join accepted status socket handlers, and
-  prune empty desired owners only when no actual/resource obligations remain.
-  Noncooperative completion retains ownership until proved; no hard forced-exit
-  guarantee, foreign cleanup or orphan adoption is introduced.
-
-- Manage only app-created local TCP forwards. Suppress configured forwarding and
-  Tunnel on all app SSH invocations without discarding host aliases, authentication
-  or trust. Use bounded, peer-verified mux-v4 OPEN/CLOSE replies instead of SSH
-  command exit/stderr as mutation authority; there is no helper SSH fallback.
-- Track forwarding obligations separately from public readiness: retain failed or
-  uncertain cancellation, remove owned-pending listeners on stop, and retry known
-  conflicts after release without another event. Unknown effects wait for proven
-  natural Master retirement; terminal history is consumed once.
-- Retain desired restoration across an unavailable retired generation, and restore
-  a same-owner restart after its previously failed stop cancellation is positively
-  acknowledged, without requiring another event or changed inventory. Superseding
-  claimant cleanup remains non-renewing across deferred and failed CLOSE retries,
-  without replacing the original terminal-history reason.
-
-- Pace clean Docker event-stream EOF with a cancelable one-second wait after
-  accepted events drain and owned workers join. Preserve clean-EOF forgiveness,
-  existing nonclean retry backoff/ten-failure limit and processing-watchdog health.
-
-- Make the processing watchdog initiate fatal cancellation on the first
-  ten-second check observing 60 seconds without successfully handled Docker
-  events, including an open silent stream or blocked handler/probe. Arm once at
-  Run monitoring start; preserve successful-handler health and the 30-second
-  probe threshold. Own one remaining-window probe, bound its diagnostics and
-  join it on exit while retaining the original terminal cause. Cleanup can still
-  delay process exit; implicit image pulls and remote interruption limits remain.
-
-- Repair missed Docker discovery with independent bounded inventory audits,
-  fenced partial progress and fair timer retries; unknown observations preserve
-  current desired ports instead of authorizing removal.
-- Join Docker event-stream commands/readers before terminal completion, reject
-  malformed short IDs safely, bound diagnostics and retain unapplied desired
-  changes across EOF and unavailable transport without perpetual operation retries.
-
-- S07A: require Go 1.27.2 for source builds and macOS 13+ for new macOS binaries;
-  pin repository development tools with mise and update application dependencies.
-- Migrate Homebrew publishing to Linux/macOS binary casks. Existing formula users
-  need the separately published tap transition; normal OS security remains enabled,
-  so unsigned macOS downloads may be blocked on first launch. See the Homebrew guide.
-- Prevent SSH destination options from being interpreted as local flags across
-  production launches and the integration PID helper.
-- S07B: inherit configured SSH trust sources/checking policy instead of forcing
-  accept-new and discarding user pins. Force BatchMode on all application SSH paths;
-  default unknown hosts and unavailable noninteractive credentials now fail rather
-  than prompting. Explicit accept-new enrollment remains configurable.
-- Pin owned SSH/backend fixtures, provision verified owned public host keys and
-  exercise real trust, prompts, missing-mux commands and recovery without weakening
-  production policy.
-
-### Added
-
-- Owned process-isolation coverage for actual CLI contenders and successor HTTP
-  traffic, separate SSH Master processes, and native private Unix-socket length
-  checks. Admission and publication behavior are unchanged.
-- Comprehensive debug logging for docker events SSH command execution
-  - Logs full SSH command with arguments before execution
-  - Captures and logs stderr separately (SSH warnings, error messages)
-  - Logs last 50 lines of stdout on failures
-  - Logs exit codes and signal information for better debugging
+- **Before starting the upgraded application, stop older instances that use the
+  same actual `HOME/.rdhpf` directory.** Only one `rdhpf run` may publish there,
+  even for different SSH targets. Older versions do not honor the new lock.
+  Do not delete or replace `~/.rdhpf/owner.lock` to bypass it.
+- **Check SSH access before starting the application.** Configured host-key pins
+  and checking policies are respected. All application SSH commands run without
+  interactive prompts; unknown hosts under the default policy and credentials
+  requiring a prompt fail. Enroll host keys and configure noninteractive
+  credentials through OpenSSH first.
+- **Configure SSH identities through OpenSSH.** The application no longer uses
+  `SSH_TEST_KEY_PATH`; use `IdentityFile` or an SSH agent. Test fixtures still
+  support the test-only variable.
+- **Event-health checks use the application's SSH target.** They no longer use
+  local Docker host, context or TLS settings.
+- Source builds require **Go 1.27.4 or newer**. New macOS binaries require
+  **macOS 13 or newer**. Linux and macOS, on amd64 and arm64, remain the supported
+  release targets.
+- Homebrew distribution changes from a formula to a binary cask. See the
+  [Homebrew guide](docs/homebrew.md) for migration and installation checks.
+  Normal OS security remains enabled; unsigned macOS binaries may be blocked on
+  first launch. Do not disable quarantine or Gatekeeper to bypass a block.
 
 ### Changed
 
-- **BREAKING CHANGE:** Event-health pings use the application's SSH target and
-  noninteractive trust policy, not local Docker host/context/TLS settings. The
-  ping command, image and tick intervals are unchanged. The processing-watchdog
-  repair above makes fatal cancellation effective without promising total exit time.
-- **BREAKING CHANGE:** The application ignores `SSH_TEST_KEY_PATH`; configure
-  OpenSSH `IdentityFile` or an agent instead. Test-only fixture usage remains.
-- Quote container operands through both remote shell layers and place Docker
-  options before `--`; reject NUL without restricting names or short IDs.
-
-- **BREAKING CHANGE:** Only one `rdhpf run` may publish in the same actual
-  `HOME/.rdhpf` directory, even for different SSH targets. Stop all old-version
-  publishers before upgrading; they do not honor the new admission lock. This is
-  normally one instance per local user, not a machine-wide cross-user lock.
-  The persistent `owner.lock` is held through status publication and cleanup;
-  do not delete or replace it. Requires local Linux/macOS storage.
-- Each SSH master uses a private directory and a socket path stable across its
-  connection replacements, not across independent instances. Owned stale sockets
-  are reclaimed only after child retirement. Other instances and cleanup tools
-  must leave active namespaces and their ancestors alone; this is not protection
-  against arbitrary same-UID path replacement.
-- SSH masters run as directly owned foreground children; occupied or ambiguous
-  control endpoints are refused rather than adopted or removed. Forced rdhpf
-  termination (for example, SIGKILL) may leave an idle SSH child and its private
-  directory behind; a new instance does not adopt or sweep them. Normal shutdown
-  and failed startup retain responsibility for terminating and reaping the child.
-  If retirement cannot be proved, shutdown keeps publisher ownership and retries
-  without a total deadline. There is no two-second shutdown guarantee.
+- Manage only application-created local TCP forwards, ignoring SSH-configured
+  forwards and tunnels while preserving host aliases, authentication and trust.
+- Give each SSH master a private control socket and own its child process
+  directly. Refuse occupied or ambiguous control endpoints instead of adopting
+  them. A forced kill may leave a child or private directory behind; new
+  instances do not adopt or sweep those resources.
+- Apply a shared ten-second shutdown budget across signals, startup failures,
+  worker joins and status cleanup. Cleanup errors or overruns produce a failing
+  exit status. Shutdown can exceed the budget while waiting to prove owned
+  resources have retired; it is not a forced-exit deadline.
+- Use safe diagnostic summaries instead of logging raw SSH arguments, remote
+  output or configuration inputs. Trace uses the same safe content as debug.
+- Resolve logging and label-port enablement before startup. Validate all supplied
+  log levels; trace takes precedence over a nonempty environment setting, then
+  the flag or INFO default. Label values remain same-port localhost hints.
 
 ### Fixed
 
-- Snapshot performance-summary totals and averages under the same metrics lock,
-  preventing races with concurrent event and reconciliation recording.
+- Restore desired forwards after SSH connection replacement without losing their
+  logical creation times or confusing recovery with monitor shutdown.
+- Use full container IDs during startup discovery, so stopping and restarting a
+  preexisting container updates the same forwarding owner.
+- Repair missed container discovery across startup, event-stream gaps and
+  temporary inspection failures with bounded inventory audits and retries.
+  Failed observations preserve known desired ports rather than removing them.
+- Retain ownership of failed or uncertain forwarding operations. Retry known
+  conflicts after the port is released, without requiring another Docker event.
+  Use verified SSH mux replies rather than command output to confirm changes.
+- Make the event watchdog cancel monitoring after 60 seconds without a
+  successfully handled Docker event, checked every ten seconds. Silent streams
+  and blocked work no longer prevent cancellation; cleanup can delay exit.
+- Pace clean Docker event-stream restarts with a cancelable one-second delay,
+  drain accepted events and join stream workers before completion.
+- Bound status reads by one shared five-second budget, including at most one
+  second for the socket attempt. Report invalid snapshots and failed reads
+  instead of presenting empty success. Mark stale file results as unverified.
+- Expire idle history after one hour and show each entry's original start time,
+  retaining the 100-entry limit and existing table, JSON and YAML formats.
+- Snapshot performance totals and averages under the same lock to avoid races.
+- Restore clean integration-fixture builds with available, exact OpenSSH and
+  Docker CLI package revisions; retain runtime version checks.
 
-- Request full container IDs during startup inventory so stopping a preexisting
-  container removes its forwards and restarting the same container restores one
-  consistent owner. Inventory/event handoff and resynchronization are unchanged.
-- Separate SSH connection replacement from monitor shutdown, serialize it with
-  forwarding transactions, and invalidate retired connection state while
-  preserving desired ports and logical-forward creation times.
-- **CRITICAL**: Fix shell expansion bug in docker commands executed over SSH
-  - Docker template syntax `{{json .}}` was being expanded by remote shell, causing "accepts no arguments" errors
-  - Now wrap all docker commands in `sh -c 'command'` with proper quoting
-  - Affects: docker events, docker inspect, docker ps commands (all fixed)
-  - Added unit tests to prevent regression
-- Fix GoReleaser Homebrew configuration schema (folder → directory) for v2 compatibility
-- Pin GoReleaser version to v2 series in release workflow for stability
-- Remove duplicate test execution in GoReleaser before.hooks (tests already run in workflow)
-- Set Homebrew formula name to 'rdhpf' for easier installation (was defaulting to repo name)
+### Security
+
+- Reject SSH destinations that could be interpreted as local command options.
+- Quote Docker container operands across remote shell boundaries and reject NUL
+  inputs without restricting valid names or short IDs.
+- Preserve configured SSH trust sources and host-key pins on normal, recovery
+  and missing-control-socket paths; never silently enroll a replacement key.
+- Build with Go 1.27.4, including the fix for **GO-2026-6859** in `net/http`.
+
+### Development
+
+- Pin repository tools with mise and refresh application dependencies.
+- Exercise production Docker parsing, SSH arguments, recovery, forwarding,
+  shutdown and process isolation with owned fixtures. Integration CI treats
+  unavailable prerequisites as failures and retains execution evidence.
+
+## Earlier releases (through 0.1.9)
+
+The following changes were already shipped before 0.2.0. Earlier changelogs kept
+these entries under Unreleased without assigning individual release versions.
+
+- Added Docker-event SSH diagnostics. The safe diagnostic summaries in 0.2.0
+  replace the earlier raw command and output logging.
+- Fixed remote shell expansion of Docker template arguments.
+- Updated GoReleaser configuration and moved test execution to the release
+  workflow.
+- Published the Homebrew formula as `rdhpf`; 0.2.0 moves publishing to a cask.
 
 ## [0.1.0]
 
 ### Added
 
-- Event‑driven port forwarding based on Docker events and inspect
-- SSH ControlMaster management and idempotent reconciliation
-- Conflict handling with retry; structured logging; integration tests (real Docker + harness)
-- Graceful shutdown (SIGINT/SIGTERM) with clean tunnel teardown
+- Event-driven port forwarding based on Docker events and inspect.
+- SSH ControlMaster management and idempotent reconciliation.
+- Conflict handling with retry, structured logging and integration tests.
+- Graceful shutdown with tunnel cleanup on SIGINT and SIGTERM.
+
+[0.1.0]: https://github.com/tomaszpeksa/remote-docker-host-port-forwarder/releases/tag/v0.1.0

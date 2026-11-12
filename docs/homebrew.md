@@ -2,9 +2,9 @@
 
 ## Overview
 
-The supported publisher is GoReleaser's `homebrew_casks` section. It generates
-`Casks/rdhpf.rb` for `tomaszpeksa/homebrew-tap`, using the existing Linux/macOS
-amd64/arm64 release archives. These are binary casks, not source-built formulae.
+The supported publisher is GoReleaser's `homebrew_casks` section. It opens a
+pull request with `Casks/rdhpf.rb` for `tomaszpeksa/homebrew-tap`, using the
+Linux/macOS amd64/arm64 release archives. These are binary casks, not source-built formulae.
 Use a current Homebrew with cross-platform binary-cask support; older clients
 are not covered by this migration.
 
@@ -27,6 +27,11 @@ Alternatively, add the tap explicitly with `brew tap tomaszpeksa/tap`, then
 
 ### Migrating from the Formula
 
+Before starting v0.2.0, stop older instances sharing the actual `HOME/.rdhpf`
+directory. New macOS binaries require macOS 13 or newer. Read the
+[v0.2.0 upgrade notes](../CHANGELOG.md#upgrade-notes) before replacing an
+existing installation.
+
 Once the tap contains its migration metadata and cask, upstream's supported route is:
 
 ```bash
@@ -36,9 +41,10 @@ rdhpf version
 ```
 
 The migration is expected to replace the formula with the same-named cask.
-This is not an installation success claim: test the transition on the target
-Homebrew/OS before depending on it. If automatic migration is unavailable,
-inspect `brew list --formula` and `brew list --cask` first. With the old formula
+After upgrading, confirm that the cask is installed and `rdhpf version` succeeds
+before relying on the installation. Homebrew may leave the old formula installed
+but unlinked; remove it after verifying the cask. If automatic migration is
+unavailable, inspect `brew list --formula` and `brew list --cask` first. With the old formula
 still installed, the explicit fallback is:
 
 ```bash
@@ -63,12 +69,19 @@ local snapshot smoke test does not establish Gatekeeper acceptance of a download
 release. Stop and report a security block; this guide does not prescribe disabling
 quarantine, bypassing Gatekeeper or changing global security settings.
 
-### Verification and Removal
+### Verification
 
 ```bash
 brew info --cask tomaszpeksa/tap/rdhpf
 brew cat --cask tomaszpeksa/tap/rdhpf
 rdhpf version
+```
+
+### Removal
+
+To remove the application:
+
+```bash
 brew uninstall --cask tomaszpeksa/tap/rdhpf
 # Optional, once no other packages from this tap are needed:
 brew untap tomaszpeksa/tap
@@ -80,8 +93,9 @@ Coordinate the following as a separately reviewed tap change, not an automatic
 side effect of changing this repository:
 
 1. Validate the project configuration and render a nonpublishing snapshot.
-2. At an authorized release, publish the four archives and generate
-   `Casks/rdhpf.rb` pointing to that real release. Never publish snapshot URLs.
+2. At an authorized release, publish the four archives and inspect the generated
+   tap pull request. Its `Casks/rdhpf.rb` must point to that real release.
+   Never publish snapshot URLs.
 3. In the tap root, merge the following entry into `tap_migrations.json`, preserving
    any unrelated existing entries:
    ```json
@@ -112,6 +126,8 @@ homebrew_casks:
       owner: tomaszpeksa
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      pull_request:
+        enabled: true
     directory: Casks
     binaries: [rdhpf]
 ```

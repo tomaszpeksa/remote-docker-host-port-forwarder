@@ -23,6 +23,7 @@ func TestGoReleaserHomebrewCask(t *testing.T) {
 	require.Equal(t, []any{"rdhpf"}, cask["binaries"])
 	require.Equal(t, map[string]any{
 		"owner": "tomaszpeksa", "name": "homebrew-tap", "token": "{{ .Env.HOMEBREW_TAP_TOKEN }}",
+		"pull_request": map[string]any{"enabled": true},
 	}, cask["repository"])
 	require.Equal(t, false, cask["skip_upload"])
 	for _, field := range []string{"install", "test", "hooks", "custom_block", "license"} {

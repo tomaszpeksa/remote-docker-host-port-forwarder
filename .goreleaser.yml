@@ -93,6 +93,8 @@ homebrew_casks:
       owner: tomaszpeksa
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      pull_request:
+        enabled: true
     homepage: "https://github.com/tomaszpeksa/remote-docker-host-port-forwarder"
     description: "Automatically forward published container ports from a remote Docker host to localhost via SSH"
     skip_upload: false

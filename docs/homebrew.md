@@ -1,172 +1,100 @@
 # Homebrew Tap Guide
 
-## Overview
+## Installation
 
-The supported publisher is GoReleaser's `homebrew_casks` section. It opens a
-pull request with `Casks/rdhpf.rb` for `tomaszpeksa/homebrew-tap`, using the
-Linux/macOS amd64/arm64 release archives. These are binary casks, not source-built formulae.
-Use a current Homebrew with cross-platform binary-cask support; older clients
-are not covered by this migration.
-
-The project configuration does not itself publish the separate tap transition.
-The cask and migration metadata must be reviewed and published before the cask
-installation commands below become available. Configuration and snapshot checks
-are not proof of installed migration or successful first launch on either OS.
-
-## User Installation
-
-After the tap transition is published:
+The tap provides a binary formula for Linux and macOS on amd64 and arm64.
+It downloads a release archive, verifies its SHA-256 checksum and installs
+`rdhpf`. Users do not need Go or a local build. macOS requires version 13 or newer.
 
 ```bash
-brew install --cask tomaszpeksa/tap/rdhpf
+brew install --formula tomaszpeksa/tap/rdhpf
 rdhpf version
 ```
 
-Alternatively, add the tap explicitly with `brew tap tomaszpeksa/tap`, then
-`brew install --cask rdhpf`. Respect Homebrew's normal tap-trust prompts.
+Respect Homebrew's normal package-trust prompts. The package is a formula, not
+a cask; no formula-to-cask migration is required.
 
-### Migrating from the Formula
+## Upgrading
 
-Before starting v0.2.0, stop older instances sharing the actual `HOME/.rdhpf`
-directory. New macOS binaries require macOS 13 or newer. Read the
-[v0.2.0 upgrade notes](../CHANGELOG.md#upgrade-notes) before replacing an
-existing installation.
-
-Once the tap contains its migration metadata and cask, upstream's supported route is:
+Before starting v0.2.0, stop older instances sharing the same actual
+`HOME/.rdhpf` directory. Different SSH targets do not isolate status ownership.
+Read the [v0.2.0 upgrade notes](../CHANGELOG.md#upgrade-notes).
 
 ```bash
 brew update
-brew upgrade rdhpf
+brew upgrade --formula tomaszpeksa/tap/rdhpf
 rdhpf version
 ```
 
-The migration is expected to replace the formula with the same-named cask.
-After upgrading, confirm that the cask is installed and `rdhpf version` succeeds
-before relying on the installation. Homebrew may leave the old formula installed
-but unlinked; remove it after verifying the cask. If automatic migration is
-unavailable, inspect `brew list --formula` and `brew list --cask` first. With the old formula
-still installed, the explicit fallback is:
+The legacy `remote-docker-host-port-forwarder` formula is not the current package.
+If it is installed, replace it with `rdhpf` instead of installing both:
 
 ```bash
-brew uninstall --formula tomaszpeksa/tap/rdhpf
-brew install --cask tomaszpeksa/tap/rdhpf
+brew uninstall --formula tomaszpeksa/tap/remote-docker-host-port-forwarder
+brew install --formula tomaszpeksa/tap/rdhpf
 rdhpf version
 ```
 
-This fallback removes the old installation before installing the new one; plan
-for that interruption. Do not force-overwrite conflicting binaries or symlinks.
-Update formula-specific Brewfile entries to cask entries. Caskroom/artifact
-symlinks replace the formula's Cellar keg; the command remains `rdhpf` on PATH.
-The former formula `test` block is replaced by an explicit `rdhpf version` smoke
-check. The MIT license remains in the release archive, not cask license metadata.
+That replacement removes the old command before installing the new one; plan
+for the interruption. Do not force-overwrite conflicting binaries or symlinks.
 
-### Normal OS Security
+## Packaging and macOS Security
 
-No signing/notarization or quarantine-removal hooks are configured. Normal OS
-security remains in effect. On macOS, an unsigned binary may be blocked on first
-launch even when its archive checksum is correct. Successful generation or a
-local snapshot smoke test does not establish Gatekeeper acceptance of a downloaded
-release. Stop and report a security block; this guide does not prescribe disabling
-quarantine, bypassing Gatekeeper or changing global security settings.
+The formula retains the prebuilt-binary installation model. If that packaging
+causes installation or compatibility problems, the fallback plan is to switch
+to a source-built formula. Homebrew would install the build tools and the recipe
+would fetch the pinned Go modules automatically; users would not manage them
+manually. This fallback is not a second installation mode currently provided by
+the tap.
 
-### Verification
+The release binaries are not Developer ID signed or notarized. A checksum
+verifies archive consistency, not Apple publisher identity. Direct macOS
+downloads may be blocked by Gatekeeper. No quarantine-removal hooks, Gatekeeper
+bypasses or global security changes are configured. Stop and report any security
+block rather than disabling those checks.
+
+## Verification
 
 ```bash
-brew info --cask tomaszpeksa/tap/rdhpf
-brew cat --cask tomaszpeksa/tap/rdhpf
+brew info --formula tomaszpeksa/tap/rdhpf
 rdhpf version
+brew test tomaszpeksa/tap/rdhpf
 ```
 
-### Removal
+## Removal
 
 To remove the application:
 
 ```bash
-brew uninstall --cask tomaszpeksa/tap/rdhpf
-# Optional, once no other packages from this tap are needed:
-brew untap tomaszpeksa/tap
+brew uninstall --formula tomaszpeksa/tap/rdhpf
 ```
 
-## Maintainer Migration
+## Maintaining the Tap
 
-Coordinate the following as a separately reviewed tap change, not an automatic
-side effect of changing this repository:
+GoReleaser publishes the four GitHub release archives and `checksums.txt`.
+The binary formula is maintained separately in
+[`tomaszpeksa/homebrew-tap`](https://github.com/tomaszpeksa/homebrew-tap).
+GoReleaser's retired `brews` generator and its `homebrew_casks` publisher are
+not used.
 
-1. Validate the project configuration and render a nonpublishing snapshot.
-2. At an authorized release, publish the four archives and inspect the generated
-   tap pull request. Its `Casks/rdhpf.rb` must point to that real release.
-   Never publish snapshot URLs.
-3. In the tap root, merge the following entry into `tap_migrations.json`, preserving
-   any unrelated existing entries:
-   ```json
-   {"rdhpf": "rdhpf"}
-   ```
-4. Remove `Formula/rdhpf.rb` only when the cask and migration entry are available.
-   Review the cask, metadata and formula removal together to avoid an empty tap
-   or ambiguous same-named packages.
-5. Validate fresh installation, formula-to-cask migration, binary PATH and
-   `rdhpf version` on Linux and macOS. Record Homebrew versions and normal
-   first-launch security behavior; generation alone is not this proof.
+For each release:
 
-No tap publication or merge is implied by these instructions.
-
-## Configuration and Validation
-
-`.goreleaser.yml` remains the native configuration owner. The cask preserves the
-existing repository, `HOMEBREW_TAP_TOKEN`, author and upload policy. Token access
-remains limited to the existing tap-writing purpose; no new credential scopes
-or workflow permissions are needed for this migration.
-
-The essential configuration is:
-
-```yaml
-homebrew_casks:
-  - name: rdhpf
-    repository:
-      owner: tomaszpeksa
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-      pull_request:
-        enabled: true
-    directory: Casks
-    binaries: [rdhpf]
-```
-
-With the pinned project tools installed (see [CONTRIBUTING](../CONTRIBUTING.md)):
-
-```bash
-mise exec -- scripts/check-tools.sh go goreleaser
-mise exec -- goreleaser check
-mise exec -- goreleaser release --snapshot --clean --skip=publish
-```
-
-Run in an owned checkout/output directory with isolated HOME/cache and no
-publication credentials. The snapshot skips release validation, so its exit
-status cannot replace the separate `goreleaser check` result. Inspect the generated
-cask under `dist/homebrew/`, verify its Linux/macOS and ARM/Intel URLs/checksums
-against the four generated archives, and run the native binary's `version` command.
-No Homebrew installation or tap access is needed for these rendering checks.
+1. Verify the published archives against `checksums.txt`.
+2. Update `Formula/rdhpf.rb` with the real release version, four archive URLs and
+   matching checksums. Never use snapshot URLs.
+3. Review the tap diff. Test installation or upgrade, `rdhpf version` and
+   `brew test` on macOS and Linux before publishing; record any untested platform.
+4. Push the reviewed formula to the tap with the existing write access. GitHub
+   release publication does not automatically update the tap. No additional
+   token permissions or automated pull requests are required.
 
 ## Troubleshooting
 
-- **Cask not found:** check that the reviewed tap transition was actually published,
-  update Homebrew, and use the fully qualified `--cask` name. Do not assume the
-  project configuration changed the remote tap.
-- **Checksum mismatch:** stop and compare the published archive and cask checksum;
-  report the mismatch rather than disabling verification.
-- **Old formula or conflicting binary:** inspect installed formulae/casks and follow
-  the migration procedure. Do not force-replace unrelated executables.
-- **macOS launch blocked:** normal security is intentional; report the exact error.
-  No automatic security bypass is provided.
-- **Tap not updated after an authorized release:** inspect the release workflow's
-  cask generation/publishing logs and existing tap-token permissions. Do not expose
-  the token in reports or automatically broaden its scopes.
-
-## Resources
-
-- [GoReleaser Homebrew casks](https://goreleaser.com/customization/homebrew_casks/)
-- [GoReleaser formula migration](https://goreleaser.com/deprecations/#brews)
-- [Homebrew Cask Cookbook](https://docs.brew.sh/Cask-Cookbook)
-- [Tap repository](https://github.com/tomaszpeksa/homebrew-tap)
-- [User guide](user-guide.md)
-- [CI/CD documentation](ci-cd.md)
+- **Old version:** run `brew update`, check `brew info --formula
+  tomaszpeksa/tap/rdhpf` and confirm the tap has the release version.
+- **Checksum mismatch:** stop and compare the published archive and formula
+  checksum. Do not disable verification.
+- **Conflicting command:** inspect installed packages before replacing anything.
+  Do not force-overwrite unrelated executables.
+- **macOS security block:** report the exact error and installation route. The
+  source-built formula is the planned packaging fallback, not a security bypass.

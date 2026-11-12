@@ -19,8 +19,8 @@ rdhpf is designed for developers and CI environments using a remote DOCKER_HOST 
 ## Quick Start
 
 ```bash
-# Installation (macOS/Linux via Homebrew, after the cask tap migration)
-brew install --cask tomaszpeksa/tap/rdhpf
+# Installation (macOS/Linux via Homebrew)
+brew install --formula tomaszpeksa/tap/rdhpf
 
 # Basic usage
 rdhpf run --host ssh://user@remote-docker-host
@@ -38,11 +38,11 @@ rdhpf status --host ssh://user@example.com
 # Add the tap (first time only)
 brew tap tomaszpeksa/tap
 
-# Install rdhpf (after the cask is published to the tap)
-brew install --cask rdhpf
+# Install rdhpf
+brew install --formula rdhpf
 
 # Or install in one command
-brew install --cask tomaszpeksa/tap/rdhpf
+brew install --formula tomaszpeksa/tap/rdhpf
 
 # Verify installation
 rdhpf version
@@ -51,12 +51,11 @@ rdhpf version
 brew upgrade rdhpf
 ```
 
-Use a current Homebrew with Linux/macOS binary-cask support. The separate tap
-transition must be published before these cask commands work. Existing formula
-users should follow the [migration guide](docs/homebrew.md#migrating-from-the-formula).
-Normal OS security checks remain enabled; unsigned macOS binaries may be blocked
-on first launch. No quarantine bypass is installed. Older Homebrew clients and
-installed migration/first-launch behavior have not been validated.
+The formula installs prebuilt binaries; users do not need Go or a local build.
+If this packaging causes installation or compatibility problems, the fallback
+plan is to switch the tap to a source-built formula, with Homebrew managing the
+build dependencies. See the [Homebrew guide](docs/homebrew.md) for upgrade and
+security notes. No quarantine-removal hooks or OS security overrides are used.
 
 ### Pre-built Binaries
 

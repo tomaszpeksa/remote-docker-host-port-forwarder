@@ -28,21 +28,20 @@ This guide helps you install, configure, and use rdhpf for remote Docker develop
 # Add the tap (first time only)
 brew tap tomaszpeksa/tap
 
-# Install rdhpf (after the cask tap migration is published)
-brew install --cask rdhpf
+# Install rdhpf
+brew install --formula rdhpf
 
 # Or in one command
-brew install --cask tomaszpeksa/tap/rdhpf
+brew install --formula tomaszpeksa/tap/rdhpf
 
 # Verify installation
 rdhpf version
 ```
 
-Use current Homebrew with Linux/macOS binary-cask support. See the
-[formula migration and OS security notes](homebrew.md#migrating-from-the-formula)
-before upgrading an existing installation. The separate tap transition is required;
-older Homebrew clients and installed migration behavior are not proven. Normal
-macOS security may block unsigned binaries; no quarantine bypass is installed.
+The formula installs prebuilt binaries, so Go is not required. See the
+[upgrade and OS security notes](homebrew.md#upgrading) before replacing an
+existing installation. If binary-formula packaging causes problems, the fallback
+plan is a source-built formula with Homebrew-managed build dependencies.
 
 #### Pre-built Binaries
 

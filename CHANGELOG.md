@@ -28,10 +28,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Source builds require **Go 1.27.4 or newer**. New macOS binaries require
   **macOS 13 or newer**. Linux and macOS, on amd64 and arm64, remain the supported
   release targets.
-- Homebrew distribution changes from a formula to a binary cask. See the
-  [Homebrew guide](docs/homebrew.md) for migration and installation checks.
-  Normal OS security remains enabled; unsigned macOS binaries may be blocked on
-  first launch. Do not disable quarantine or Gatekeeper to bypass a block.
+- Homebrew distribution retains the prebuilt binary formula. See the
+  [Homebrew guide](docs/homebrew.md) for upgrade and installation checks.
+  Direct macOS downloads are not Developer ID signed or notarized and may be
+  blocked by Gatekeeper. Do not disable quarantine or Gatekeeper to bypass a block.
 
 ### Changed
 
@@ -103,7 +103,7 @@ these entries under Unreleased without assigning individual release versions.
 - Fixed remote shell expansion of Docker template arguments.
 - Updated GoReleaser configuration and moved test execution to the release
   workflow.
-- Published the Homebrew formula as `rdhpf`; 0.2.0 moves publishing to a cask.
+- Published the Homebrew formula as `rdhpf`.
 
 ## [0.1.0]
 

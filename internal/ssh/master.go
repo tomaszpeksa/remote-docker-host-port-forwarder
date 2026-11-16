@@ -29,7 +29,14 @@ const (
 	masterStartupTimeout = 10 * time.Second
 	masterCheckTimeout   = 2 * time.Second
 	masterRetireTimeout  = time.Second
+	// A loaded host can delay one check past its deadline while the master
+	// still works. A dead server link ends the child through ServerAlive, so
+	// only repeated timeouts of a live child mean its mux has stopped answering.
+	masterCheckTimeoutLimit = 3
 )
+
+// errCheckTimeout marks a check that ran out of its own time, not a failed one.
+var errCheckTimeout = errors.New("SSH check timed out")
 
 // ErrRetirementUncertain means the owner must retain cleanup and admission
 // responsibility: completion of the retained child has not been established.
@@ -54,6 +61,8 @@ type masterConnection struct {
 	waitErr error // published by closing done; exactly one goroutine calls Wait
 	socket  os.FileInfo
 	retired bool
+	// checkTimeouts counts consecutive health-check timeouts of this child.
+	checkTimeouts int
 }
 
 type healthMonitor struct {
@@ -316,9 +325,14 @@ func (m *Master) associatedConnection(ctx context.Context) (verified *net.UnixCo
 	return unixConn, nil
 }
 
-func (m *Master) checkConnection(ctx context.Context) error {
+func (m *Master) checkConnection(ctx context.Context) (err error) {
 	check, cancel := context.WithTimeout(ctx, masterCheckTimeout)
 	defer cancel()
+	defer func() {
+		if err != nil && ctx.Err() == nil && errors.Is(check.Err(), context.DeadlineExceeded) {
+			err = errors.Join(errCheckTimeout, err)
+		}
+	}()
 	if err := m.associate(check); err != nil {
 		return err
 	}
@@ -350,6 +364,7 @@ func (m *Master) checkConnection(ctx context.Context) error {
 }
 
 // Check verifies both ownership and mux responsiveness, with a local 2s bound.
+// Unlike the health monitor, it reports a single timeout as a failure.
 func (m *Master) Check() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -448,14 +463,29 @@ func (m *Master) ensureAlive(ctx context.Context, life *masterLifetime) error {
 		}
 		m.circuitState = circuitHalfOpen
 	}
-	if m.ready && m.checkConnection(ctx) == nil {
-		return nil
+	reason := "not ready"
+	if m.ready {
+		err := m.checkConnection(ctx)
+		if err == nil {
+			m.connection.checkTimeouts = 0
+			return nil
+		}
+		reason = "check failed"
+		if errors.Is(err, errCheckTimeout) {
+			m.connection.checkTimeouts++
+			if m.connection.checkTimeouts < masterCheckTimeoutLimit {
+				m.logger.Warn("SSH health check timed out, keeping ControlMaster", "consecutive_timeouts", m.connection.checkTimeouts)
+				return nil
+			}
+			reason = "check timed out repeatedly"
+		}
 	}
 	// Incidental cancellation is not evidence that a successful connection
-	// failed. Only the check's own deadline may initiate retirement here.
+	// failed. Only the check's own result may initiate retirement here.
 	if err := m.operationAllowed(ctx, life); err != nil {
 		return err
 	}
+	m.logger.Warn("replacing SSH ControlMaster", "reason", reason)
 	if err := m.retireConnection(); err != nil {
 		return err
 	}

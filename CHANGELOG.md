@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep a working SSH master when one health check exceeds its two-second
+  deadline, for example on a loaded host. Replace it after three consecutive
+  timeouts or any other failed check, and log the reason. A single slow check no
+  longer closes every forwarded connection.
+
 ## [0.2.0] - 2026-11-12
 
 ### Upgrade notes

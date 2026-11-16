@@ -59,24 +59,18 @@ func TestCanceledHealthCheckPreservesForwardingLifetime(t *testing.T) {
 				}
 			}
 			blocked.Close()
-			if mode == "internal-timeout" {
-				require.NotSame(t, original, m.connection, "internal health deadline must still trigger real replacement")
-				require.Greater(t, m.generation, generation)
-				require.NotNil(t, original.cmd.ProcessState)
-			} else {
-				require.Same(t, original, m.connection, "operation cancellation must not retire a healthy owner")
-				require.Equal(t, generation, m.generation)
-				select {
-				case <-original.done:
-					t.Fatal("healthy retained child was reaped")
-				default:
-				}
-				after, err := os.Lstat(m.ControlPath())
-				require.NoError(t, err)
-				require.True(t, os.SameFile(socket, after))
-				// This is the gate/generation obligation used by Manager to retain forwards.
-				require.NoError(t, m.WithConnection(context.Background(), func(g uint64, ready bool) error { require.Equal(t, generation, g); require.True(t, ready); return nil }))
+			require.Same(t, original, m.connection, "neither cancellation nor one check timeout retires a healthy owner")
+			require.Equal(t, generation, m.generation)
+			select {
+			case <-original.done:
+				t.Fatal("healthy retained child was reaped")
+			default:
 			}
+			after, err := os.Lstat(m.ControlPath())
+			require.NoError(t, err)
+			require.True(t, os.SameFile(socket, after))
+			// This is the gate/generation obligation used by Manager to retain forwards.
+			require.NoError(t, m.WithConnection(context.Background(), func(g uint64, ready bool) error { require.Equal(t, generation, g); require.True(t, ready); return nil }))
 			require.NoError(t, m.Check())
 		})
 	}

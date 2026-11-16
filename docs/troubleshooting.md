@@ -252,12 +252,13 @@ rdhpf includes automatic recovery:
 - Automatic reconnection on failure
 - Circuit breaker prevents retry storms (opens after 5 failed connection recreations)
 
-An internal health check has a two-second deadline. If that check times out,
-rdhpf can retire and replace its SSH master even while a separate probe still
-reaches the master. A slow check subprocess can therefore interrupt the existing
-connection; a successful replacement restores forwarding through reconciliation.
-This is the current timeout policy, not a measured outage duration or a guarantee
-of recovery within two seconds.
+An internal health check has a two-second deadline. A loaded host can delay one
+check past it while the SSH master still works, so a timeout alone keeps the
+master and logs `SSH health check timed out, keeping ControlMaster`. Three
+consecutive timeouts of the same master replace it, as does any other check
+failure. Replacement closes forwarded connections; a successful replacement
+restores forwarding through reconciliation. Each replacement logs
+`replacing SSH ControlMaster` with its reason.
 
 ### Manual Troubleshooting
 

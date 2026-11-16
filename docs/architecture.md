@@ -215,9 +215,10 @@ States:
 Triggers:
 - Health checks verify the retained child's socket ownership and run SSH `-O check`,
   with a local two-second deadline.
-- A failed internal check, including that deadline, can retire the child and
-  attempt recreation. Caller/monitor cancellation does not itself retire a ready
-  connection.
+- A failed internal check retires the child and attempts recreation. A check
+  that only exceeds its deadline retires the child after three consecutive
+  timeouts; a successful check resets the count. Caller/monitor cancellation does
+  not itself retire a ready connection.
 - Failed recreation increments the breaker counter; successful recreation resets
   it. Connection changes notify reconciliation, not successful routine checks.
 

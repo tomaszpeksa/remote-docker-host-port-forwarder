@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This characterizes the existing internal deadline, not a new retry policy.
-// Only the check client stalls: the owned master still answers an independent
-// mux request while EnsureAlive holds the lifecycle gate.
-func TestMasterSlowCheckClientRetiresResponsiveOwner(t *testing.T) {
+// A loaded host can delay the check client past its deadline while the owned
+// master still answers mux requests. Only consecutive timeouts replace it, and
+// a successful check starts the count again.
+func TestMasterSlowCheckClientKeepsResponsiveOwner(t *testing.T) {
 	m, dir := masterFixture(t)
 	gate, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(dir, "client-gate"), Net: "unix"})
 	require.NoError(t, err)
@@ -26,36 +26,58 @@ func TestMasterSlowCheckClientRetiresResponsiveOwner(t *testing.T) {
 	t.Setenv("CHECK_CLIENT_GATE", gate.Addr().String())
 	require.NoError(t, m.Open(context.Background()))
 	original, generation := m.connection, m.generation
-	require.NoError(t, os.WriteFile(marker, nil, 0600))
-	result := make(chan error, 1)
-	go func() { result <- m.EnsureAlive(context.Background()) }()
-	require.NoError(t, gate.SetDeadline(time.Now().Add(5*time.Second)))
-	blocked, err := gate.Accept()
-	require.NoError(t, err)
-	defer blocked.Close()
-	// Successor startup checks must not inherit the stalled-client condition.
-	require.NoError(t, os.Remove(marker))
-	probe, err := net.DialTimeout("unix", m.ControlPath(), time.Second)
-	require.NoError(t, err)
-	defer probe.Close()
-	require.NoError(t, probe.SetDeadline(time.Now().Add(time.Second)))
-	_, err = fmt.Fprintln(probe, "check")
-	require.NoError(t, err)
-	reply, err := bufio.NewReader(probe).ReadString('\n')
-	require.NoError(t, err)
-	require.Equal(t, fmt.Sprintf("Master running (pid=%d)\n", original.cmd.Process.Pid), reply)
-	select {
-	case <-original.done:
-		t.Fatal("owned master exited before the check client's deadline")
-	default:
-	}
-	select {
-	case err = <-result:
+
+	slowCheck := func(last bool) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(marker, nil, 0600))
+		result := make(chan error, 1)
+		go func() { result <- m.EnsureAlive(context.Background()) }()
+		require.NoError(t, gate.SetDeadline(time.Now().Add(5*time.Second)))
+		blocked, err := gate.Accept()
 		require.NoError(t, err)
-	case <-time.After(8 * time.Second):
-		t.Fatal("internal check deadline did not complete replacement")
+		defer blocked.Close()
+		if last {
+			// Successor startup checks must not inherit the stalled-client condition.
+			require.NoError(t, os.Remove(marker))
+		}
+		select {
+		case err = <-result:
+			require.NoError(t, err)
+		case <-time.After(8 * time.Second):
+			t.Fatal("internal check deadline did not complete")
+		}
 	}
-	require.False(t, original == m.connection, "current policy replaces even a responsive owner after a slow check client")
+	requireOriginalOwner := func() {
+		t.Helper()
+		require.Same(t, original, m.connection)
+		require.Equal(t, generation, m.generation)
+		select {
+		case <-original.done:
+			t.Fatal("responsive owned master was retired")
+		default:
+		}
+		probe, err := net.DialTimeout("unix", m.ControlPath(), time.Second)
+		require.NoError(t, err)
+		defer probe.Close()
+		require.NoError(t, probe.SetDeadline(time.Now().Add(time.Second)))
+		_, err = fmt.Fprintln(probe, "check")
+		require.NoError(t, err)
+		reply, err := bufio.NewReader(probe).ReadString('\n')
+		require.NoError(t, err)
+		require.Equal(t, fmt.Sprintf("Master running (pid=%d)\n", original.cmd.Process.Pid), reply)
+	}
+
+	slowCheck(false)
+	requireOriginalOwner()
+	require.NoError(t, os.Remove(marker))
+	require.NoError(t, m.EnsureAlive(context.Background()), "a successful check resets the timeout count")
+	requireOriginalOwner()
+	slowCheck(false)
+	slowCheck(false)
+	requireOriginalOwner()
+
+	slowCheck(true)
+	require.NotSame(t, original, m.connection, "consecutive timeouts replace an unresponsive owner")
 	require.NotNil(t, original.cmd.ProcessState)
 	require.Equal(t, generation+1, m.generation)
 	require.Equal(t, circuitClosed, m.circuitState)

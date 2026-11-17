@@ -129,7 +129,7 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	require.Equal(t, 1, exit.ExitCode())
 	text := logs.String()
 	require.Contains(t, text, "no successfully handled Docker events")
-	require.Contains(t, text, "after 3 event stream restarts")
+	require.Contains(t, text, `reason="event stream restarts did not restore event processing" restarts=3`)
 	require.Equal(t, 3, strings.Count(text, "event stream watchdog restarting silent event stream"), "each restart is logged")
 	extract := func(key string) time.Time {
 		value, err := watchdogCLITimestamp(text, key)

@@ -2,11 +2,9 @@ package manager
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -149,39 +147,4 @@ func TestManagerWatchdogRestartResyncsChangedContainers(t *testing.T) {
 	require.NotContains(t, muxCalls(t, r.calls), "CLOSE "+strconv.Itoa(kept)+" ", "unchanged forward must stay open")
 	require.Contains(t, muxCalls(t, r.calls), "CLOSE "+strconv.Itoa(stopped)+" ")
 	require.Contains(t, muxCalls(t, r.calls), "OPEN "+strconv.Itoa(started)+" ")
-}
-
-func TestManagerWatchdogEscalatesAfterFailedRestarts(t *testing.T) {
-	r := newWatchdogRun(t)
-	var logsMu sync.Mutex
-	var restarts []string
-	watchRunLogs(r.m, func(record slog.Record) {
-		if strings.Contains(record.Message, "restarting") && strings.Contains(record.Message, "watchdog") {
-			logsMu.Lock()
-			restarts = append(restarts, record.Message)
-			logsMu.Unlock()
-		}
-	})
-	r.start()
-	stream := r.awaitStream(t)
-	for range 3 {
-		stream = r.stallStream(t, stream)
-	}
-	logsMu.Lock()
-	require.Len(t, restarts, 3, "each restart is logged")
-	logsMu.Unlock()
-
-	r.clock.Advance(60 * time.Second)
-	r.tick(t)
-	if !awaitWatchdog(t, stream.Done(), "WATCHDOG_MUST_ESCALATE_AFTER_FAILED_RESTARTS") {
-		return
-	}
-	if !awaitWatchdog(t, r.done, "RUN_MUST_RETAIN_OWNED_JOIN") {
-		return
-	}
-	require.ErrorContains(t, r.err, "no successfully handled Docker events")
-	require.ErrorContains(t, r.err, "3 event stream restarts")
-	require.True(t, r.m.stopping.Load())
-	_, fatal := r.m.watchdog.terminalResult()
-	require.True(t, fatal)
 }

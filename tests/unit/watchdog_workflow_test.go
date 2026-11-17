@@ -30,7 +30,7 @@ func TestWatchdogWorkflowRequiredPasses(t *testing.T) {
 	required, err := os.ReadFile("../../.github/required-watchdog-tests.txt")
 	require.NoError(t, err)
 	names := strings.Fields(string(required))
-	require.Len(t, names, 6)
+	require.Len(t, names, 7)
 	for _, variant := range []string{"all-pass", "missing", "skip", "wrong-package", "wrong-name", "malformed", "unfinished"} {
 		t.Run(variant, func(t *testing.T) {
 			root := t.TempDir()
@@ -71,7 +71,7 @@ func TestWatchdogWorkflowRequiredPasses(t *testing.T) {
 			if variant == "unfinished" {
 				emit("run", "TestNeverCompleted", "owned/package")
 			}
-			for _, phase := range []string{"cold", "warm", "cli", "blocked"} {
+			for _, phase := range []string{"cold", "warm", "restart", "cli", "blocked"} {
 				text := ""
 				if phase == "cold" {
 					text = events.String()

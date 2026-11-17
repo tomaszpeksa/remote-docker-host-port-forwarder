@@ -93,7 +93,7 @@ jobs:
           printf '%s\n' 'ssh|TestSSHMaster' 'stream|TestDockerEventsStream' 'one-port|^TestManager_ContainerWithOnePort$' 'all|.' 'trust-internal|Test(ManagerMissingMuxTrust|LabelMissingMuxTrust|ControlRequestTrust|OwnedAssociationCheckFallback|RemoteDockerPingOwnedEvent)' 'discovery-owned|^TestManagerDiscoveryOwned' 'isolation-owned|^Test(OwnedCLIIsolation|OwnedMasterProcessIsolation|MasterPrivatePathNativeBind)$' > test-evidence/plan.txt
           printf '%s\n' 'stream-owned|^TestManagerStreamOwnedTermination$' 'forwarding-owned|^TestManagerForwardingOwned' >> test-evidence/plan.txt
           printf '%s\n' 'shutdown-owned|^Test(ShutdownOwnedCLISignals|ShutdownRealBudgetRetainsNoncooperativeProducer|CloseContextRetainsOriginalWaitAfterDeadline|MasterCheckJoinsInheritedDescriptorWithinBudget|ConnectivityJoinsInheritedDescriptorWithinBudget|ShutdownOwnedCLIStartup|ShutdownOwnedCLIHeldSignals|ShutdownOwnedCLIRecoveryFence|ShutdownOwnedCLIFailureCleanup|ShutdownCLIJoinDiagnosticRetainsWait|ShutdownLostReplyConsumesProductionActualOnce|AcceptedEventReceiptSurvivesEmptyOwnerPruning)$' >> test-evidence/plan.txt
-          printf '%s\n' 'watchdog-cold|^TestWatchdogOwnedColdPull$' 'watchdog-warm|^TestWatchdogOwnedWarmProcessing$' 'watchdog-cli|^Test(WatchdogOwnedCLISilentStream|ForwardingOwnedCLIConflict)$' 'watchdog-blocked|^TestWatchdogOwned(BlockedWork|PullAllowance)$' >> test-evidence/plan.txt
+          printf '%s\n' 'watchdog-cold|^TestWatchdogOwnedColdPull$' 'watchdog-warm|^TestWatchdogOwnedWarmProcessing$' 'watchdog-restart|^TestWatchdogOwnedStallRestart$' 'watchdog-cli|^Test(WatchdogOwnedCLISilentStream|ForwardingOwnedCLIConflict)$' 'watchdog-blocked|^TestWatchdogOwned(BlockedWork|PullAllowance)$' >> test-evidence/plan.txt
           go test -tags=rdhpf_integration -json -list . ./tests/integration/ ./internal/manager ./internal/docker ./internal/ssh ./cmd/rdhpf ./internal/testutil/sshfixture > test-evidence/list.jsonl 2> test-evidence/list.stderr
 
       - name: Install Docker
@@ -172,14 +172,25 @@ jobs:
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-warm.exit
           test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
 
+      - name: Owned watchdog stall restart
+        timeout-minutes: 5
+        env:
+          SSH_TEST_HOST: ssh://testuser@localhost:2222
+        run: |
+          set +e
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=4m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-restart.coverage -run '^TestWatchdogOwnedStallRestart$' ./internal/manager 2> test-evidence/watchdog-restart.stderr | tee test-evidence/watchdog-restart.jsonl
+          status=("${PIPESTATUS[@]}")
+          printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-restart.exit
+          test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
+
       - name: Owned watchdog delivered CLI silence
-        timeout-minutes: 4
+        timeout-minutes: 9
         env:
           SSH_TEST_HOST: ssh://testuser@localhost:2222
         run: |
           export RDHPF_WATCHDOG_BINARY="$PWD/test-evidence/bin/rdhpf"
           set +e
-          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=3m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cli.coverage -run '^Test(WatchdogOwnedCLISilentStream|ForwardingOwnedCLIConflict)$' ./cmd/rdhpf 2> test-evidence/watchdog-cli.stderr | tee test-evidence/watchdog-cli.jsonl
+          go test -tags=rdhpf_integration -json -count=1 -p 1 -timeout=8m -coverpkg=./cmd/...,./internal/... -covermode=atomic -coverprofile=test-evidence/watchdog-cli.coverage -run '^Test(WatchdogOwnedCLISilentStream|ForwardingOwnedCLIConflict)$' ./cmd/rdhpf 2> test-evidence/watchdog-cli.stderr | tee test-evidence/watchdog-cli.jsonl
           status=("${PIPESTATUS[@]}")
           printf 'go=%s tee=%s\n' "${status[0]}" "${status[1]}" > test-evidence/watchdog-cli.exit
           test "${status[0]}" -eq 0 && test "${status[1]}" -eq 0
@@ -199,14 +210,14 @@ jobs:
         run: |
           jq -e -s --rawfile required .github/required-watchdog-tests.txt '
             . as $events | ($required | split("\n") | map(select(length > 0))) as $names |
-            ($names | length) == 6 and all($names[]; . as $name |
+            ($names | length) == 7 and all($names[]; . as $name |
               (if $name == "TestWatchdogOwnedCLISilentStream" then "cmd/rdhpf" else "internal/manager" end) as $suffix |
               [$events[] | select(.Test == $name and .Package == ("github.com/tomaszpeksa/remote-docker-host-port-forwarder/" + $suffix))] as $matches |
               ($matches | last | .Action) == "pass") and
             all($events[] | select(.Action == "run"); . as $run |
               any($events[]; .Package == $run.Package and .Test == $run.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) and
             (any($events[]; .Action == "fail") | not)
-          ' test-evidence/watchdog-{cold,warm,cli,blocked}.jsonl
+          ' test-evidence/watchdog-{cold,warm,restart,cli,blocked}.jsonl
 
       - name: Source-bound watchdog controls
         timeout-minutes: 5

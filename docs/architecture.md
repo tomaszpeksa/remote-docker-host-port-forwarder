@@ -413,8 +413,11 @@ After joined completion, accepted-event drain and generation retirement, clean
 EOF clears prior restart failures and waits one cancelable second before another
 connection check/subscription. Nonclean stream and EnsureAlive failures retain
 shared 1/2/4/8/16/30-second backoff and termination on the tenth failure; successful
-event handling does not forgive that restart history. Parent or watchdog
-cancellation suppresses replacement and retains the selected terminal cause.
+event handling does not forgive that restart history. A watchdog stream restart
+(below) cancels only the subscription; it is paced like a clean EOF, retires the
+generation so the next inventory pass resynchronizes desired state, and does not
+reset that history. Parent or watchdog-terminal cancellation suppresses
+replacement and retains the selected terminal cause.
 This pacing floor neither bounds lifetime EOF count nor establishes healthy HTTP
 traffic or synchronous reconciliation/history completion.
 
@@ -433,15 +436,27 @@ convergence. Bounded discovery does not bound existing State tombstones.
 ### Processing watchdog and terminal cause
 
 The watchdog arms once at Run monitoring start, before connection maintenance.
-Construction and earlier CLI SSH startup are outside that clock. On each ordinary
-10-second check, elapsed time below 30 seconds is healthy; from 30 to below 60
-seconds one probe is eligible; at 60 seconds or more the watchdog commits a fatal
-result and cancels active Run work. Retries, generations and clean EOF do not
-re-arm it. Only successful start/die/stop handler completion updates health;
-queue admission, failed inspections, inventory and probe success do not.
+Construction and earlier CLI SSH startup are outside that clock. Each silence
+window starts at arming, at the last successful event, or at the watchdog's own
+stream restart. On each ordinary 10-second check, elapsed window time below 30
+seconds is healthy; from 30 to below 60 seconds one probe is eligible; at 60
+seconds or more the stream has stalled.
+
+A stall restarts the event stream: the watchdog cancels only the current
+subscription, under its lock and before logging `event stream watchdog
+restarting silent event stream` with the reason and restart number. SSH, forwards
+and reconciliation are untouched. Run joins the canceled stream, retires its
+generation (which schedules an inventory repair pass, so containers started or
+stopped during the silence are added or removed) and opens a replacement through
+the usual connection check. After three consecutive restarts with no successful
+event in between, the next stall commits a fatal result and cancels active Run
+work. A successful event resets the restart count. Run's own retries,
+generations and clean EOF do not re-arm the clock. Only successful start/die/stop
+handler completion updates health; queue admission, failed inspections,
+inventory and probe success do not.
 
 Timing decisions never execute or wait for Ping. A single owned asynchronous
-probe has a fixed deadline at the launch-time last-success timestamp plus 60
+probe has a fixed deadline at the launch-time window start plus 60
 seconds, further shortened by its parent. Later health does not extend an active
 attempt; completion permits another only on a later eligible tick. Ping retains
 64 KiB tails per output stream and a two-second inherited-descriptor WaitDelay.

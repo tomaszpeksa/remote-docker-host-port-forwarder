@@ -561,7 +561,7 @@ bypass is used.
 
 ### Mandatory processing-watchdog evidence
 
-The owned hosted workflow adds six exact leaf PASS requirements in
+The owned hosted workflow adds seven exact leaf PASS requirements in
 `.github/required-watchdog-tests.txt`:
 
 - `TestWatchdogOwnedColdPull`: prove an actual `alpine:latest` image miss before
@@ -570,9 +570,15 @@ The owned hosted workflow adds six exact leaf PASS requirements in
   cold proof; the test does not delete an unowned tag or silently skip.
 - `TestWatchdogOwnedWarmProcessing`: retain real processing and forwarded HTTP
   for at least 130 seconds with correlated ping Engine IDs.
-- `TestWatchdogOwnedCLISilentStream`: run the built shipped CLI, hold only its
-  owned stream output, and require the processing-based fatal diagnostic and
-  exit 1 after ordinary cleanup, without user cancellation as the oracle.
+- `TestWatchdogOwnedStallRestart`: hold the owned stream output past one silence
+  window. Require a logged stream restart that cancels the held subscription
+  while an existing forward keeps serving HTTP. After release, require resumed
+  processing, a forward for a container started during the silence and none for
+  one stopped during it.
+- `TestWatchdogOwnedCLISilentStream`: run the built shipped CLI, hold every
+  owned stream's output, and require three logged restarts, the processing-based
+  fatal diagnostic and exit 1 after ordinary cleanup, without user cancellation
+  as the oracle.
 - `TestWatchdogOwnedBlockedWork/Probe` and `/Inspect`: separately hold concrete
   owned real-SSH output/completion boundaries and record fatal/cancel/Wait times.
   The inspect case requires cancellation before its unchanged five-second budget;

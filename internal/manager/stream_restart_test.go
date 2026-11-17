@@ -92,6 +92,7 @@ func TestManagerStreamRestartCancellation(t *testing.T) {
 			r.m.state.SetDesired(discoveryA, []int{18881})
 			r.m.state.MarkActive(discoveryA, 18881)
 			if fatal {
+				exhaustWatchdogRestarts(r.m.watchdog)
 				r.clock.Advance(time.Minute)
 				r.tick(t)
 			} else {

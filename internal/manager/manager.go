@@ -72,16 +72,25 @@ func (r *remoteDockerPingRunner) Ping(ctx context.Context) error {
 	return nil
 }
 
-// eventWatchdog monitors Docker event stream health via periodic pings
+// maxWatchdogStreamRestarts bounds consecutive restarts of a silent event
+// stream. A stall after this many restarts, with no successfully handled event
+// in between, ends Run.
+const maxWatchdogStreamRestarts = 3
+
+// eventWatchdog monitors Docker event stream health via periodic pings.
+// A silent stream is restarted; forwards are not touched.
 type eventWatchdog struct {
 	now           func() time.Time
 	dockerPing    dockerPingRunner
 	ticks         func() (<-chan time.Time, func())
 	idleThreshold time.Duration // 30s - when to start pinging
-	fatalAfter    time.Duration // 60s - when to consider stream dead
+	stallAfter    time.Duration // 60s - when to restart a silent stream
 
 	mu              sync.RWMutex
 	lastEvent       time.Time
+	windowStart     time.Time // last successful event, arming or stream restart
+	restarts        int       // consecutive restarts without a successful event
+	cancelStream    context.CancelFunc
 	armed           bool
 	terminal        bool
 	watchdogFailure bool
@@ -101,7 +110,7 @@ func newEventWatchdog(now func() time.Time, ping dockerPingRunner) *eventWatchdo
 			return ticker.C, ticker.Stop
 		},
 		idleThreshold: 30 * time.Second,
-		fatalAfter:    60 * time.Second,
+		stallAfter:    60 * time.Second,
 	}
 }
 
@@ -114,6 +123,14 @@ func (w *eventWatchdog) arm(parent context.Context, cancel context.CancelFunc, s
 	}
 	w.parent, w.cancel, w.stopping = parent, cancel, stopping
 	w.lastEvent, w.armed = w.now(), true
+	w.windowStart = w.lastEvent
+}
+
+// watchStream registers the cancel function of the stream Run opens next.
+func (w *eventWatchdog) watchStream(cancel context.CancelFunc) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cancelStream = cancel
 }
 
 // OnEvent records successful handler completion, never admission or probe success.
@@ -122,32 +139,45 @@ func (w *eventWatchdog) OnEvent() {
 	defer w.mu.Unlock()
 	if w.armed && !w.terminal && w.parent.Err() == nil {
 		w.lastEvent = w.now()
+		w.windowStart, w.restarts = w.lastEvent, 0
 	}
 }
 
-// Tick makes only a timing/terminal decision. Probe work and joins cannot delay it.
-func (w *eventWatchdog) Tick() (time.Time, error) {
+// Tick makes only a timing/restart/terminal decision. Probe work and joins
+// cannot delay it. restart is the consecutive restart number when this check
+// restarted a silent stream, otherwise zero.
+func (w *eventWatchdog) Tick() (probeDeadline time.Time, restart int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !w.armed {
-		return time.Time{}, nil
+		return time.Time{}, 0, nil
 	}
 	if w.terminal {
-		return time.Time{}, w.result
+		return time.Time{}, 0, w.result
 	}
 	if w.parent.Err() != nil {
 		w.selectTerminalLocked(nil, false)
-		return time.Time{}, w.result
+		return time.Time{}, 0, w.result
 	}
-	dt := w.now().Sub(w.lastEvent)
+	now := w.now()
+	dt := now.Sub(w.windowStart)
 	switch {
 	case dt < w.idleThreshold:
-		return time.Time{}, nil
-	case dt < w.fatalAfter:
-		return w.lastEvent.Add(w.fatalAfter), nil
+		return time.Time{}, 0, nil
+	case dt < w.stallAfter:
+		return w.windowStart.Add(w.stallAfter), 0, nil
+	case w.restarts < maxWatchdogStreamRestarts:
+		// Commit and cancel before logging, like a terminal selection.
+		w.restarts++
+		w.windowStart = now
+		if w.cancelStream != nil {
+			w.cancelStream()
+		}
+		return time.Time{}, w.restarts, nil
 	default:
-		w.selectTerminalLocked(fmt.Errorf("event stream unhealthy: no successfully handled Docker events for %s", dt.Round(time.Second)), true)
-		return time.Time{}, w.result
+		w.selectTerminalLocked(fmt.Errorf("event stream unhealthy: no successfully handled Docker events for %s after %d event stream restarts",
+			now.Sub(w.lastEvent).Round(time.Second), w.restarts), true)
+		return time.Time{}, 0, w.result
 	}
 }
 
@@ -439,11 +469,13 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 	// Start performance metrics logger (log every 5 minutes)
 	go func() { defer close(metricsDone); m.logPerformanceMetrics(ctx, 5*time.Minute) }()
 
-	// Start event stream watchdog (checks every 10s, pings after 30s idle, fatal after 60s)
+	// Start event stream watchdog (checks every 10s, pings after 30s idle,
+	// restarts the stream after 60s, shuts down when restarts do not help)
 	m.logger.Info("event stream watchdog started",
 		"tick_interval", "10s",
 		"idle_threshold", "30s",
-		"fatal_after", "60s")
+		"restart_after", "60s",
+		"max_restarts", maxWatchdogStreamRestarts)
 
 	// Event stream restart logic with exponential backoff
 	// Spec: 1s, 2s, 4s, 8s, max 30s; max 10 consecutive failures
@@ -525,7 +557,9 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		m.discovery.mu.Lock()
 		generation := m.discovery.generation
 		m.discovery.mu.Unlock()
-		terminal := m.discovery.openStream(ctx, func(ctx context.Context, event docker.Event) error { return m.deliverEvent(ctx, generation, event) })
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		m.watchdog.watchStream(cancelStream)
+		terminal := m.discovery.openStream(streamCtx, func(ctx context.Context, event docker.Event) error { return m.deliverEvent(ctx, generation, event) })
 		activeStream = terminal
 
 		if consecutiveFailures > 0 {
@@ -540,6 +574,8 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 		streamClosed := m.runEventLoop(ctx, terminal, generation)
 		<-activeStream
 		activeStream = nil
+		watchdogRestart := streamCtx.Err() != nil && ctx.Err() == nil
+		cancelStream()
 		if err := m.finishStream(generation); err != nil {
 			return err
 		}
@@ -553,6 +589,7 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 			"duration", streamDuration.String(),
 			"duration_ms", streamDuration.Milliseconds(),
 			"clean_close", streamClosed,
+			"watchdog_restart", watchdogRestart,
 			"consecutive_failures", consecutiveFailures)
 
 		// If stream closed cleanly due to context cancellation, cleanup and exit
@@ -596,8 +633,9 @@ func (m *Manager) Run(ctx context.Context, owner *instancepath.Owner) (runErr er
 				return nil
 			}
 		} else {
-			// Stream closed cleanly, reset failure count
-			if consecutiveFailures > 0 {
+			// A clean close resets the failure count; a watchdog restart is
+			// not evidence that the stream recovered.
+			if consecutiveFailures > 0 && !watchdogRestart {
 				m.logger.Info("event stream recovered",
 					"previous_failures", consecutiveFailures)
 				consecutiveFailures = 0
@@ -639,7 +677,7 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, ticks <-chan time.
 			probeDone, cancelProbe = nil, nil
 		case <-ticks:
 			// The payload may be stale after scheduling delay. Tick samples now.
-			deadline, err := m.watchdog.Tick()
+			deadline, restart, err := m.watchdog.Tick()
 			if err != nil {
 				if _, watchdogFailure := m.watchdog.terminalResult(); !watchdogFailure {
 					return
@@ -648,8 +686,17 @@ func (m *Manager) startEventWatchdogLoop(ctx context.Context, ticks <-chan time.
 				selectedAt, lastEvent := m.watchdog.selectedAt, m.watchdog.lastEvent
 				m.watchdog.mu.RUnlock()
 				m.logger.Error("event stream watchdog detected failure, shutting down",
-					"reason", "no successfully handled Docker events", "selected_at", selectedAt, "last_successful_event", lastEvent)
+					"reason", "event stream restarts did not restore event processing",
+					"restarts", maxWatchdogStreamRestarts, "selected_at", selectedAt, "last_successful_event", lastEvent)
 				return
+			}
+			if restart > 0 {
+				m.watchdog.mu.RLock()
+				lastEvent := m.watchdog.lastEvent
+				m.watchdog.mu.RUnlock()
+				m.logger.Warn("event stream watchdog restarting silent event stream",
+					"reason", "no successfully handled Docker events", "restart", restart,
+					"max_restarts", maxWatchdogStreamRestarts, "last_successful_event", lastEvent)
 			}
 			if !deadline.IsZero() && probeDone == nil && ctx.Err() == nil {
 				probeCtx, cancel := context.WithDeadline(ctx, deadline)

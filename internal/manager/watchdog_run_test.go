@@ -24,6 +24,8 @@ import (
 
 type watchdogRun struct {
 	m                       *Manager
+	port                    int
+	calls                   string
 	clock                   *fakeClock
 	ticks                   chan time.Time
 	cancel                  context.CancelFunc
@@ -40,7 +42,7 @@ type watchdogRun struct {
 // Tests may replace the stream before start, not the Manager/handler implementation.
 func newWatchdogRun(t *testing.T) *watchdogRun {
 	t.Helper()
-	m, _, _ := recoveryManager(t)
+	m, port, calls := recoveryManager(t)
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	t.Setenv("S10_TEST_EXECUTABLE", executable)
@@ -65,7 +67,7 @@ exec "$S10_TEST_EXECUTABLE" -test.run '^TestWatchdogNativeSSH$' -- "$@"
 	t.Setenv("HOME", home)
 	owner, err := instancepath.Acquire(m.cfg.Host)
 	require.NoError(t, err)
-	r := &watchdogRun{m: m, clock: newFakeClock(time.Now()), ticks: make(chan time.Time), done: make(chan struct{}), stream: make(chan context.Context, 1), stopped: make(chan struct{})}
+	r := &watchdogRun{m: m, port: port, calls: calls, clock: newFakeClock(time.Now()), ticks: make(chan time.Time), done: make(chan struct{}), stream: make(chan context.Context, 1), stopped: make(chan struct{})}
 	m.watchdog.now = r.clock.Now
 	m.watchdog.ticks = func() (<-chan time.Time, func()) { return r.ticks, func() { close(r.stopped) } }
 	m.discovery.list = func(context.Context) ([]string, error) { return nil, nil }

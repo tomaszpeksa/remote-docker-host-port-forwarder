@@ -7,6 +7,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-17
+
 ### Fixed
 
 - Restart the Docker event stream when it goes silent for 60 seconds, instead of

@@ -543,19 +543,27 @@ If you encounter an issue not covered here:
 | `container not found` | Container stopped/removed | None needed (rdhpf removes forward automatically) |
 | `no published ports` | Container has no `-p` flags | Add `-p` flags to container |
 
-### Event processing watchdog shutdown
+### Event processing watchdog restart and shutdown
 
-`event stream unhealthy: no successfully handled Docker events` means no
-start/die/stop handler completed successfully during the watchdog's silence
-window. It does **not** prove that Docker sent no events: repeated inspection
-failures can cause this result while events arrive. Check preceding inspection,
+`event stream watchdog restarting silent event stream` means no start/die/stop
+handler completed successfully for 60 seconds, so the Docker event stream was
+restarted. Forwards and the SSH connection stay up; a brief stall, for example on
+a loaded host, needs no action. The log carries the restart number out of three.
+
+`event stream unhealthy: no successfully handled Docker events ... after 3 event
+stream restarts` means the stream stayed silent through three consecutive
+restarts, so rdhpf shut down.
+
+Neither message proves that Docker sent no events: repeated inspection failures
+can cause them while events arrive. Check preceding inspection,
 SSH and Docker errors as well as event delivery. Successful inventory audits or
 probe command exits do not reset processing health.
 
 The clock starts once at Run monitoring start. Ten-second checks allow a probe
-from 30 seconds and initiate fatal cancellation at the first check observing at
-least 60 seconds without successful handling. Retries do not grant another
-window. The probe uses the application's SSH target/control path and inherited
+from 30 seconds and restart the stream at the first check observing at least 60
+seconds without successful handling since the last success or restart. The fourth
+such stall in a row initiates fatal cancellation. Other retries do not grant
+another window. The probe uses the application's SSH target/control path and inherited
 trust, and may implicitly pull `alpine:latest`. Its remaining-window deadline is
 not a promise that every cold download finishes in time.
 

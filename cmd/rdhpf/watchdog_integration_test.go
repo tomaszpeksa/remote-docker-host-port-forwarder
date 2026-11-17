@@ -117,9 +117,11 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 		t.Fatal("owned stream output gate did not enter")
 	}
 	f.FailAfterCompletedPing()
+	// The gate holds every subscription, so each of the three restarts stays
+	// silent and the fourth stall escalates.
 	select {
 	case <-done:
-	case <-time.After(80 * time.Second):
+	case <-time.After(300 * time.Second):
 		t.Fatal("WATCHDOG_CLI_MUST_EXIT_ON_SILENCE; user cancellation is only failure cleanup")
 	}
 	var exit *exec.ExitError
@@ -127,6 +129,8 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	require.Equal(t, 1, exit.ExitCode())
 	text := logs.String()
 	require.Contains(t, text, "no successfully handled Docker events")
+	require.Contains(t, text, `reason="event stream restarts did not restore event processing" restarts=3`)
+	require.Equal(t, 3, strings.Count(text, "event stream watchdog restarting silent event stream"), "each restart is logged")
 	extract := func(key string) time.Time {
 		value, err := watchdogCLITimestamp(text, key)
 		require.NoError(t, err)
@@ -134,18 +138,24 @@ func TestWatchdogOwnedCLISilentStream(t *testing.T) {
 	}
 	selected, last := extract("selected_at"), extract("last_successful_event")
 	require.True(t, last.Before(gateAt))
-	require.GreaterOrEqual(t, selected.Sub(last), 60*time.Second)
-	require.Less(t, selected.Sub(last), 71*time.Second)
-	canceled := false
+	// Four silence windows of 60 s, each observed by a 10 s check.
+	require.GreaterOrEqual(t, selected.Sub(last), 240*time.Second)
+	require.Less(t, selected.Sub(last), 285*time.Second)
+	canceled := 0
+	var lastCancel time.Time
 	for _, a := range f.Snapshot() {
 		if a.Operation == "events" && !a.CanceledAt.IsZero() {
-			canceled = true
+			canceled++
 			require.True(t, a.RealChildStarted)
 			require.Less(t, a.CanceledAt.Sub(selected), 3*time.Second)
+			if a.CanceledAt.After(lastCancel) {
+				lastCancel = a.CanceledAt
+			}
 			t.Logf("WATCHDOG_CLI_STREAM_CANCEL %+v", a)
 		}
 	}
-	require.True(t, canceled)
+	require.Equal(t, 4, canceled, "three restarts and the escalation each cancel one subscription")
+	require.False(t, lastCancel.Before(selected), "escalation cancels the last subscription")
 	release()
 	f.Close()
 	owner, err := instancepath.Acquire(f.Host)

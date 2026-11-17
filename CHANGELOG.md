@@ -7,6 +7,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Restart the Docker event stream when it goes silent for 60 seconds, instead of
+  shutting down. Forwards and the SSH connection stay up, and the forward set is
+  resynchronized from the running containers. Shut down only when three
+  consecutive restarts bring no handled event. Each restart and the shutdown log
+  the reason. A brief event stream stall, for example on a loaded host, no longer
+  closes every forwarded connection.
+
 ## [0.2.1] - 2026-11-16
 
 ### Fixed

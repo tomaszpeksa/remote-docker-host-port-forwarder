@@ -215,6 +215,8 @@ func TestWatchdogOwnedColdPull(t *testing.T) {
 	require.Error(t, err, "COLD_PROOF_BLOCKED: alpine:latest was already cached; never delete it")
 	require.Contains(t, string(output), "No such image: alpine:latest", "generic infrastructure error is not a cache miss")
 	t.Logf("WATCHDOG_COLD_VERIFIED_MISS %s", output)
+	// The first stall escalates, so the outcome is the cold probe's alone.
+	exhaustWatchdogRestarts(h.m.watchdog)
 	h.start()
 	arm := lastWatchdogHealth(h.m.watchdog)
 	h.wait(75*time.Second, "cold implicit pull must process or select fatal", func() bool { return lastWatchdogHealth(h.m.watchdog).After(arm) || h.m.stopping.Load() })
@@ -244,6 +246,9 @@ func TestWatchdogOwnedBlockedWork(t *testing.T) {
 				handler <- record.Time
 			}
 		})
+		// These cases hold work at the escalating stall; restarts are covered by
+		// TestWatchdogOwnedStallRestart.
+		exhaustWatchdogRestarts(h.m.watchdog)
 		ctx := h.start()
 		epoch := <-h.epoch
 		select {
@@ -302,6 +307,7 @@ func watchdogOwnedHeldProbe(t *testing.T, allowance bool) {
 	defer releaseEvents()
 	probe, releaseProbe := h.f.Gate("ping")
 	defer releaseProbe()
+	exhaustWatchdogRestarts(h.m.watchdog)
 	ctx := h.start()
 	last := lastWatchdogHealth(h.m.watchdog)
 	select {
@@ -346,3 +352,102 @@ func watchdogOwnedHeldProbe(t *testing.T, allowance bool) {
 	require.Equal(t, 1, h.pingCount)
 }
 func TestWatchdogOwnedPullAllowance(t *testing.T) { watchdogOwnedHeldProbe(t, true) }
+
+// A silent stream is restarted while the existing forward keeps serving. After
+// the restart, event processing resumes and container changes made during the
+// silence are reflected in the forward set.
+func TestWatchdogOwnedStallRestart(t *testing.T) {
+	h := newWatchdogOwned(t)
+	base := h.m.logger.Handler()
+	restarts := make(chan slog.Record, 4)
+	h.m.logger = slog.New(watchdogLogHandler{Handler: base, handle: func(record slog.Record) {
+		_ = base.Handle(context.Background(), record)
+		if record.Message == "event stream watchdog restarting silent event stream" {
+			restarts <- record
+		}
+	}})
+	events, releaseEvents := h.f.Gate("events")
+	defer releaseEvents()
+	h.start()
+	last := lastWatchdogHealth(h.m.watchdog)
+	_, keptPort, keptBody := h.backend()
+	select {
+	case <-events:
+	case <-time.After(15 * time.Second):
+		t.Fatal("owned stream output gate did not enter")
+	}
+	h.wait(25*time.Second, "kept forward serves before the stall", func() bool { return watchdogHTTP(keptPort, keptBody) })
+	removedID, removedPort, removedBody := h.backend()
+	h.wait(25*time.Second, "removed forward serves before the stall", func() bool { return watchdogHTTP(removedPort, removedBody) })
+
+	// Change containers while the stream stays silent.
+	h.f.Docker("stop", "--time", "0", removedID)
+	addedID, addedPort, addedBody := h.backend()
+
+	var outage sync.Once
+	var outageAt time.Time
+	stopProbe := make(chan struct{})
+	probed := make(chan struct{})
+	go func() {
+		defer close(probed)
+		for {
+			select {
+			case <-stopProbe:
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			if !watchdogHTTP(keptPort, keptBody) {
+				outage.Do(func() { outageAt = time.Now() })
+			}
+		}
+	}()
+	defer func() {
+		select {
+		case <-stopProbe:
+		default:
+			close(stopProbe)
+		}
+		<-probed
+	}()
+
+	var restart slog.Record
+	select {
+	case restart = <-restarts:
+	case <-h.done:
+		t.Fatalf("WATCHDOG_STALL_MUST_NOT_SHUT_DOWN: %v", h.err)
+	case <-time.After(80 * time.Second):
+		t.Fatal("WATCHDOG_STALL_RESTART_MISSING")
+	}
+	require.Equal(t, "no successfully handled Docker events", logAttr(restart, "reason"))
+	require.Equal(t, "1", logAttr(restart, "restart"))
+	require.GreaterOrEqual(t, restart.Time.Sub(last), 60*time.Second)
+	h.wait(5*time.Second, "silent events command canceled by the restart", func() bool {
+		for _, a := range h.f.Snapshot() {
+			if a.Operation == "events" && !a.CanceledAt.IsZero() {
+				return true
+			}
+		}
+		return false
+	})
+	releaseEvents()
+
+	h.wait(50*time.Second, "event processing resumes on the restarted stream", func() bool {
+		return lastWatchdogHealth(h.m.watchdog).After(restart.Time)
+	})
+	h.wait(25*time.Second, "added container forwarded", func() bool { return watchdogHTTP(addedPort, addedBody) })
+	h.wait(25*time.Second, "stopped container forward removed", func() bool {
+		_, ok := activeForward(h.m, removedID, removedPort)
+		return !ok
+	})
+	_, ok := activeForward(h.m, addedID, addedPort)
+	require.True(t, ok)
+	close(stopProbe)
+	<-probed
+	require.True(t, outageAt.IsZero(), "WATCHDOG_RESTART_MUST_KEEP_FORWARDS: kept forward failed at %s", outageAt)
+	require.False(t, h.m.stopping.Load())
+	_, fatal := h.m.watchdog.terminalResult()
+	require.False(t, fatal)
+	h.close()
+	require.NoError(t, h.err)
+	t.Logf("WATCHDOG_STALL_RESTART last_success=%s restart=%s resumed=%s", last.Format(time.RFC3339Nano), restart.Time.Format(time.RFC3339Nano), lastWatchdogHealth(h.m.watchdog).Format(time.RFC3339Nano))
+}

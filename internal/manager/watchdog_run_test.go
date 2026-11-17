@@ -24,6 +24,8 @@ import (
 
 type watchdogRun struct {
 	m                       *Manager
+	port                    int
+	calls                   string
 	clock                   *fakeClock
 	ticks                   chan time.Time
 	cancel                  context.CancelFunc
@@ -40,7 +42,7 @@ type watchdogRun struct {
 // Tests may replace the stream before start, not the Manager/handler implementation.
 func newWatchdogRun(t *testing.T) *watchdogRun {
 	t.Helper()
-	m, _, _ := recoveryManager(t)
+	m, port, calls := recoveryManager(t)
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	t.Setenv("S10_TEST_EXECUTABLE", executable)
@@ -65,7 +67,7 @@ exec "$S10_TEST_EXECUTABLE" -test.run '^TestWatchdogNativeSSH$' -- "$@"
 	t.Setenv("HOME", home)
 	owner, err := instancepath.Acquire(m.cfg.Host)
 	require.NoError(t, err)
-	r := &watchdogRun{m: m, clock: newFakeClock(time.Now()), ticks: make(chan time.Time), done: make(chan struct{}), stream: make(chan context.Context, 1), stopped: make(chan struct{})}
+	r := &watchdogRun{m: m, port: port, calls: calls, clock: newFakeClock(time.Now()), ticks: make(chan time.Time), done: make(chan struct{}), stream: make(chan context.Context, 1), stopped: make(chan struct{})}
 	m.watchdog.now = r.clock.Now
 	m.watchdog.ticks = func() (<-chan time.Time, func()) { return r.ticks, func() { close(r.stopped) } }
 	m.discovery.list = func(context.Context) ([]string, error) { return nil, nil }
@@ -212,10 +214,26 @@ func (r *watchdogRun) tick(t *testing.T) {
 	}
 }
 
+// A stream that stays silent through every restart escalates to shutdown.
 func TestManagerSilentOpenStreamWatchdog(t *testing.T) {
 	r := newWatchdogRun(t)
+	var logsMu sync.Mutex
+	var restarts []string
+	watchRunLogs(r.m, func(record slog.Record) {
+		if record.Message == "event stream watchdog restarting silent event stream" {
+			logsMu.Lock()
+			restarts = append(restarts, logAttr(record, "restart"))
+			logsMu.Unlock()
+		}
+	})
 	r.start()
 	ctx := r.awaitStream(t)
+	for range maxWatchdogStreamRestarts {
+		ctx = r.stallStream(t, ctx)
+	}
+	logsMu.Lock()
+	require.Equal(t, []string{"1", "2", "3"}, restarts, "each restart is logged")
+	logsMu.Unlock()
 	r.clock.Advance(60 * time.Second)
 	r.tick(t)
 	if !awaitWatchdog(t, ctx.Done(), "WATCHDOG_MUST_CANCEL_OPEN_STREAM") {
@@ -225,6 +243,7 @@ func TestManagerSilentOpenStreamWatchdog(t *testing.T) {
 		return
 	}
 	require.ErrorContains(t, r.err, "no successfully handled Docker events", "WATCHDOG_CAUSE_MUST_SURVIVE")
+	require.ErrorContains(t, r.err, "after 3 event stream restarts")
 	require.True(t, r.m.stopping.Load())
 	require.Eventually(t, func() bool {
 		select {
@@ -259,6 +278,7 @@ func TestManagerWatchdogActiveInspect(t *testing.T) {
 	ctx := r.awaitStream(t)
 	require.Eventually(t, func() bool { _, err := os.Stat(entered); return err == nil }, time.Second, time.Millisecond)
 	started := time.Now()
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(60 * time.Second)
 	r.tick(t)
 	if !awaitWatchdog(t, ctx.Done(), "WATCHDOG_MUST_CANCEL_INSPECT_BEFORE_OWN_TIMEOUT") {
@@ -422,6 +442,7 @@ func TestManagerWatchdogProbeJoinDoesNotGateAction(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("probe did not enter")
 	}
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(30 * time.Second)
 	select {
 	case r.ticks <- time.Unix(0, 0):
@@ -495,6 +516,7 @@ func TestManagerWatchdogSuccessfulProcessingOnly(t *testing.T) {
 			require.Equal(t, r.clock.Now(), lastWatchdogHealth(r.m.watchdog))
 		}
 	}
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(60 * time.Second)
 	r.tick(t)
 	if !awaitWatchdog(t, r.done, "WATCHDOG_MUST_CANCEL_OPEN_STREAM") {
@@ -536,6 +558,7 @@ func TestManagerWatchdogRetiresQueuedAndCanceledEnqueue(t *testing.T) {
 	last := lastWatchdogHealth(r.m.watchdog)
 	require.Eventually(t, func() bool { return pendingWatchdogEvents(r.m) == 12 }, time.Second, time.Millisecond)
 	require.Equal(t, last, lastWatchdogHealth(r.m.watchdog), "FAILED_PROCESSING_MUST_NOT_RESET: admission and blocked inspection are not health")
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(time.Minute)
 	r.tick(t)
 	if !awaitWatchdog(t, ctx.Done(), "WATCHDOG_MUST_CANCEL_OPEN_STREAM") {
@@ -580,6 +603,7 @@ func TestManagerWatchdogCancelsBeforeBlockedLog(t *testing.T) {
 	})
 	r.start()
 	ctx := r.awaitStream(t)
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(time.Minute)
 	r.tick(t)
 	if !awaitWatchdog(t, entered, "terminal logger did not enter") {
@@ -628,6 +652,7 @@ func TestManagerProbeAndAuditDoNotProvideHealth(t *testing.T) {
 		return
 	}
 	require.Equal(t, t0, lastWatchdogHealth(r.m.watchdog), "successful inventory and Ping are not processing")
+	exhaustWatchdogRestarts(r.m.watchdog)
 	r.clock.Advance(30 * time.Second)
 	r.tick(t)
 	if !awaitWatchdog(t, ctx.Done(), "WATCHDOG_MUST_CANCEL_OPEN_STREAM") {
@@ -753,6 +778,7 @@ func TestManagerWatchdogExitPaths(t *testing.T) {
 			} else if !awaitWatchdog(t, boundary, "requested Run boundary not entered") {
 				return
 			}
+			exhaustWatchdogRestarts(r.m.watchdog)
 			r.clock.Advance(time.Minute)
 			r.tick(t)
 			require.Eventually(t, func() bool { return r.m.stopping.Load() }, time.Second, time.Millisecond, "WATCHDOG_MUST_CANCEL_OPEN_STREAM")
